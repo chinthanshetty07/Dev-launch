@@ -1,42 +1,10 @@
-import type { ExecutionState } from '@devlaunch/shared';
-
-export type StageStatus = 'pending' | 'active' | 'done' | 'failed' | 'paused';
-
-/** The pipeline as a user experiences it, which is coarser than the state machine. */
-const STAGES = [
-  { key: 'clone', label: 'Clone', states: ['CLONING'] },
-  { key: 'analyze', label: 'Analyze', states: ['ANALYZING'] },
-  { key: 'plan', label: 'Plan', states: ['PLANNING'] },
-  { key: 'validate', label: 'Validate', states: ['VALIDATING', 'AWAITING_INPUT'] },
-  { key: 'start', label: 'Start', states: ['BUILDING', 'STARTING'] },
-  { key: 'ready', label: 'Readiness', states: ['WAITING_FOR_READY'] },
-] as const;
-
-const ORDER: string[] = [
-  'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING', 'AWAITING_INPUT',
-  'BUILDING', 'STARTING', 'WAITING_FOR_READY', 'READY',
-];
-
-function statusFor(stageIndex: number, state: ExecutionState | 'IDLE'): StageStatus {
-  if (state === 'IDLE') return 'pending';
-  if (state === 'READY' || state === 'COMPLETED') return 'done';
-
-  const stage = STAGES[stageIndex]!;
-  const terminalFailure = state === 'FAILED' || state === 'CANCELLED';
-  const position = ORDER.indexOf(state);
-  // A failed or cancelled session stops advancing, so the furthest stage it reached is
-  // inferred from the states already passed rather than from the terminal state itself.
-  const effective = terminalFailure ? ORDER.length : position;
-
-  if ((stage.states as readonly string[]).includes(state)) {
-    if (state === 'AWAITING_INPUT') return 'paused';
-    return 'active';
-  }
-
-  const stageStart = ORDER.indexOf(stage.states[0]);
-  if (terminalFailure) return 'pending';
-  return effective > stageStart ? 'done' : 'pending';
-}
+import {
+  PIPELINE_STAGES,
+  readyStatus,
+  stageStatus,
+  type ExecutionState,
+  type StageStatus,
+} from '@devlaunch/shared';
 
 const STYLES: Record<StageStatus, string> = {
   pending: 'border-edge text-muted',
@@ -47,19 +15,26 @@ const STYLES: Record<StageStatus, string> = {
 };
 
 const MARK: Record<StageStatus, string> = {
-  pending: '·', active: '»', done: 'ok', failed: '×', paused: '?',
+  pending: '\u00b7', active: '\u00bb', done: 'ok', failed: '\u00d7', paused: '?',
 };
 
 export function PipelineStrip({
   state,
+  furthest,
   planSource,
   detected,
 }: {
   state: ExecutionState | 'IDLE';
+  /**
+   * Furthest state the session was ever seen in. A failed session's current state says
+   * nothing about where it died, so without this the strip can only grey everything out.
+   */
+  furthest?: ExecutionState | null;
   planSource?: string;
   detected?: string | null;
 }) {
   const failedAt = state === 'FAILED' || state === 'CANCELLED';
+  const ready = readyStatus(state, furthest);
 
   return (
     <section className="border-b border-edge bg-panel px-4 py-3">
@@ -77,6 +52,13 @@ export function PipelineStrip({
             detected: {detected}
           </span>
         )}
+        {/* Repair moves the session backwards to VALIDATING. Saying so is clearer than
+            leaving the strip to imply the pipeline simply restarted on its own. */}
+        {state === 'REPAIRING' && (
+          <span className="rounded-full border border-warn px-2 py-0.5 text-[11px] text-warn">
+            repairing
+          </span>
+        )}
         {failedAt && (
           <span className="rounded-full border border-bad px-2 py-0.5 text-[11px] text-bad">
             {state.toLowerCase()}
@@ -85,8 +67,8 @@ export function PipelineStrip({
       </div>
 
       <ol className="flex flex-wrap gap-2">
-        {STAGES.map((stage, i) => {
-          const status = statusFor(i, state);
+        {PIPELINE_STAGES.map((stage, i) => {
+          const status = stageStatus(i, state, furthest);
           return (
             <li
               key={stage.key}
@@ -98,11 +80,11 @@ export function PipelineStrip({
           );
         })}
         <li
-          className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-[13px] ${
-            state === 'READY' ? STYLES.done : STYLES.pending
-          }`}
+          className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-[13px] ${STYLES[ready]}`}
         >
-          <span className="w-4 text-center opacity-80">{state === 'READY' ? '*' : '·'}</span>
+          <span className="w-4 text-center opacity-80">
+            {ready === 'done' ? '*' : MARK[ready]}
+          </span>
           Ready
         </li>
       </ol>

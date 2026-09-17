@@ -14,7 +14,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { state, lines, session, connected, refresh } = useSession(sessionId);
+  const { state, furthest, lines, session, connected, refresh } = useSession(sessionId);
 
   const launch = useCallback(async (body: { repoUrl?: string; fixture?: string }) => {
     setBusy(true);
@@ -77,6 +77,7 @@ export default function App() {
 
       <PipelineStrip
         state={state}
+        furthest={furthest}
         planSource={session?.plan?.planSource}
         detected={session?.detected}
       />

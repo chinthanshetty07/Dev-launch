@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExecutionState, FailureDetail, ServerMessage, WireLogEntry } from '@devlaunch/shared';
+import { furthestOf, impliedProgress } from '@devlaunch/shared';
 import { api, type SessionView } from './api';
 
 export interface LogLine extends WireLogEntry {
@@ -9,6 +10,14 @@ export interface LogLine extends WireLogEntry {
 
 export interface SessionStream {
   state: ExecutionState | 'IDLE';
+  /**
+   * Furthest state this session was ever seen in.
+   *
+   * The current state is not enough to say how far a session got: FAILED is not a point
+   * on the pipeline, and REPAIRING sends it backwards to VALIDATING. Only a high-water
+   * mark answers "where did it stop", which is what the pipeline strip renders.
+   */
+  furthest: ExecutionState | null;
   lines: LogLine[];
   session: SessionView | null;
   url?: string;
@@ -29,13 +38,26 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
   const [lines, setLines] = useState<LogLine[]>([]);
   const [state, setState] = useState<ExecutionState | 'IDLE'>('IDLE');
   const [session, setSession] = useState<SessionView | null>(null);
+  const [furthest, setFurthest] = useState<ExecutionState | null>(null);
   const [connected, setConnected] = useState(false);
   const lastSeq = useRef(-1);
   const socket = useRef<WebSocket | null>(null);
 
+  const advance = useCallback((state: ExecutionState) => {
+    setFurthest((prev) => furthestOf(prev, state));
+  }, []);
+
   const refresh = useCallback(() => {
     if (!sessionId) return;
-    api.get(sessionId).then(setSession).catch(() => undefined);
+    api
+      .get(sessionId)
+      .then((view) => {
+        setSession(view);
+        // A page opened after the fact has no transition history, so the snapshot is the
+        // only evidence of how far the session got.
+        setFurthest((prev) => furthestOf(prev, impliedProgress(view)));
+      })
+      .catch(() => undefined);
   }, [sessionId]);
 
   useEffect(() => {
@@ -43,6 +65,7 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
       setLines([]);
       setState('IDLE');
       setSession(null);
+      setFurthest(null);
       lastSeq.current = -1;
       return;
     }
@@ -66,6 +89,7 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
         const msg = JSON.parse(ev.data as string) as ServerMessage;
         if (msg.type === 'hello') {
           setState(msg.state);
+          advance(msg.state);
           refresh();
         } else if (msg.type === 'logs') {
           for (const e of msg.entries) {
@@ -82,6 +106,7 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
           });
         } else if (msg.type === 'state') {
           setState(msg.state);
+          advance(msg.state);
           refresh();
         } else if (msg.type === 'end') {
           setConnected(false);
@@ -98,6 +123,7 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
     };
 
     setLines([]);
+    setFurthest(null);
     lastSeq.current = -1;
     connect();
 
@@ -110,10 +136,11 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
     // `state` is deliberately excluded: including it would tear down and rebuild the
     // socket on every transition, losing the stream mid-run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, refresh]);
+  }, [sessionId, refresh, advance]);
 
   return {
     state,
+    furthest,
     lines,
     session,
     connected,

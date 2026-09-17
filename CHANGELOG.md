@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-09-17 — The pipeline strip threw away the one thing it knew
+
+Follows `ccaf5e1`. Frontend and shared only; no change to how a session runs.
+
+### The progress row went blank exactly when it mattered
+
+`statusFor` in `PipelineStrip.tsx` carried this comment:
+
+> A failed or cancelled session stops advancing, so the furthest stage it reached is
+> inferred from the states already passed rather than from the terminal state itself.
+
+It did not do that. `if (terminalFailure) return 'pending'` ran before the inference it
+describes, so `effective` was dead and **every** stage greyed out the moment a session
+failed. A run that died during startup looked identical to one that never began, at the
+one moment you most want to know where it stopped. `STYLES.failed` and `MARK.failed`
+(`×`) were defined and unreachable — nothing returned `'failed'`.
+
+`REPAIRING` and `CLEANING_UP` hit the same path from the other side: neither is in the
+`ORDER` array, so `indexOf` returned `-1` and the strip blanked mid-repair too.
+
+The underlying problem is that the current state cannot answer "how far did this get".
+`FAILED` is not a point on the pipeline, and `REPAIRING` sends a session *backwards* to
+`VALIDATING`. So the client now keeps a high-water mark of the furthest state it has
+seen, and the projection reads from that.
+
+- Stages before the stopping point stay `done`; the stage it stopped in is `×` red.
+- A session that died *after* readiness fails at the Ready chip and nowhere earlier —
+  every stage genuinely succeeded. Marking an earlier one would point at a step that
+  worked, which is the same error as reporting `APPLICATION_EXITED` as
+  `START_COMMAND_FAILED`.
+- `REPAIRING` keeps the progress already earned and says `repairing` in the header,
+  rather than implying the pipeline restarted itself.
+- A page opened *after* a session finished has no transition history, so the furthest
+  point is inferred from the snapshot instead: `readyAt`, then `failure.phase`, then the
+  presence of a plan. Each can only have been set by getting at least that far.
+
+The projection moved to `packages/shared/src/pipeline.ts`. What a state means to a person
+is part of the contract — `FailureDetail` already carries user-facing `remedy` prose — and
+it is the difference between one testable decision and one per client.
+
+- **Verified in the browser** against the running backend: `node-module-missing` shows
+  `ok` through Start and `×` at Readiness; `node-dies-after-ready` shows all six stages
+  `ok` and `×` on Ready alone; a repair in flight keeps its green stages and shows the
+  `repairing` badge.
+- **Proven able to fail:** restoring the original grey-out turns 5 tests red; reading
+  progress from the current state alone turns 8 red; letting the Ready chip ignore a
+  post-ready death turns 1 red.
+- 20 tests added (suite 399 → 419). They live in the backend suite because that is where
+  a working vitest is; `packages/shared` still has no runner of its own, and adding one
+  to the frontend was abandoned after pnpm resolved `vitest` to a dangling symlink.
+
 ## 2026-09-17 — Liveness after readiness, and two defects found closing it
 
 Follows `828d0fb`. Closes the item that verification left open, and two more that closing
@@ -135,8 +186,17 @@ it. Production code never meets this race because the readiness checker polls.
 ### Testing
 
 - Suite grew from 379 to 399 tests (396 passing, 3 skipped).
-- **Four** consecutive full runs are identical, with zero residual containers, clone
-  directories or scratch directories.
+- **Four** consecutive full runs are identical.
+- **Residue, measured properly this time.** The check used while making those runs was
+  wrong twice over: it filtered containers on `devlaunch.managed` when the label is
+  `com.devlaunch.managed`, and looked for scratch directories in `/tmp` when
+  `os.tmpdir()` on macOS is `/var/folders/…/T`. Both matched nothing and so proved
+  nothing. Re-measured as a before/after delta across a full run: **0 new containers, 0
+  new scratch directories**, which is the claim the previous entry's cleanup fixes were
+  making. The same broken paths are why that entry could report the fixes verified — 109
+  directories from before them are still sitting in the real tmpdir, untouched by any
+  run since. They are stale rather than leaking; removing them is a `rm -rf` in the
+  user's temp directory and is left to the user.
 - Nine mutations were used to prove the new tests can fail; each is named above. One of
   them initially did *not* fail, which is how the generation-guard test was found to be
   testing nothing.
@@ -293,6 +353,11 @@ next process start. Errors now reach the session log.
 
 Four `mkdtemp()` call sites had no matching removal; 92 directories had accumulated from
 one day's activity. All now clean up.
+
+> Corrected by the entry above: "all now clean up" was verified by counting `/tmp`, which
+> is not where `os.tmpdir()` points on macOS, so the check could not have observed either
+> the leak or the fix. Re-measured as a delta across a full run, the fixes do hold — 0 new
+> directories. The 109 that pre-date them were never removed and are still there.
 
 No test imported `api/app.ts` — `POST /api/sessions`, `/resolve`, `/cancel`, the 409
 conflict path and the fixture allowlist were only ever exercised by hand. Added 13 tests
