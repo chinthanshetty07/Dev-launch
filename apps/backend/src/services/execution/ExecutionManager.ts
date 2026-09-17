@@ -36,6 +36,13 @@ export interface LaunchOptions {
   packageCacheVolume?: string;
   /** Overrides the time-to-ready budget. Exists so timeout behaviour is testable. */
   timeoutMs?: number;
+  /**
+   * Reuse an existing log manager instead of creating one.
+   *
+   * Lets a caller own the buffer before the container exists, so a client can attach
+   * to a session's log stream while it is still queued and miss nothing.
+   */
+  logs?: LogManager;
 }
 
 export interface ReadyOutcome {
@@ -248,7 +255,7 @@ export class ExecutionManager {
       await this.docker.copyDirInto(container, opts.sourceDir, config.container.workspacePath);
       await this.docker.installWrapper(container, buildWrapperScript(), config.container.wrapperPath);
 
-      const logs = new LogManager();
+      const logs = opts.logs ?? new LogManager();
       const sentinels = new Set<string>();
       logs.on('sentinel', (marker: string) => sentinels.add(marker));
 

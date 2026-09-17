@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DevLaunch — Log Stream</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#c9d1d9; --dim:#8b949e;
+          --ok:#3fb950; --err:#f85149; --warn:#d29922; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex;
+           gap:10px; align-items:center; flex-wrap:wrap; background:var(--panel); }
+  h1 { font-size:14px; margin:0 12px 0 0; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
+  select,button { background:#21262d; color:var(--fg); border:1px solid var(--line);
+                  border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #state { margin-left:auto; display:flex; gap:8px; align-items:center; }
+  .badge { padding:2px 10px; border-radius:999px; border:1px solid var(--line); font-size:12px; }
+  .badge.ready { color:var(--ok); border-color:var(--ok); }
+  .badge.failed { color:var(--err); border-color:var(--err); }
+  a { color:var(--accent); }
+  #term { padding:12px 16px; height:calc(100vh - 58px); overflow:auto; white-space:pre-wrap;
+          word-break:break-word; }
+  .row { display:flex; gap:10px; }
+  .seq { color:#484f58; user-select:none; min-width:44px; text-align:right; }
+  .stderr { color:var(--err); }
+  .meta { color:var(--warn); font-style:italic; }
+  .sys  { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>DevLaunch</h1>
+  <select id="fixture"></select>
+  <button id="run">Launch</button>
+  <button id="stop" disabled>Stop</button>
+  <span id="state"><span class="badge" id="badge">idle</span><span id="url"></span></span>
+</header>
+<div id="term"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const term = $('term');
+let socket = null, sessionId = null, lastSeq = -1;
+
+function line(text, cls) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const seq = document.createElement('span');
+  seq.className = 'seq';
+  const body = document.createElement('span');
+  if (cls) body.className = cls;
+  body.textContent = text;
+  row.append(seq, body);
+  term.append(row);
+  term.scrollTop = term.scrollHeight;
+  return seq;
+}
+
+function logLine(entry) {
+  const seq = line(entry.text, entry.stream === 'stderr' ? 'stderr' : '');
+  seq.textContent = entry.seq;
+}
+
+function setState(state, url) {
+  const badge = $('badge');
+  badge.textContent = state;
+  badge.className = 'badge' + (state === 'READY' ? ' ready' : /FAIL|CANCEL/.test(state) ? ' failed' : '');
+  $('url').innerHTML = url ? ` <a href="${url}" target="_blank" rel="noopener">${url}</a>` : '';
+  $('stop').disabled = !sessionId || ['READY','WAITING_FOR_READY','STARTING','QUEUED'].indexOf(state) === -1;
+}
+
+function connect(id, afterSeq) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  socket = new WebSocket(`${proto}://${location.host}/ws/sessions/${id}/logs?afterSeq=${afterSeq}`);
+
+  socket.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'hello') {
+      line(`— connected to ${msg.sessionId} (state ${msg.state}) —`, 'sys');
+      setState(msg.state);
+    } else if (msg.type === 'logs') {
+      for (const e of msg.entries) { logLine(e); lastSeq = Math.max(lastSeq, e.seq); }
+    } else if (msg.type === 'gap') {
+      // Made visible on purpose: a silent hole in a log stream is worse than one you see.
+      line(`— ${msg.droppedTotal} earlier line(s) dropped; resuming at ${msg.oldestSeq} —`, 'meta');
+    } else if (msg.type === 'state') {
+      setState(msg.state, msg.url);
+      if (msg.failure) line(`— ${msg.failure.code}: ${msg.failure.message} —`, 'stderr');
+    } else if (msg.type === 'end') {
+      line(`— stream ended (${msg.reason}) —`, 'sys');
+    }
+  };
+
+  socket.onclose = () => { if (sessionId) line('— disconnected —', 'sys'); };
+}
+
+$('run').onclick = async () => {
+  term.textContent = '';
+  lastSeq = -1;
+  $('run').disabled = true;
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fixture: $('fixture').value }),
+    });
+    const body = await res.json();
+    if (!res.ok) { line(`error: ${body.error}`, 'stderr'); return; }
+    sessionId = body.id;
+    connect(sessionId, -1);
+  } finally {
+    $('run').disabled = false;
+  }
+};
+
+$('stop').onclick = async () => {
+  if (!sessionId) return;
+  await fetch(`/api/sessions/${sessionId}/cancel`, { method: 'POST' });
+};
+
+fetch('/api/fixtures')
+  .then((r) => r.json())
+  .then((names) => {
+    $('fixture').innerHTML = names.map((n) => `<option>${n}</option>`).join('');
+    const preferred = names.indexOf('node-http-basic');
+    if (preferred >= 0) $('fixture').selectedIndex = preferred;
+  });
+</script>
+</body>
+</html>

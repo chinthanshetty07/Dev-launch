@@ -15,20 +15,31 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 3 complete — port mapping and readiness.**
+**Phase 4 complete — log streaming.**
 
 | | Phase | State |
 |---|---|---|
 | 1 | Minimal Docker runner | ✅ Complete |
 | 2 | Security hardening | ✅ Complete |
 | 3 | Port + readiness | ✅ Complete |
-| 4 | Log streaming (WebSocket) | Not started |
+| 4 | Log streaming (WebSocket) | ✅ Complete |
 | 5 | Repository analyzer | Not started |
 | 6 | Rule-based plan generator | Not started |
 | 7 | Failure classifier | Not started |
 | 8 | AI fallback planner + repair | Stretch |
 | 9 | Frontend | Not started |
 | 10 | Documentation + portfolio | Not started |
+
+### What Phase 4 delivers
+
+- `SessionManager` — in-memory session registry enforcing one run at a time, and owner
+  of the **session lifetime clock** (30 min idle, 60 min hard cap) which starts only
+  once an app is READY, so a running app is never killed mid-use
+- WebSocket transport at `/ws/sessions/:id/logs` with **gap-free resume**: clients
+  reconnect with `?afterSeq=N` and are told explicitly when entries were evicted,
+  because a visible hole in a log stream beats a silent one
+- A minimal HTTP surface (`/api/health`, `/api/fixtures`, `/api/sessions`) and a
+  browser terminal, verified end to end in a real browser
 
 ### What Phase 3 delivers
 
@@ -76,6 +87,15 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 - Node >= 20 (developed on 24)
 - pnpm
 - Docker via Colima (`colima start --cpu 4 --memory 4`)
+
+## Running it
+
+```bash
+pnpm --filter @devlaunch/backend start
+```
+
+Then open <http://localhost:3939>, pick a fixture and press Launch. Logs stream live;
+a READY session shows a clickable URL to the running application.
 
 ## Getting started
 

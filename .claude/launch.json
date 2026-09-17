@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "devlaunch-backend",
+      "runtimeExecutable": "/Users/cs/.nvm/versions/node/v24.21.0/bin/node",
+      "runtimeArgs": [
+        "/Users/cs/work/Dev Launch/apps/backend/node_modules/tsx/dist/cli.mjs",
+        "/Users/cs/work/Dev Launch/apps/backend/src/server.ts"
+      ],
+      "port": 3939
+    }
+  ]
+}
