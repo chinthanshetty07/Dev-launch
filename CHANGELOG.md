@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-09-17 — Every package can run its own tests
+
+Follows the pipeline-strip entry below. Tooling and test placement; no behaviour change.
+
+### Why `pnpm add -D vitest` produced a broken install
+
+Adding vitest to the frontend left `apps/frontend/node_modules/vitest` symlinked to
+`node_modules/.pnpm/vitest@2.1.9/node_modules/vitest`, a directory pnpm never created,
+and no `vitest` binary. Three installs, including `--force`, reported success and changed
+nothing.
+
+Two causes, and both had to be fixed:
+
+1. **A missing optional peer.** vitest declares `@types/node` as an optional peer. The
+   backend has it as a direct devDependency, so its vitest resolves to
+   `2.1.9(@types/node@22.20.3)(lightningcss@1.32.0)` — a variant that exists in the store.
+   The frontend did not, so pnpm resolved a bare `2.1.9` with no peers and then linked to
+   a path it had no reason to materialise.
+2. **Resolution was being skipped.** `Lockfile is up to date, resolution step is skipped`
+   meant adding `@types/node` afterwards changed nothing: the stale bare entry was
+   retained. `pnpm install --fix-lockfile` is what forces the re-derivation.
+
+With `@types/node` declared and the lockfile re-derived, the frontend resolves to the
+same variant as the backend and the binary links. The same two-line fix worked first time
+on `packages/shared`, which is the check that this is the cause rather than a workaround
+that happened to land.
+
+### Tests now live in the package whose code they test
+
+- `packages/shared` gains a runner, and `pipeline.test.ts` moves there from the backend
+  suite — it tests `packages/shared/src/pipeline.ts`, and testing it from `apps/backend`
+  was an artefact of that being the only place a runner worked. 20 tests.
+- `apps/frontend` gains a runner and 8 component tests for `<PipelineStrip>`. Its `test`
+  script no longer echoes and exits 0.
+
+The component tests assert **rendered output**, not the projection function, because the
+projection is already covered in shared and the remaining risk is the wiring between
+them. That distinction is load-bearing: dropping the `furthest` prop in the component
+leaves all 20 shared tests green and turns 3 frontend tests red.
+
+No jsdom, deliberately. Every component here is a pure function of its props, so
+`renderToStaticMarkup` exercises what a browser would paint; jsdom and
+@testing-library/react would be dependencies simulating a document nothing touches. The
+day a component needs to answer an event, `environment: 'jsdom'` is a one-line change.
+
+- 424 tests across three packages (421 passing, 3 skipped), `pnpm -r test` exits 0.
+- **Proven able to fail:** dropping the `furthest` prop turns 3 frontend tests red;
+  removing the `repairing` badge turns 1 red.
+
 ## 2026-09-17 — The pipeline strip threw away the one thing it knew
 
 Follows `ccaf5e1`. Frontend and shared only; no change to how a session runs.
@@ -47,9 +96,10 @@ it is the difference between one testable decision and one per client.
 - **Proven able to fail:** restoring the original grey-out turns 5 tests red; reading
   progress from the current state alone turns 8 red; letting the Ready chip ignore a
   post-ready death turns 1 red.
-- 20 tests added (suite 399 → 419). They live in the backend suite because that is where
-  a working vitest is; `packages/shared` still has no runner of its own, and adding one
-  to the frontend was abandoned after pnpm resolved `vitest` to a dangling symlink.
+- 20 tests added (suite 399 → 419). They lived in the backend suite at first because that
+  was the only place a working vitest existed — resolved by the entry above, which gives
+  `packages/shared` and `apps/frontend` runners of their own and moves these tests to the
+  package whose code they test.
 
 ## 2026-09-17 — Liveness after readiness, and two defects found closing it
 

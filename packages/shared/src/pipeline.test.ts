@@ -5,9 +5,9 @@ import {
   impliedProgress,
   readyStatus,
   stageStatus,
-  type ExecutionState,
   type StageStatus,
-} from '@devlaunch/shared';
+} from './pipeline.js';
+import type { ExecutionState } from './states.js';
 
 const stage = (label: string): number => PIPELINE_STAGES.findIndex((s) => s.label === label);
 
