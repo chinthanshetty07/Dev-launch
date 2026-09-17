@@ -1,0 +1,7 @@
+{
+  "name": "fixture-fullstack-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": { "dev": "node dev-server.js" },
+  "dependencies": { "react": "18.3.1" }
+}

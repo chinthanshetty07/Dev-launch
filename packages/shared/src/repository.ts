@@ -24,6 +24,19 @@ export interface RepositoryMetadata {
   /** Packages discovered when the repository is a monorepo. */
   workspace?: WorkspaceSummary;
 
+  /**
+   * Every directory in the repository that can be run as its own process.
+   *
+   * A repository is not one application. `frontend/` calling `backend/` is the ordinary
+   * shape of a web project, and running only one of them produces a UI that loads and
+   * then fails every request it makes — which looks like a broken tool rather than a
+   * half-started application.
+   */
+  services?: ServiceCandidate[];
+
+  /** Infrastructure the repository expects to exist but does not contain. */
+  backing?: BackingService[];
+
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
 }
@@ -74,4 +87,53 @@ export interface WorkspacePackage {
   /** Path relative to the repository root. */
   dir: string;
   scripts: string[];
+}
+
+/**
+ * What a service is for, which decides how it is run and reached.
+ *
+ * `web` is served to a browser and is the session's entry point. `api` is called by a
+ * `web` service, usually from the browser rather than container-to-container — which is
+ * why its host port matters. `worker` listens on nothing.
+ */
+export type ServiceRole = 'web' | 'api' | 'worker';
+
+export interface ServiceCandidate {
+  /** Directory name, or the package name when one is declared. */
+  name: string;
+  /** Path relative to the repository root; '.' for a single-service repository. */
+  dir: string;
+  role: ServiceRole;
+  language: 'node' | 'python';
+  /** npm scripts available, for a Node service. */
+  scripts: string[];
+  /** What gave the role away, e.g. "depends on express". Shown, never acted on blindly. */
+  evidence: string;
+  /**
+   * Port the service's own code defaults to, read from its source.
+   *
+   * Distinct from the port it will be *reached* on: a service that defaults to 5000 but
+   * whose frontend calls 5001 has to be moved, and knowing both is what makes that
+   * decidable rather than a guess.
+   */
+  declaredPort?: number;
+  /**
+   * Absolute origins a `web` service has hardcoded, e.g. `http://localhost:5001`.
+   *
+   * These are resolved by the *browser*, not by Docker's network, so a container alias
+   * cannot satisfy them. The port an API is published on has to match, or every request
+   * the page makes is refused.
+   */
+  callsOrigins?: string[];
+}
+
+/** A database or cache the repository expects to be running. */
+export interface BackingService {
+  kind: 'mongodb' | 'postgres' | 'mysql' | 'redis';
+  /** The dependency or variable that gave it away. */
+  evidence: string;
+  /** Environment variable the application reads its connection string from. */
+  urlEnvKey?: string;
+  /** Which services need it. */
+  neededBy: string[];
 }

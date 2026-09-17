@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-09-17 — Multi-service, phase A: see the whole project, not one folder of it
+
+A real repository exposed the limitation this starts to close. `Prompt-Engine` reached
+`READY`, its page rendered, and every request it made was refused:
+
+```
+GET  http://localhost:5001/api/history  → net::ERR_CONNECTION_REFUSED
+POST http://localhost:5001/api/optimize → net::ERR_CONNECTION_REFUSED
+```
+
+The repository has `frontend/` and `backend/` and no root manifest. With nothing for the
+detectors to match at the root, the AI fallback planned it — and picked
+`workingDirectory: frontend`, silently ignoring the other half. DevLaunch did what it was
+built to do: run *an* application. The project needed *its* applications.
+
+Nothing was broken, which is the point. A tool that starts the UI and leaves its API
+unstarted is indistinguishable, from the browser, from a tool that is broken.
+
+### What this phase adds
+
+`ServiceDiscovery` describes a repository as the set of things that have to run:
+
+- **Every runnable directory**, at the root, one level down, and inside `apps/`,
+  `packages/` and `services/`. A directory with no `dev` or `start` script is a library,
+  not a service.
+- **A role for each** — `web`, `api`, `worker`. Dependencies decide it, directory names
+  only break ties: a folder called `server` that imports React is a server-rendered
+  frontend, and the name is the weaker signal.
+- **The port a service defaults to**, read from `process.env.PORT || 5000` and friends.
+  Distinct from the port it will be *reached* on, which is what makes the difference
+  decidable rather than a guess.
+- **Absolute origins a `web` service hardcodes**, e.g. `http://localhost:5001`. These are
+  resolved by the browser, so no container alias or internal network can satisfy them —
+  the API has to be published on that exact host port or every request the page makes is
+  refused.
+- **Backing services the repository expects but does not contain** — MongoDB, Postgres,
+  MySQL, Redis — from dependencies and from `.env.example` keys, recorded with the
+  variable the application actually reads its connection string from.
+
+A single-service repository reports none of this, so the existing path is untouched for
+the case it already handles correctly.
+
+- **Verified against the real repository.** Discovery of `Prompt-Engine` returns
+  `web:frontend` calling `http://localhost:5001`, `api:backend` declaring port `5000` —
+  the mismatch the repository actually ships — and `mongodb` via `MONGO_URI`.
+- New fixture `node-fullstack` reproduces that shape without the network.
+- 12 tests. **Proven able to fail:** looking only at the repository root turns 10 red;
+  letting directory names beat dependencies turns 1 red; skipping the origin scan turns
+  2 red.
+- 436 tests across three packages (433 passing, 3 skipped), zero residue.
+
+### Still to come
+
+This phase only *describes*. Nothing runs differently yet: planning, execution, ports and
+the dashboard all still assume one service. Those are the next phases.
+
 ## 2026-09-17 — Every package can run its own tests
 
 Follows the pipeline-strip entry below. Tooling and test placement; no behaviour change.

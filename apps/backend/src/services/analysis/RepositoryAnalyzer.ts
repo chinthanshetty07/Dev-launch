@@ -10,6 +10,8 @@ import type {
   WorkspaceSummary,
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
+import { readCapped } from './readCapped.js';
+import { backingFromEnvKeys, discoverServices } from './ServiceDiscovery.js';
 
 const LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb'];
 
@@ -30,17 +32,6 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-/** Read a file, refusing anything large enough to be a payload rather than a manifest. */
-async function readCapped(path: string): Promise<string | null> {
-  try {
-    const info = await stat(path);
-    if (!info.isFile() || info.size > config.intake.maxReadBytes) return null;
-    return await readFile(path, 'utf8');
-  } catch {
-    return null;
   }
 }
 
@@ -131,7 +122,37 @@ export class RepositoryAnalyzer {
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,
       workspace: await this.readWorkspace(base, packageJson, fileNames, warnings),
+      ...(await this.readServices(base, envRaw ? parseEnvExample(envRaw) : [])),
       warnings,
+    };
+  }
+
+  /**
+   * The runnable parts of the repository, and the infrastructure they expect.
+   *
+   * Returns nothing for an ordinary single-service repository, which keeps the existing
+   * path untouched for the case it already handles correctly.
+   */
+  private async readServices(
+    base: string,
+    envExample: EnvExampleVar[],
+  ): Promise<Pick<RepositoryMetadata, 'services' | 'backing'>> {
+    const { services, backing } = await discoverServices(base);
+
+    // A repository can name a dependency it never imports — `DATABASE_URL` in
+    // .env.example with no driver in the manifest still means a database is expected.
+    const declared = backingFromEnvKeys(envExample.map((v) => v.key));
+    const merged = [...backing];
+    for (const found of declared) {
+      const existing = merged.find((b) => b.kind === found.kind);
+      // A variable the repository actually names beats the one the rule guessed.
+      if (existing) existing.urlEnvKey = found.urlEnvKey ?? existing.urlEnvKey;
+      else merged.push({ ...found, neededBy: [] });
+    }
+
+    return {
+      ...(services.length ? { services } : {}),
+      ...(merged.length ? { backing: merged } : {}),
     };
   }
 

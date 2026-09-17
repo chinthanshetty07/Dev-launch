@@ -35,6 +35,12 @@ They are deliberately not in the automated suite.
 | `node-module-missing` | `START_COMMAND_FAILED`, naming the missing module |
 | `node-dies-after-ready` | `APPLICATION_EXITED` — serves a real request, then exits 3. The one failure readiness alone cannot see |
 
+## Multi-service
+
+| Fixture | Exercises |
+|---|---|
+| `node-fullstack` | `frontend/` + `backend/` with no root manifest, a hardcoded `http://localhost:5001` in the frontend, a backend that binds `5000`, and a MongoDB dependency. The ordinary shape of a web project, and the one a single-service runner gets wrong |
+
 ## Instrumentation
 
 | Fixture | Purpose |
