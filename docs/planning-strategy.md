@@ -327,3 +327,29 @@ never in the automated suite.
 ## Toolchain
 
 pnpm workspaces · Vitest · tsx · `engines.node >= 20`.
+
+## Failure classification
+
+Exit codes and sentinels establish *which phase* failed. Only the output says *why*.
+"Dependency installation failed" is true but useless; "a native module ships no arm64
+build" tells you what to do next.
+
+Signatures are ordered most-specific-first, for the same reason the planner's table is:
+`ECONNREFUSED 127.0.0.1:5432` is a missing database, not a generic network failure. A
+broad network rule placed first would swallow it and send the user after the wrong
+problem.
+
+Three rules hold for every verdict:
+
+- **It carries its evidence.** The matching log line is attached, so a diagnosis can be
+  checked rather than trusted.
+- **It carries a remedy.** A classification with no suggested action is half a diagnosis.
+- **It admits uncertainty.** When no signature matches, the coarse verdict is returned
+  marked low-confidence. Saying "I do not know why" beats inventing a cause that reads
+  convincingly and sends someone down the wrong path.
+
+`OUT_OF_MEMORY` was added to the §17 taxonomy during this phase. On a 1 GB container
+ceiling a React install reaches it routinely, and the remedy is a configuration change
+rather than a code fix, so folding it into `DEPENDENCY_INSTALL_FAILED` would hide the
+one thing worth knowing. Exit 137 with no explanatory output is treated as OOM at medium
+confidence: the kernel's OOM killer gives the process no chance to explain itself.

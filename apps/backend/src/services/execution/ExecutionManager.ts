@@ -18,6 +18,7 @@ import { PortManager, type PortDiagnosis } from '../ports/PortManager.js';
 import { ReadinessChecker, type ReadinessResult } from '../readiness/ReadinessChecker.js';
 import { joinWorkspace } from '../security/PathValidator.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
+import { FailureClassifier } from '../failures/FailureClassifier.js';
 
 export type Phase = 'none' | 'install' | 'build' | 'start';
 
@@ -187,6 +188,7 @@ export class ExecutionManager {
   private readonly ports: PortManager;
   private readonly readiness = new ReadinessChecker();
   private readonly validator = new RunPlanValidator();
+  private readonly classifier = new FailureClassifier();
 
   constructor(private readonly docker: DockerManager) {
     this.ports = new PortManager(docker);
@@ -282,7 +284,7 @@ export class ExecutionManager {
         waitForLog: (predicate, timeoutMs) => waitForLog(logs, predicate, timeoutMs),
         hostPort: () => this.ports.hostPortFor(container, opts.plan.expectedPort),
         waitForReady: (timeoutMs) =>
-          this.waitForReady(container, opts.plan, sentinels, timeoutMs),
+          this.waitForReady(container, opts.plan, sentinels, timeoutMs, logs),
         stop: () => this.docker.stop(container),
         cleanup: () => cleanup.cleanup(),
       };
@@ -298,13 +300,20 @@ export class ExecutionManager {
     try {
       const exit = await handle.exit;
       const { state, failure, phase } = classifyExit(exit, handle.sentinels);
+      const logs = handle.logs.buffer.all();
+
+      // Exit codes say which phase died; only the output says why.
+      const refined = failure
+        ? this.classifier.classify({ logs, exitCode: exit.exitCode, phase, fallback: failure })
+        : undefined;
+
       return {
         state,
         exitCode: exit.exitCode,
         timedOut: exit.timedOut,
         phaseReached: phase,
-        failure,
-        logs: handle.logs.buffer.all(),
+        failure: refined,
+        logs,
       };
     } finally {
       await handle.cleanup();
@@ -324,6 +333,7 @@ export class ExecutionManager {
     plan: RunPlan,
     sentinels: Set<string>,
     timeoutMs?: number,
+    logs?: LogManager,
   ): Promise<ReadyOutcome> {
     const budget = timeoutMs ?? config.timeouts.readinessMs;
 
@@ -373,7 +383,7 @@ export class ExecutionManager {
       state: ExecutionState.FAILED,
       hostPort,
       readiness,
-      ...(await this.explainNotReady(container, plan, sentinels, readiness)),
+      ...(await this.explainNotReady(container, plan, sentinels, readiness, logs)),
     };
   }
 
@@ -382,20 +392,28 @@ export class ExecutionManager {
     plan: RunPlan,
     sentinels: Set<string>,
     readiness: ReadinessResult,
+    logs?: LogManager,
   ): Promise<{ failure: FailureDetail; diagnosis?: PortDiagnosis }> {
     // A container that has exited cannot be introspected, and its exit code is the
     // more informative answer anyway.
     if (!(await this.isRunning(container))) {
       const info = await this.docker.inspect(container);
-      const { failure } = classifyExit(
-        { exitCode: info.State.ExitCode ?? -1, timedOut: false },
-        sentinels,
-      );
+      const exitCode = info.State.ExitCode ?? -1;
+      const { failure, phase } = classifyExit({ exitCode, timedOut: false }, sentinels);
+      const coarse = failure ?? {
+        code: FailureCode.UNKNOWN_RUNTIME_ERROR,
+        message: 'Container exited before becoming ready.',
+      };
       return {
-        failure: failure ?? {
-          code: FailureCode.UNKNOWN_RUNTIME_ERROR,
-          message: 'Container exited before becoming ready.',
-        },
+        failure: this.classifier.classify({
+          // Read at classification time, not when readiness began: the session path
+          // calls waitForReady immediately after launch, when nothing has been
+          // logged yet, so a snapshot taken then is always empty.
+          logs: logs?.buffer.all() ?? [],
+          exitCode,
+          phase,
+          fallback: coarse,
+        }),
       };
     }
 

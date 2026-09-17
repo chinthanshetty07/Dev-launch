@@ -15,7 +15,7 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 6 complete — rule-based plan generator.**
+**Phase 7 complete — failure classifier.**
 
 | | Phase | State |
 |---|---|---|
@@ -25,10 +25,21 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 4 | Log streaming (WebSocket) | ✅ Complete |
 | 5 | Repository analyzer | ✅ Complete |
 | 6 | Rule-based plan generator | ✅ Complete |
-| 7 | Failure classifier | Not started |
+| 7 | Failure classifier | ✅ Complete |
 | 8 | AI fallback planner + repair | Stretch |
 | 9 | Frontend | Not started |
 | 10 | Documentation + portfolio | Not started |
+
+### What Phase 7 delivers
+
+- `FailureClassifier` — 14 ordered signatures turning raw output into a specific cause:
+  out of memory, architecture mismatch, missing database, missing configuration, wrong
+  runtime version, peer-dependency conflict, native build failure, DNS/TLS failure,
+  missing module, and more
+- Every verdict carries **the log line that produced it** and a **remedy**, so a
+  diagnosis can be checked rather than trusted
+- When nothing matches it says so — the coarse verdict is returned marked
+  low-confidence rather than a plausible-sounding invention
 
 ### What Phase 6 delivers
 
@@ -153,6 +164,10 @@ its own because its remedy differs entirely from a port that never opened.
 **Readiness is not correctness.** READY means an HTTP server returned a complete
 response — *any* status. An app redirecting `/` to `/login` returns 302; an API with no
 root route returns 404. Both are running fine, and neither should fail a run.
+
+**A diagnosis you cannot check is not a diagnosis.** Every classification names the
+line that produced it, so a wrong verdict is visible rather than merely confident. Where
+no signature matches, the result is labelled uncertain instead of guessing.
 
 **"Started" and "ready" are different facts.** A container can be running perfectly
 while the application inside it never opens a socket. Distinguishing the two is what

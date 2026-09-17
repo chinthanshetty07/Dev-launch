@@ -28,6 +28,7 @@
   .seq { color:#484f58; user-select:none; min-width:44px; text-align:right; }
   .stderr { color:var(--err); }
   .meta { color:var(--warn); font-style:italic; }
+  .fix  { color:var(--accent); }
   .sys  { color:var(--dim); }
 </style>
 </head>
@@ -89,7 +90,14 @@ function connect(id, afterSeq) {
       line(`— ${msg.droppedTotal} earlier line(s) dropped; resuming at ${msg.oldestSeq} —`, 'meta');
     } else if (msg.type === 'state') {
       setState(msg.state, msg.url);
-      if (msg.failure) line(`— ${msg.failure.code}: ${msg.failure.message} —`, 'stderr');
+      if (msg.failure) {
+        const f = msg.failure;
+        const hedge = f.confidence === 'low' ? ' (uncertain)' : '';
+        line(`— ${f.code}${hedge}: ${f.message} —`, 'stderr');
+        // The evidence is what makes a diagnosis checkable rather than merely asserted.
+        if (f.evidence) line(`  evidence: ${f.evidence}`, 'meta');
+        if (f.remedy) line(`  remedy: ${f.remedy}`, 'meta');
+      }
     } else if (msg.type === 'end') {
       line(`— stream ended (${msg.reason}) —`, 'sys');
     }

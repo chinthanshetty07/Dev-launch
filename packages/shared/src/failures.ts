@@ -25,6 +25,12 @@ export const FailureCode = {
   ARCH_INCOMPATIBLE: 'ARCH_INCOMPATIBLE',
   /** Added: repository exceeded the intake size or file-count cap. */
   REPOSITORY_TOO_LARGE: 'REPOSITORY_TOO_LARGE',
+  /**
+   * Added: the kernel killed the process for exceeding the container's memory limit.
+   * Distinct because the remedy is a configuration change, not a code fix, and on a
+   * 1 GB ceiling a React install reaches it routinely.
+   */
+  OUT_OF_MEMORY: 'OUT_OF_MEMORY',
   CONTAINER_CREATE_FAILED: 'CONTAINER_CREATE_FAILED',
   UNKNOWN_RUNTIME_ERROR: 'UNKNOWN_RUNTIME_ERROR',
 } as const;
@@ -36,4 +42,13 @@ export interface FailureDetail {
   message: string;
   exitCode?: number;
   phase?: 'install' | 'build' | 'start';
+  /** The log line that decided the classification, so a verdict can be checked. */
+  evidence?: string;
+  /** What the user can actually do about it. */
+  remedy?: string;
+  /**
+   * 'high' means a signature matched. 'low' means this is the fallback and the message
+   * is a guess — saying so is better than implying a diagnosis we do not have.
+   */
+  confidence?: 'high' | 'medium' | 'low';
 }
