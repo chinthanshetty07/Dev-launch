@@ -1,0 +1,6 @@
+{
+  "name": "fixture-node-install-fail",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": { "start": "node main.js" }
+}

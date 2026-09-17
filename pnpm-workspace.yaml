@@ -1,0 +1,13 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# esbuild needs its postinstall to fetch the platform binary Vitest runs on.
+# cpu-features / ssh2 are optional native accelerators for dockerode's SSH transport,
+# which we never use — we talk to Docker over a unix socket. protobufjs's postinstall
+# is a codegen step nothing here depends on.
+allowBuilds:
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  ssh2: false

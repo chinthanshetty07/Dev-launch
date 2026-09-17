@@ -1,0 +1,7 @@
+{
+  "name": "fixture-node-http-basic",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zero-dependency HTTP server. Deterministic and offline by design.",
+  "scripts": { "start": "node server.js" }
+}

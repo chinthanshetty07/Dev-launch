@@ -1,0 +1,13 @@
+{
+  "runtime": { "language": "node", "version": "20" },
+  "packageManager": "npm",
+  "installCommand": "npm install --no-audit --no-fund",
+  "buildCommand": null,
+  "startCommand": "node server.js",
+  "workingDirectory": ".",
+  "expectedPort": 3000,
+  "hostBinding": "forced",
+  "environmentVariables": [],
+  "healthCheck": { "path": "/", "method": "GET", "expectedStatusCodes": [200] },
+  "planSource": "rule-based"
+}
