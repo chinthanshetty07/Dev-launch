@@ -16,14 +16,8 @@ import { LogManager } from '../logs/LogManager.js';
 import type { LogEntry } from '../logs/LogBuffer.js';
 import { PortManager, type PortDiagnosis } from '../ports/PortManager.js';
 import { ReadinessChecker, type ReadinessResult } from '../readiness/ReadinessChecker.js';
-import { assertImageApproved } from '../security/ImageAllowlist.js';
-import {
-  validateCommand,
-  validateEnvVarKey,
-  validateEnvVarValue,
-  validateOptionalCommand,
-} from '../security/CommandValidator.js';
-import { assertSafeRelativePath, joinWorkspace } from '../security/PathValidator.js';
+import { joinWorkspace } from '../security/PathValidator.js';
+import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 
 export type Phase = 'none' | 'install' | 'build' | 'start';
 
@@ -192,6 +186,7 @@ export class ExecutionManager {
 
   private readonly ports: PortManager;
   private readonly readiness = new ReadinessChecker();
+  private readonly validator = new RunPlanValidator();
 
   constructor(private readonly docker: DockerManager) {
     this.ports = new PortManager(docker);
@@ -206,16 +201,8 @@ export class ExecutionManager {
   async launch(opts: LaunchOptions): Promise<LaunchHandle> {
     const cleanup = new CleanupManager(this.docker);
 
-    // Validate before anything is created. A rejected plan must never reach Docker.
-    assertImageApproved(opts.image);
-    validateCommand(opts.plan.startCommand, 'startCommand');
-    validateOptionalCommand(opts.plan.installCommand, 'installCommand');
-    validateOptionalCommand(opts.plan.buildCommand, 'buildCommand');
-    assertSafeRelativePath(opts.plan.workingDirectory);
-    for (const v of opts.plan.environmentVariables) {
-      validateEnvVarKey(v.key);
-      if (v.value !== null && v.value !== undefined) validateEnvVarValue(v.key, v.value);
-    }
+    // One gate for every plan, whatever produced it. A rejected plan never reaches Docker.
+    this.validator.validate({ plan: opts.plan, image: opts.image });
 
     await this.docker.ensureImage(opts.image);
     if (opts.packageCacheVolume) await this.docker.ensureVolume(opts.packageCacheVolume);

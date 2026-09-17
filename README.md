@@ -15,7 +15,7 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 5 complete — repository analyzer.**
+**Phase 6 complete — rule-based plan generator.**
 
 | | Phase | State |
 |---|---|---|
@@ -24,11 +24,23 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 3 | Port + readiness | ✅ Complete |
 | 4 | Log streaming (WebSocket) | ✅ Complete |
 | 5 | Repository analyzer | ✅ Complete |
-| 6 | Rule-based plan generator | Not started |
+| 6 | Rule-based plan generator | ✅ Complete |
 | 7 | Failure classifier | Not started |
 | 8 | AI fallback planner + repair | Stretch |
 | 9 | Frontend | Not started |
 | 10 | Documentation + portfolio | Not started |
+
+### What Phase 6 delivers
+
+- `RuleBasedPlanner` — **22 deterministic detectors**, zero AI calls. Next, Nuxt,
+  SvelteKit, Astro, Remix, Gatsby, Docusaurus, Angular, Vue CLI, CRA, Vite, Parcel,
+  Webpack, NestJS, Fastify, Koa, Express and a generic Node fallback; Django, Flask,
+  FastAPI, Streamlit and Gradio
+- Table order places meta-frameworks ahead of the build tools they are built on —
+  SvelteKit, Astro and Nuxt all depend on Vite, so the naive check misidentifies all three
+- `RunPlanValidator` — one gate every plan passes through, whatever produced it
+- `devlaunch/python:3.12` runner image
+- Monorepos resolve to a single runnable package, or hand the choice to the user
 
 ### What Phase 5 delivers
 

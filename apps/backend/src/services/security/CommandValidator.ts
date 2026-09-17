@@ -9,7 +9,7 @@ export const ALLOWED_BINARIES: readonly string[] = Object.freeze([
   'npm', 'yarn', 'pnpm', 'npx',
   'node',
   'python', 'python3', 'pip', 'pip3',
-  'flask', 'gunicorn', 'uvicorn', 'django-admin',
+  'flask', 'gunicorn', 'uvicorn', 'django-admin', 'streamlit',
   'next', 'vite',
 ]);
 
@@ -24,6 +24,8 @@ export const ALLOWED_BINARIES: readonly string[] = Object.freeze([
  */
 export const ALLOWED_SCRIPT_NAMES: readonly string[] = Object.freeze([
   'dev', 'start', 'serve', 'preview', 'build',
+  // Gatsby's dev script is conventionally "develop"; Nest's is "start:dev".
+  'develop', 'start:dev', 'dev:server', 'serve:dev',
 ]);
 
 /**
@@ -102,8 +104,15 @@ export function validateCommand(command: string, field = 'command'): ValidatedCo
 
   // `npm run <name>` is the one form where an argument selects arbitrary code, so the
   // script name is constrained even though its body is not.
-  if (['npm', 'pnpm', 'yarn'].includes(binary) && argv[1] === 'run') {
-    const script = argv[2];
+  //
+  // yarn and pnpm also run a script when the first argument is not a builtin
+  // (`yarn dev`), so that shorthand is treated as `run` rather than waved through.
+  const PM_BUILTINS = ['run', 'install', 'ci', 'add', 'remove', 'exec', 'dlx', 'why', 'list'];
+  const isPm = ['npm', 'pnpm', 'yarn'].includes(binary);
+  const shorthand = isPm && argv[1] !== undefined && !PM_BUILTINS.includes(argv[1]);
+
+  if (isPm && (argv[1] === 'run' || shorthand)) {
+    const script = shorthand ? argv[1] : argv[2];
     if (!script) {
       throw new SecurityRejection(
         FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,

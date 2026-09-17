@@ -27,6 +27,7 @@ export interface ApprovedImage {
  */
 export const APPROVED_IMAGES: Readonly<Record<string, ApprovedImage>> = Object.freeze({
   'devlaunch/node:20': { language: 'node', version: '20' },
+  'devlaunch/python:3.12': { language: 'python', version: '3.12' },
 });
 
 export function isImageApproved(image: string): boolean {

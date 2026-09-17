@@ -24,18 +24,60 @@ demo is worse than no AI path.
 
 ### Detector roster
 
-`React` is **not** a detector — it is a library, not a runtime or dev server. Detect
-the actual dev server instead:
+Breadth here is the whole argument for the hybrid design: every framework covered
+deterministically is one more repository that never costs an AI call. `React` is **not**
+a detector — it is a library, not a runtime or dev server. Detect the actual dev server.
 
-| Signal | Type | Notes |
-|---|---|---|
-| `vite` dependency | Node + Vite | |
-| `next` dependency | Node + Next.js | |
-| `react-scripts` dependency | Node + CRA | Common on older repos; was missing from the original plan |
-| `webpack-dev-server` dependency | Node + Webpack | |
-| `express`, no frontend framework | Node + Express | |
-| `manage.py` present | Python + Django | |
-| `requirements.txt` + Flask import | Python + Flask | |
+**Order is load-bearing.** SvelteKit, Astro, Nuxt and Remix all depend on Vite, and
+Docusaurus depends on React. A table walked in the wrong order identifies every
+meta-framework as its underlying build tool and produces a plan that cannot work. Most
+specific first, always.
+
+| Signal | Type | Port | Host binding |
+|---|---|---|---|
+| `next` | Next.js | 3000 | `-H 0.0.0.0 -p 3000` |
+| `nuxt` | Nuxt | 3000 | `--host 0.0.0.0 --port 3000` |
+| `@sveltejs/kit` | SvelteKit | 5173 | `--host 0.0.0.0 --port 5173` |
+| `astro` | Astro | 4321 | `--host 0.0.0.0 --port 4321` |
+| `@remix-run/dev` | Remix | 3000 | `HOST` / `PORT` |
+| `gatsby` | Gatsby | 8000 | `-H 0.0.0.0 -p 8000` (script is `develop`) |
+| `@docusaurus/core` | Docusaurus | 3000 | `--host 0.0.0.0 --port 3000` |
+| `@angular/cli` or `angular.json` | Angular | 4200 | `--host 0.0.0.0 --port 4200 --disable-host-check` |
+| `@vue/cli-service` | Vue CLI | 8080 | `--host 0.0.0.0 --port 8080` |
+| `react-scripts` | CRA | 3000 | `HOST` / `PORT` / `BROWSER=none` |
+| `vite` | Vite | 5173 | `--host 0.0.0.0 --port 5173` |
+| `parcel` | Parcel | 1234 | `--host 0.0.0.0 --port 1234` |
+| `webpack-dev-server` | Webpack | 8080 | `--host 0.0.0.0 --port 8080` |
+| `@nestjs/core` | NestJS | 3000 | `PORT` (script `start:dev`) |
+| `fastify` | Fastify | 3000 | `HOST` — **binding unverified** |
+| `koa` | Koa | 3000 | `PORT` |
+| `express` | Express | 3000 | `PORT` / `HOST` |
+| a `dev`/`start`/`serve` script and nothing else | generic Node | 3000 | unverified |
+| `manage.py` | Django | 8000 | `runserver 0.0.0.0:8000` |
+| `flask` | Flask | 5000 | `FLASK_APP` + `--host=0.0.0.0` |
+| `fastapi` | FastAPI | 8000 | `uvicorn mod:app --host 0.0.0.0` |
+| `streamlit` | Streamlit | 8501 | `--server.address 0.0.0.0 --server.headless` |
+| `gradio` | Gradio | 7860 | `GRADIO_SERVER_NAME` |
+
+Four details that are the difference between a plan that works and one that hangs:
+
+- **Arguments reach the dev server only through `--`.** `npm run dev --host 0.0.0.0`
+  passes the flag to npm; `npm run dev -- --host 0.0.0.0` passes it to the script.
+- **Angular needs `--disable-host-check`**, because it rejects requests whose Host
+  header it does not recognise — which is every request arriving through a port mapping.
+- **Streamlit needs `--server.headless`**, or it prompts for an email address on first
+  run and blocks forever. Readiness would report a timeout that says nothing useful.
+- **CRA needs `BROWSER=none`**, since it otherwise tries to open a browser in a container.
+
+Fastify and the generic Node fallback declare `hostBinding: "unknown"` rather than
+`"forced"`: Fastify binds `127.0.0.1` in code, and a generic script could do anything.
+Claiming certainty there would turn a precise `PORT_BOUND_TO_LOCALHOST` diagnosis into a
+confusing timeout.
+
+Python packaging: `requirements.txt` → `pip install -r`, `pyproject.toml` →
+`pip install .`. A Pipfile-only project is declined rather than guessed at. The runner
+image puts `$HOME/.local/bin` on `PATH`, because pip installs console scripts there when
+running non-root and every Python start command otherwise fails with exit 127.
 
 ### Monorepos
 

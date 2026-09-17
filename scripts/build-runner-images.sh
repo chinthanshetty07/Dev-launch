@@ -9,5 +9,10 @@ cd "$(dirname "$0")/.."
 
 echo "==> Building devlaunch/node:20"
 docker build -f docker/runner/node20.Dockerfile -t devlaunch/node:20 docker/runner
+
+echo "==> Building devlaunch/python:3.12"
+docker build -f docker/runner/python312.Dockerfile -t devlaunch/python:3.12 docker/runner
+
 echo "==> Done"
-docker images devlaunch/node:20 --format '    {{.Repository}}:{{.Tag}}  {{.Size}}'
+docker images --format '    {{.Repository}}:{{.Tag}}  {{.Size}}' \
+  | grep -E 'devlaunch/(node|python)'
