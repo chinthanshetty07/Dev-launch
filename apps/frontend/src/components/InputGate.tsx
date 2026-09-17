@@ -52,8 +52,10 @@ export function InputGate({
     <section className="m-4 rounded-lg border border-warn/60 bg-panel p-4">
       <h2 className="mb-1 text-[13px] text-warn">Configuration required</h2>
       <p className="mb-3 text-[13px] text-muted">
-        These are declared in <code>.env.example</code> with no default. Values are held in
-        memory for this session only and never written to disk.
+        These are declared in <code>.env.example</code> with no default — each beside the
+        service that reads it. Values are held in memory for this session only and never
+        written to disk. Anything DevLaunch supplies itself, such as the database URL and
+        the services' own addresses, is not asked for.
       </p>
 
       <form
@@ -64,8 +66,14 @@ export function InputGate({
         className="space-y-2"
       >
         {pending.requiredEnv.map((v) => (
-          <label key={v.key} className="flex items-center gap-3 text-[13px]">
-            <span className="w-44 shrink-0 text-muted">{v.key}</span>
+          <label key={`${v.service ?? ''}:${v.key}`} className="flex items-center gap-3 text-[13px]">
+            <span className="w-44 shrink-0 text-muted">
+              {v.key}
+              {/* Which service asked. A project declares its configuration beside the
+                  service that reads it, so the same key can mean different things in
+                  two of them and a bare list of names would not say which is which. */}
+              {v.service && <span className="ml-2 text-[11px] opacity-60">{v.service}</span>}
+            </span>
             <input
               value={values[v.key] ?? ''}
               onChange={(e) => setValues((p) => ({ ...p, [v.key]: e.target.value }))}

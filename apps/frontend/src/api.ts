@@ -1,6 +1,6 @@
 import type {
   BackingView,
-  EnvExampleVar,
+  RequiredEnvVar,
   ExecutionState,
   FailureDetail,
   RunPlan,
@@ -10,7 +10,7 @@ import type {
 } from '@devlaunch/shared';
 
 export interface PendingInput {
-  requiredEnv: EnvExampleVar[];
+  requiredEnv: RequiredEnvVar[];
   choices?: WorkspacePackage[];
 }
 

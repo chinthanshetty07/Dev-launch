@@ -26,6 +26,23 @@ function newManager(): SessionManager {
   return mgr;
 }
 
+/**
+ * Answer the configuration gate, if the project stops at one.
+ *
+ * The fixture's backend declares APP_SECRET with no value and refuses to start without
+ * it, so every test that expects a running project has to supply it — which is the gate
+ * doing its job rather than an inconvenience.
+ */
+async function resolveGate(sessions: SessionManager, id: string): Promise<void> {
+  await until(sessions, id, [
+    ExecutionState.AWAITING_INPUT,
+    ExecutionState.READY,
+    ExecutionState.FAILED,
+  ]);
+  if (sessions.get(id)?.state !== ExecutionState.AWAITING_INPUT) return;
+  await sessions.resolve(id, { env: { APP_SECRET: 'supplied-by-the-test' } });
+}
+
 async function until(
   sessions: SessionManager,
   id: string,
@@ -63,6 +80,7 @@ describe('a repository made of several services', () => {
     // however well the rest of the project was orchestrated.
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     expect(await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED])).toBe(
       ExecutionState.READY,
     );
@@ -83,6 +101,7 @@ describe('a repository made of several services', () => {
   it('removes the database container with the session', async () => {
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
     const dbId = s.run!.backing[0]!.container.id;
 
@@ -98,6 +117,7 @@ describe('a repository made of several services', () => {
     // and a random host port guarantees `Failed to fetch`.
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     expect(await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED])).toBe(
       ExecutionState.READY,
     );
@@ -128,6 +148,7 @@ describe('a repository made of several services', () => {
     // produced a page that loaded and then failed every request it made.
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
 
     expect(await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED])).toBe(
       ExecutionState.READY,
@@ -154,6 +175,7 @@ describe('a repository made of several services', () => {
     // replaces the hardcoded localhost the browser cannot satisfy.
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
     expect(s.state).toBe(ExecutionState.READY);
 
@@ -176,6 +198,7 @@ describe('a repository made of several services', () => {
     // existing socket protocol carries one stream per session.
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
 
     const text = s.logs.buffer.all().map((l) => l.text);
@@ -188,6 +211,7 @@ describe('a repository made of several services', () => {
   it('releases every container when the session ends', async () => {
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
     const ids = s.run!.services.map((sv) => sv.handle.container.id);
     expect(ids.length).toBe(2);
@@ -206,6 +230,7 @@ describe('a repository made of several services', () => {
     // that had been told where to find it.
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
     expect(s.state).toBe(ExecutionState.READY);
 
@@ -238,6 +263,7 @@ describe('a repository made of several services', () => {
   it('reports what each container is consuming', async () => {
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await resolveGate(sessions, s.id);
     await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
 
     const stats = await sessions.stats(s.id);
@@ -247,6 +273,40 @@ describe('a repository made of several services', () => {
       expect(sample.memoryLimitBytes, `${name} should have a ceiling`).toBeGreaterThan(0);
       expect(sample.cpuPercent).toBeGreaterThanOrEqual(0);
     }
+
+    await sessions.stop(s.id);
+  }, 420_000);
+
+  it('asks for a secret declared beside the service that needs it', async () => {
+    // The gap this closes: the gate read only the repository root, so a backend's
+    // API key was never asked for and its container started without one — surfacing as
+    // an application crash with the reason buried in its own logs.
+    const sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+
+    expect(await until(sessions, s.id, [ExecutionState.AWAITING_INPUT, ExecutionState.FAILED])).toBe(
+      ExecutionState.AWAITING_INPUT,
+    );
+    expect(s.pending?.requiredEnv).toEqual([
+      { key: 'APP_SECRET', hasDefault: false, service: 'backend' },
+    ]);
+
+    // And nothing DevLaunch supplies itself: the database URL, the sibling addresses and
+    // the port are all decided later, so asking would be asking a person to guess.
+    const asked = s.pending!.requiredEnv.map((v) => v.key);
+    expect(asked).not.toContain('MONGODB_URI');
+    expect(asked).not.toContain('CORS_ORIGIN');
+    expect(asked).not.toContain('PORT');
+
+    await sessions.resolve(s.id, { env: { APP_SECRET: 'from-the-gate' } });
+    expect(await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED])).toBe(
+      ExecutionState.READY,
+    );
+
+    // The value reached the process, not merely the plan.
+    const api = s.run!.services.find((sv) => sv.role === 'api')!;
+    const body = (await (await fetch(api.url!)).json()) as { secret?: string };
+    expect(body.secret).toBe('from-the-gate');
 
     await sessions.stop(s.id);
   }, 420_000);

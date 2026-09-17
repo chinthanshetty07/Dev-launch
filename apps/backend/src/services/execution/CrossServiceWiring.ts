@@ -133,4 +133,17 @@ export function preferredApiHostPort(
   return ports[0];
 }
 
+/**
+ * Variables DevLaunch will fill in for this service, so nobody is asked for them.
+ *
+ * A gate that asks for `CORS_ORIGIN` is asking the user to guess a port DevLaunch has
+ * not chosen yet, and a value they supply would be overridden or — worse — respected and
+ * wrong. Knowing the *names* needs no URLs, which is why this can run before anything
+ * starts.
+ */
+export function wirableKeys(role: ServiceRunPlan['role'], declared: readonly string[]): string[] {
+  const candidates = role === 'web' ? API_BASE_KEYS : role === 'api' ? ORIGIN_KEYS : [];
+  return candidates.filter((key) => declared.includes(key));
+}
+
 const stripTrailingSlash = (url: string): string => url.replace(/\/+$/, '');

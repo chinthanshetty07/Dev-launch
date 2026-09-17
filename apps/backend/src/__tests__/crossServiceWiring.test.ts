@@ -101,6 +101,23 @@ describe('host port selection', () => {
     }
   });
 
+  it('treats a port held on the IPv4 wildcard as taken', async () => {
+    // How Docker publishes, and how most servers bind. A loopback-only probe walks
+    // straight past it: Node sets SO_REUSEADDR, so binding 127.0.0.1 succeeds alongside
+    // a wildcard holder. Publishing onto it anyway fails the whole project with an
+    // opaque `failed to set up container networking` from the daemon.
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    try {
+      expect(await isPortFree(port), 'a port held on 0.0.0.0 is not free').toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('prefers the wanted port and says so when it cannot have it', async () => {
     const taken = new Set<number>();
     const first = await choosePort([0], taken);

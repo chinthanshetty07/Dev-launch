@@ -401,6 +401,23 @@ export class DockerManager {
     }
   }
 
+  /**
+   * Network aliases already claimed by containers we manage.
+   *
+   * Docker does not reject a duplicate alias — it round-robins DNS between every
+   * container holding it. Two projects that both contain a service called `backend`
+   * therefore leave one project's frontend talking to the other project's API, which
+   * is not a degraded experience but a wrong answer that looks like a working one.
+   */
+  async claimedAliases(networkName: string): Promise<Set<string>> {
+    const claimed = new Set<string>();
+    for (const info of await this.listManaged('all')) {
+      const network = info.NetworkSettings?.Networks?.[networkName];
+      for (const alias of network?.Aliases ?? []) claimed.add(alias);
+    }
+    return claimed;
+  }
+
   async execCapture(container: Dockerode.Container, cmd: string[]): Promise<string> {
     const exec = await container.exec({
       Cmd: cmd,

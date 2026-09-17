@@ -133,6 +133,20 @@ export interface ServiceCandidate {
    * `REACT_APP_API_URL`, and a variable nobody reads is the same as no configuration.
    */
   envKeys?: string[];
+  /**
+   * Variables the service's own `.env.example` declares, and whether each ships a value.
+   *
+   * A repository's configuration lives beside the service that reads it — a backend's
+   * API key is in `backend/.env.example`, not at the root — so a gate that only reads
+   * the root asks for nothing and lets the container start without it.
+   */
+  envExample?: EnvExampleVar[];
+}
+
+/** A variable a session is waiting on, and the service that needs it. */
+export interface RequiredEnvVar extends EnvExampleVar {
+  /** Absent for a single-service session, which has only one thing to configure. */
+  service?: string;
 }
 
 /** A database or cache the repository expects to be running. */

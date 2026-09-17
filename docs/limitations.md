@@ -71,6 +71,15 @@ Capped at roughly 5 MB or 10,000 lines per session, whichever comes first. Verbo
 builds will have their earliest output evicted; a truncation marker makes this visible
 rather than silent.
 
+## One project at a time, per machine
+
+Concurrency is one session per DevLaunch process, which says nothing about two processes.
+Services share `devlaunch-net`, and Docker round-robins a duplicated network alias rather
+than refusing it, so two projects that both contain a service called `backend` would
+otherwise leave one project's frontend talking to the other's API. A bare name is claimed
+only when nothing already answers to it; the loser keeps its session-scoped alias and is
+told why.
+
 ## Readiness is not correctness
 
 READY means an HTTP server accepted a connection and returned a complete response. It

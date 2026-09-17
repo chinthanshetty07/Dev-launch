@@ -11,6 +11,7 @@ import type {
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
 import { readCapped } from './readCapped.js';
+import { parseEnvExample } from './parseEnvExample.js';
 import { backingFromEnvKeys, discoverServices } from './ServiceDiscovery.js';
 
 const LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb'];
@@ -35,22 +36,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-export function parseEnvExample(content: string): EnvExampleVar[] {
-  const out: EnvExampleVar[] = [];
-  for (const rawLine of content.split('\n')) {
-    const line = rawLine.trim();
-    if (line === '' || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).replace(/^export\s+/, '').trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-    // A value present in .env.example means the variable has a usable default, so it
-    // is not something the user must be prompted for.
-    const value = line.slice(eq + 1).trim();
-    out.push({ key, hasDefault: value.length > 0 });
-  }
-  return out;
-}
 
 /**
  * Minimal `packages:` reader for pnpm-workspace.yaml.

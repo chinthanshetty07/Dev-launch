@@ -14,16 +14,26 @@ import { createServer } from 'node:net';
  * healthy stack show `Failed to fetch`.
  */
 /**
- * Both loopback stacks, because a browser only uses one of them and it is not ours to
- * choose.
+ * Addresses that must all be bindable before a port counts as free.
  *
- * `localhost` resolves to `::1` before `127.0.0.1`, so a port free on IPv4 and taken on
- * IPv6 is not free at all: Docker publishes on IPv4 and succeeds, the page loads, and
- * the browser has been talking to whatever already held the IPv6 address. Measured on
- * this machine — a Vite server on `::1:5173` left `127.0.0.1:5173` bindable, and a
- * dual-stack bind on `::` succeeded too, so only the explicit `::1` probe sees it.
+ * One probe is not enough, and which one is missing depends on who is holding the port.
+ * Measured on a real machine, against two ports that were genuinely in use:
+ *
+ * ```
+ * held by Colima's forwarder on *:5001      held by a Vite server on ::1:5173
+ *   bind 127.0.0.1 -> free                    bind 127.0.0.1 -> free
+ *   bind ::1       -> free                    bind ::1       -> EADDRINUSE
+ *   bind 0.0.0.0   -> EADDRINUSE              bind 0.0.0.0   -> free
+ * ```
+ *
+ * Node sets `SO_REUSEADDR`, which on BSD lets a specific address bind alongside a
+ * wildcard — so a loopback probe walks straight past every Docker-published port, and a
+ * wildcard probe walks past anything bound to `::1`. Getting this wrong is not a near
+ * miss: publishing onto an occupied port fails the whole project with an opaque
+ * `failed to set up container networking` from the daemon, and publishing onto a port
+ * something else owns silently sends the browser to that other application.
  */
-const LOOPBACKS = ['127.0.0.1', '::1'] as const;
+const PROBE_ADDRESSES = ['0.0.0.0', '::1', '127.0.0.1'] as const;
 
 function canBind(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -35,7 +45,7 @@ function canBind(port: number, host: string): Promise<boolean> {
 }
 
 export async function isPortFree(port: number): Promise<boolean> {
-  for (const host of LOOPBACKS) {
+  for (const host of PROBE_ADDRESSES) {
     // A host with no IPv6 at all reports every ::1 bind as failing, which would make
     // every port look taken. Treat an address-family error as "nothing is there".
     const free = await canBind(port, host).catch(() => true);

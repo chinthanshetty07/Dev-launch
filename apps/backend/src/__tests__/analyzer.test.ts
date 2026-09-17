@@ -4,10 +4,10 @@ import { dirname, resolve } from 'node:path';
 import { normaliseRepoUrl, measureTree } from '../services/git/GitManager.js';
 import {
   RepositoryAnalyzer,
-  parseEnvExample,
   parsePnpmWorkspace,
   expandWorkspacePatterns,
 } from '../services/analysis/RepositoryAnalyzer.js';
+import { parseEnvExample } from '../services/analysis/parseEnvExample.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../fixtures');

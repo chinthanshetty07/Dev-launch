@@ -161,6 +161,14 @@ export class ProjectExecutor {
     const urls: Record<string, string> = {};
     const hostPorts: Record<string, number> = {};
 
+    // Another project may already be running a service of the same name. Docker
+    // round-robins a duplicated alias rather than refusing it, so claiming it again
+    // would send half of this project's traffic into that one.
+    const networkName = config.docker.networkName;
+    const claimed = (await this.exec.docker.networkExists(networkName))
+      ? await this.exec.docker.claimedAliases(networkName)
+      : new Set<string>();
+
     for (const plan of ordered) {
       if (plan.expectedPort === null) continue;
       const choice = await choosePort(
@@ -180,6 +188,26 @@ export class ProjectExecutor {
         );
       }
     }
+
+    /**
+     * The names this service answers to.
+     *
+     * The session-scoped one is always safe. The bare name is what a repository's own
+     * configuration expects — `http://backend:5000` in a file written for
+     * docker-compose — so it is claimed when it is free and declined when it is not,
+     * because sharing it silently is worse than not having it.
+     */
+    const aliasesFor = (name: string): string[] => {
+      const scoped = `${name}-${opts.sessionId.slice(0, 8)}`;
+      if (!claimed.has(name)) return [name, scoped];
+      opts.logs.write(
+        'stderr',
+        `Another running project already answers to "${name}", so this one is reachable ` +
+          `only as "${scoped}". Stop the other project if a service here expects the ` +
+          'plain name.',
+      );
+      return [scoped];
+    };
 
     for (const base of ordered) {
       // A variable the repository already supplies wins: the user's own value for
@@ -214,10 +242,7 @@ export class ProjectExecutor {
           sourceDir: opts.sourceDir,
           image: imageForRuntime(plan.runtime.language, plan.runtime.version),
           logs,
-          // Both the bare name and a session-scoped one: the bare name is what a
-          // repository's own configuration expects, and the scoped one stays unique if
-          // more than one session is ever allowed to run at a time.
-          networkAliases: [plan.name, `${plan.name}-${opts.sessionId.slice(0, 8)}`],
+          networkAliases: aliasesFor(plan.name),
           hostPort: hostPorts[plan.name],
         });
         const entry: ServiceRun = {
@@ -244,7 +269,7 @@ export class ProjectExecutor {
               sourceDir: opts.sourceDir,
               image: imageForRuntime(plan.runtime.language, plan.runtime.version),
               logs,
-              networkAliases: [plan.name, `${plan.name}-${opts.sessionId.slice(0, 8)}`],
+              networkAliases: aliasesFor(plan.name),
               hostPort: hostPorts[plan.name],
             });
           },

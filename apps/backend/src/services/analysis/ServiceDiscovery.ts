@@ -1,7 +1,9 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BackingService, ServiceCandidate, ServiceRole } from '@devlaunch/shared';
+import type { EnvExampleVar } from '@devlaunch/shared';
 import { readCapped } from './readCapped.js';
+import { parseEnvExample } from './parseEnvExample.js';
 
 /**
  * Find every part of a repository that has to run for the project to work.
@@ -161,6 +163,7 @@ async function inspectDir(
       evidence,
       declaredPort: await findDeclaredPort(base, manifest),
       envKeys,
+      envExample: await serviceEnvExample(base),
     };
     if (role === 'web') {
       const origins = await findCalledOrigins(base);
@@ -185,6 +188,7 @@ async function inspectDir(
       evidence: python.hasManagePy ? 'has manage.py' : `requires ${python.deps.find((d) => PYTHON_API_DEPS.includes(d))}`,
       declaredPort: python.hasManagePy ? 8000 : undefined,
       envKeys: pythonEnvKeys,
+      envExample: await serviceEnvExample(base),
     },
     backing: backingFor(python.deps, pythonEnvKeys),
   };
@@ -237,6 +241,21 @@ function backingFor(deps: string[], declaredKeys: string[]): Omit<BackingService
     });
   }
   return out;
+}
+
+/**
+ * The service's own `.env.example`, with whether each variable ships a value.
+ *
+ * Distinct from `serviceEnvKeys`, which answers "does this service read X" from source
+ * as well. Only a declaration with no value is a *request*: a variable with a default is
+ * documentation, and asking a person to supply one they already have is noise.
+ */
+async function serviceEnvExample(base: string): Promise<EnvExampleVar[] | undefined> {
+  for (const name of ['.env.example', '.env.sample', '.env.template']) {
+    const raw = await readCapped(join(base, name));
+    if (raw !== null) return parseEnvExample(raw);
+  }
+  return undefined;
 }
 
 /**

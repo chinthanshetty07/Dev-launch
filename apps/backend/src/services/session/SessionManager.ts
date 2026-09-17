@@ -4,7 +4,7 @@ import {
   ExecutionState,
   FailureCode,
   TERMINAL_STATES,
-  type EnvExampleVar,
+  type RequiredEnvVar,
   type FailureDetail,
   type RepositoryMetadata,
   type ProjectPlan,
@@ -24,6 +24,11 @@ import type { GitManager } from '../git/GitManager.js';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
 import type { ProjectPlanner } from '../planning/ProjectPlanner.js';
+import {
+  applyConfiguration,
+  requiredConfiguration,
+  requiredConfigurationForSingle,
+} from '../planning/RequiredConfiguration.js';
 import { ProjectExecutor, type ProjectRun } from '../execution/ProjectExecutor.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
@@ -52,7 +57,7 @@ const REPAIRABLE_FAILURES: readonly FailureCode[] = [
 /** What a session is blocked on while in AWAITING_INPUT. */
 export interface PendingInput {
   /** Variables declared without a default in .env.example. */
-  requiredEnv: EnvExampleVar[];
+  requiredEnv: RequiredEnvVar[];
   /** Runnable packages, when a monorepo offers more than one. */
   choices?: WorkspacePackage[];
 }
@@ -279,6 +284,20 @@ export class SessionManager extends EventEmitter {
         for (const skip of project.skipped) {
           session.logs.buffer.push('stderr', `Skipping ${skip.name}: ${skip.reason}`);
         }
+
+        // Each service's configuration lives beside it, so the gate reads every service
+        // rather than only the repository root — which is why a backend's API key was
+        // never asked for and its container started without one.
+        const missing = requiredConfiguration(
+          project.plan,
+          session.metadata.services ?? [],
+          session.metadata.backing ?? [],
+        );
+        if (missing.length > 0) {
+          this.awaitInput(session, { requiredEnv: missing });
+          return;
+        }
+
         await this.startProject(session, dir, req);
         return;
       }
@@ -354,7 +373,7 @@ export class SessionManager extends EventEmitter {
 
     // Pre-flight gate: ask for configuration before building a container that would
     // only crash for want of it.
-    const missing = (session.metadata.envExample ?? []).filter((v) => !v.hasDefault);
+    const missing = requiredConfigurationForSingle(session.metadata);
     if (missing.length > 0) {
       this.awaitInput(session, { requiredEnv: missing });
       return;
@@ -368,6 +387,22 @@ export class SessionManager extends EventEmitter {
       if (input.workspaceDir && session.sourceDir) {
         // The user picked a package; plan that directory specifically.
         await this.analyseAndPlan(session, session.sourceDir, {}, input.workspaceDir);
+        return;
+      }
+
+      // A gated project resumes into the project path, with each supplied value routed
+      // to the services that declared it — one service's API key must not land in
+      // another's environment.
+      if (session.project && session.sourceDir) {
+        if (input.env) {
+          session.project = applyConfiguration(
+            session.project,
+            session.metadata?.services ?? [],
+            input.env,
+          );
+        }
+        session.pending = undefined;
+        await this.startProject(session, session.sourceDir, {});
         return;
       }
 

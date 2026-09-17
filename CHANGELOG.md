@@ -1,5 +1,77 @@
 # Changelog
 
+## 2026-09-18 — The configuration gate reads every service, not just the root
+
+A repository keeps its configuration beside the service that reads it. `GROQ_API_KEY`
+lives in `backend/.env.example`, and the gate read only the repository root — so it asked
+for nothing, the container started without the key, and the failure arrived later as an
+application crash with the reason buried in its own logs. That is the exact shape of
+problem the gate exists to prevent.
+
+### Asking is the easy half
+
+The harder half is what *not* to ask for. DevLaunch supplies the database URL, the API
+base, the permitted origin and the port itself, and asking a person for any of them is
+asking them to guess a value that has not been decided yet — one that will either be
+overridden, or respected and wrong. `requiredConfiguration` subtracts all of them before
+asking anything, and the key names are knowable without the values, which is why it can
+run before a single container exists.
+
+Each request names the service that made it, because the same variable can mean different
+things in two services. Values are routed back only to services that declare them: one
+service's API key must not land in another's environment.
+
+### Two port-detection bugs, both found against a real machine
+
+The first attempt at this failed with `failed to set up container networking` from the
+daemon. `isPortFree` probed the loopback addresses and reported a port as free while
+Colima's forwarder held it on `*:5001`. Measured, against two ports genuinely in use:
+
+```
+held by Colima's forwarder on *:5001      held by a Vite server on ::1:5173
+  bind 127.0.0.1 -> free                    bind 127.0.0.1 -> free
+  bind ::1       -> free                    bind ::1       -> EADDRINUSE
+  bind 0.0.0.0   -> EADDRINUSE              bind 0.0.0.0   -> free
+```
+
+Node sets `SO_REUSEADDR`, which on BSD lets a specific address bind alongside a wildcard
+— so a loopback probe walks past every Docker-published port, and a wildcard probe walks
+past anything bound to `::1`. Neither alone is enough; all three are now required.
+
+### One project was answering another project's DNS
+
+The suite then failed with `{"success":false,"error":"Route not found"}` where a fixture's
+own JSON belonged. The web container had reached a **different project's** backend: a
+manually started session and the test suite each had a service called `backend`, both
+claiming the alias `backend` on the shared network, and Docker round-robins a duplicated
+alias rather than refusing it.
+
+Concurrency is one session per process, which says nothing about two processes. A bare
+name is now claimed only when no running container already answers to it, and the session
+scoped alias is always present. Declining is explained rather than silent, because a
+repository that expects `http://backend:5000` needs to know why it is not answering.
+
+### Verified
+
+Against real containers, the fixture's backend declares `APP_SECRET` with no value and
+refuses to start without it:
+
+```
+gate state: AWAITING_INPUT | asked: [{"key":"APP_SECRET","service":"backend"}]
+final: READY
+backend env: HOST=0.0.0.0 PORT=5000 APP_SECRET=from-the-gate
+             MONGODB_URI=mongodb://mongodb:27017/… CORS_ORIGIN=http://localhost:…
+[backend] database connected at mongodb:27017
+```
+
+Asked for one variable, attributed to one service; injected the other four without
+asking; and the supplied value reached the process, not merely the plan.
+
+- 9 unit tests, 1 integration test, 1 port test. **Proven able to fail:** reading only the
+  root turns 2 red, asking for injected variables turns 3 red, giving every service every
+  value turns 1 red, and a loopback-only port probe turns the wildcard test red.
+- 476 tests across three packages (473 passing, 3 skipped), zero residue.
+
 ## 2026-09-18 — Multi-service, phase E: a dashboard for a project, and controls
 
 Phases B–D made a project *run*. The dashboard still described it as though it were one
