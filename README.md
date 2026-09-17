@@ -15,13 +15,13 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 2 complete — security hardening.**
+**Phase 3 complete — port mapping and readiness.**
 
 | | Phase | State |
 |---|---|---|
 | 1 | Minimal Docker runner | ✅ Complete |
 | 2 | Security hardening | ✅ Complete |
-| 3 | Port + readiness | Not started |
+| 3 | Port + readiness | ✅ Complete |
 | 4 | Log streaming (WebSocket) | Not started |
 | 5 | Repository analyzer | Not started |
 | 6 | Rule-based plan generator | Not started |
@@ -29,6 +29,19 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 8 | AI fallback planner + repair | Stretch |
 | 9 | Frontend | Not started |
 | 10 | Documentation + portfolio | Not started |
+
+### What Phase 3 delivers
+
+- `PortManager` — host ports read back from the Docker API, never scanned. When an app
+  ignores the port it was given, the container's own `/proc/net/tcp` is parsed instead;
+  that is introspection of a process we started, not scanning the host
+- `ReadinessChecker` — 1s/2s/4s/8s backoff, bounded by budget, aborting early when the
+  container has already exited rather than burning the whole timeout
+- **`PORT_BOUND_TO_LOCALHOST` is now detected, not just defined.** A server on 127.0.0.1
+  is healthy and listening, yet Docker cannot forward to it. Reporting that as
+  "port not listening" sends you debugging the wrong problem
+- Readiness means *a server answered* — 404 and 302 and 500 all count. The configured
+  status code is recorded as a health hint and never gates the run
 
 ### What Phase 2 delivers
 
@@ -96,6 +109,10 @@ its own because its remedy differs entirely from a port that never opened.
 **Readiness is not correctness.** READY means an HTTP server returned a complete
 response — *any* status. An app redirecting `/` to `/login` returns 302; an API with no
 root route returns 404. Both are running fine, and neither should fail a run.
+
+**"Started" and "ready" are different facts.** A container can be running perfectly
+while the application inside it never opens a socket. Distinguishing the two is what
+makes a failure diagnosable rather than merely reported.
 
 **One policy chain is not enough.** `DOCKER-USER` filters only *forwarded* traffic. A
 packet from a container to the VM itself — its own gateway included — terminates

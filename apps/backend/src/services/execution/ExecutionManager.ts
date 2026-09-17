@@ -14,6 +14,8 @@ import { buildWrapperEnv, buildWrapperScript } from '../docker/wrapper.js';
 import { CleanupManager } from '../cleanup/CleanupManager.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { LogEntry } from '../logs/LogBuffer.js';
+import { PortManager, type PortDiagnosis } from '../ports/PortManager.js';
+import { ReadinessChecker, type ReadinessResult } from '../readiness/ReadinessChecker.js';
 import { assertImageApproved } from '../security/ImageAllowlist.js';
 import {
   validateCommand,
@@ -36,6 +38,17 @@ export interface LaunchOptions {
   timeoutMs?: number;
 }
 
+export interface ReadyOutcome {
+  state: ExecutionState;
+  readiness: ReadinessResult;
+  hostPort: string | null;
+  /** Reachable URL, present only when the application actually answered. */
+  url?: string;
+  failure?: FailureDetail;
+  /** Why the port was unreachable. Absent when the app became ready. */
+  diagnosis?: PortDiagnosis;
+}
+
 export interface LaunchHandle {
   sessionId: string;
   container: Dockerode.Container;
@@ -46,6 +59,8 @@ export interface LaunchHandle {
   exit: Promise<ExitResult>;
   waitForLog(predicate: (e: LogEntry) => boolean, timeoutMs: number): Promise<LogEntry | null>;
   hostPort(): Promise<string | null>;
+  /** Poll until the application answers, then explain the result either way. */
+  waitForReady(timeoutMs?: number): Promise<ReadyOutcome>;
   stop(): Promise<void>;
   cleanup(): Promise<{ errors: Error[] }>;
 }
@@ -168,7 +183,12 @@ export class ExecutionManager {
   /** Network the most recent launch used; undefined means the egress policy is absent. */
   lastNetworkUsed: string | undefined;
 
-  constructor(private readonly docker: DockerManager) {}
+  private readonly ports: PortManager;
+  private readonly readiness = new ReadinessChecker();
+
+  constructor(private readonly docker: DockerManager) {
+    this.ports = new PortManager(docker);
+  }
 
   /**
    * Create, populate, and start a container, returning before it finishes.
@@ -266,7 +286,9 @@ export class ExecutionManager {
                 : 'none',
         exit,
         waitForLog: (predicate, timeoutMs) => waitForLog(logs, predicate, timeoutMs),
-        hostPort: () => this.readHostPort(container, opts.plan.expectedPort),
+        hostPort: () => this.ports.hostPortFor(container, opts.plan.expectedPort),
+        waitForReady: (timeoutMs) =>
+          this.waitForReady(container, opts.plan, sentinels, timeoutMs),
         stop: () => this.docker.stop(container),
         cleanup: () => cleanup.cleanup(),
       };
@@ -295,15 +317,143 @@ export class ExecutionManager {
     }
   }
 
-  /** Read Docker's assigned host port. Never scans the host. */
-  private async readHostPort(
+  /**
+   * Wait for the application to answer, and explain the outcome either way.
+   *
+   * "Process started" and "application ready" are different facts, and separating them
+   * is the entire point of this phase. When readiness is not reached, the container's
+   * own listening sockets say *why* — a port bound to 127.0.0.1 is a completely
+   * different problem from a port that never opened.
+   */
+  private async waitForReady(
     container: Dockerode.Container,
-    internalPort: number | null,
-  ): Promise<string | null> {
-    if (!internalPort) return null;
-    const info = await this.docker.inspect(container);
-    const mapping = info.NetworkSettings?.Ports?.[`${internalPort}/tcp`];
-    return mapping?.[0]?.HostPort ?? null;
+    plan: RunPlan,
+    sentinels: Set<string>,
+    timeoutMs?: number,
+  ): Promise<ReadyOutcome> {
+    const budget = timeoutMs ?? config.timeouts.readinessMs;
+
+    if (plan.expectedPort === null) {
+      return {
+        state: ExecutionState.FAILED,
+        hostPort: null,
+        readiness: { ready: false, attempts: 0, elapsedMs: 0 },
+        failure: {
+          code: FailureCode.PORT_NOT_LISTENING,
+          message: 'Readiness cannot be checked: the plan declares no expected port.',
+        },
+      };
+    }
+
+    const hostPort = await this.ports.hostPortFor(container, plan.expectedPort);
+    if (hostPort === null) {
+      return {
+        state: ExecutionState.FAILED,
+        hostPort: null,
+        readiness: { ready: false, attempts: 0, elapsedMs: 0 },
+        failure: {
+          code: FailureCode.PORT_NOT_LISTENING,
+          message: `Docker published no host mapping for port ${plan.expectedPort}.`,
+        },
+      };
+    }
+
+    const readiness = await this.readiness.waitForReady({
+      port: hostPort,
+      healthCheck: plan.healthCheck,
+      timeoutMs: budget,
+      // Polling a container that has already died just burns the whole budget.
+      abortIf: async () => !(await this.isRunning(container)),
+    });
+
+    if (readiness.ready) {
+      return {
+        state: ExecutionState.READY,
+        hostPort,
+        url: `http://localhost:${hostPort}${plan.healthCheck.path}`,
+        readiness,
+      };
+    }
+
+    return {
+      state: ExecutionState.FAILED,
+      hostPort,
+      readiness,
+      ...(await this.explainNotReady(container, plan, sentinels, readiness)),
+    };
+  }
+
+  private async explainNotReady(
+    container: Dockerode.Container,
+    plan: RunPlan,
+    sentinels: Set<string>,
+    readiness: ReadinessResult,
+  ): Promise<{ failure: FailureDetail; diagnosis?: PortDiagnosis }> {
+    // A container that has exited cannot be introspected, and its exit code is the
+    // more informative answer anyway.
+    if (!(await this.isRunning(container))) {
+      const info = await this.docker.inspect(container);
+      const { failure } = classifyExit(
+        { exitCode: info.State.ExitCode ?? -1, timedOut: false },
+        sentinels,
+      );
+      return {
+        failure: failure ?? {
+          code: FailureCode.UNKNOWN_RUNTIME_ERROR,
+          message: 'Container exited before becoming ready.',
+        },
+      };
+    }
+
+    const diagnosis = await this.ports.diagnose(container, plan.expectedPort);
+
+    if (diagnosis.kind === 'loopback-only') {
+      return {
+        diagnosis,
+        failure: {
+          code: FailureCode.PORT_BOUND_TO_LOCALHOST,
+          message:
+            `The application is listening on ${diagnosis.socket.address}:${diagnosis.socket.port}, ` +
+            'which is reachable only from inside the container. Docker port mapping ' +
+            'cannot forward to it. Bind 0.0.0.0 instead.',
+          phase: 'start',
+        },
+      };
+    }
+
+    if (diagnosis.kind === 'not-listening') {
+      const seen = diagnosis.observed.map((o) => `${o.address}:${o.port}`).join(', ');
+      return {
+        diagnosis,
+        failure: {
+          code: FailureCode.PORT_NOT_LISTENING,
+          message:
+            `Nothing is listening on port ${plan.expectedPort}.` +
+            (seen ? ` Sockets observed: ${seen}.` : ' No listening sockets at all.'),
+          phase: 'start',
+        },
+      };
+    }
+
+    // Listening and reachable, but no HTTP response within the budget.
+    return {
+      diagnosis,
+      failure: {
+        code: FailureCode.READINESS_TIMEOUT,
+        message:
+          `Port ${plan.expectedPort} is open but returned no HTTP response within the ` +
+          `budget after ${readiness.attempts} attempts. Last error: ${readiness.lastError ?? 'none'}.`,
+        phase: 'start',
+      },
+    };
+  }
+
+  private async isRunning(container: Dockerode.Container): Promise<boolean> {
+    try {
+      return (await this.docker.inspect(container)).State.Running === true;
+    } catch {
+      return false;
+    }
   }
 }
 

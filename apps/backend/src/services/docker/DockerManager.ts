@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import Dockerode from 'dockerode';
 import tarFs from 'tar-fs';
 import { config } from '../../config/index.js';
@@ -249,6 +250,33 @@ export class DockerManager {
     } catch (err) {
       if ((err as { statusCode?: number }).statusCode !== 404) throw err;
     }
+  }
+
+  /**
+   * Run a command in a running container and capture its stdout.
+   *
+   * Used for container introspection only (reading /proc), never for executing
+   * repository commands — those always go through the wrapper's single lifecycle.
+   */
+  async execCapture(container: Dockerode.Container, cmd: string[]): Promise<string> {
+    const exec = await container.exec({
+      Cmd: cmd,
+      AttachStdout: true,
+      AttachStderr: true,
+    });
+    const stream = await exec.start({ hijack: true, stdin: false });
+
+    return new Promise<string>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      stdout.on('data', (c: Buffer) => chunks.push(c));
+      stderr.on('data', () => undefined);
+      container.modem.demuxStream(stream, stdout, stderr);
+      stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      stream.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      stream.on('error', reject);
+    });
   }
 
   async inspect(container: Dockerode.Container): Promise<Dockerode.ContainerInspectInfo> {
