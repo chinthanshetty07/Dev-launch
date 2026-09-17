@@ -1,5 +1,69 @@
 # Changelog
 
+## 2026-09-17 — Multi-service, phase B: run every service, together
+
+Phase A described a repository as the set of things that have to run. This phase runs
+them.
+
+### What this phase adds
+
+- **A plan per service, executed as one project.** `ProjectPlanner` reuses the 22
+  detectors on each service directory — each one is an ordinary project in its own right
+  — and adds only what a *set* needs: unique DNS names, and which service the session's
+  URL points at.
+- **A container per service, on the shared network.** Services reach each other by name:
+  `http://backend:5000` resolves from inside the frontend's container.
+- **Readiness belongs to the project.** It is `READY` only when every service that serves
+  traffic is; a frontend that answers while its API is still starting is not something a
+  person can use. A failure names the service it came from — "the project failed" is
+  useless when four things are running.
+- **Output stays readable.** Each service gets its own `LogManager`, so its sentinels
+  stay its own, and lines are tagged `[backend]` / `[frontend]` into the session stream
+  the socket protocol already carries.
+
+A single-service repository is untouched: it takes the same path it always did.
+
+### Two decisions worth recording
+
+**No per-session network.** The obvious design, and wrong here: the egress policy is
+keyed to `devlaunch-net`'s subnet (`172.31.250.0/24`), so a fresh network would come up
+with no RFC1918 filtering and no block on reaching the VM host. Measured first — two
+containers on `devlaunch-net` reach each other by alias, and the policy still applies —
+so aliases on the existing network give name resolution at no cost to isolation.
+
+**A service's declared port wins over the planner's default.** Alone, a service can be
+told to listen anywhere: DevLaunch injects `PORT` and reads the mapping back. In a
+project it cannot — siblings refer to it by name *and port*, and a frontend calling
+`http://backend:5000` is broken by moving the backend to 3000. The repository's own
+number is the only one everything else already agrees on. Found by a failing test, and
+the fix needed the `PORT` environment variable changed in step with the plan: the
+variable is what the application actually reads, so changing one without the other moves
+the number DevLaunch watches while the service keeps binding the old one.
+
+### Verified
+
+- `node-fullstack` runs both services, each on its own declared port, and the web
+  container reaches the api container by name. 5 integration tests against real Docker.
+- **Proven able to fail:** dropping network aliases turns name resolution into
+  `ENOTFOUND`; ignoring declared ports breaks the same test.
+- **Against the real repository.** `Prompt-Engine` now plans as `project:web+api`, and
+  both services start. Its frontend reaches `READY` on port 5173 — Vite's default, read
+  from its own configuration. Its backend still fails, for exactly one remaining reason:
+
+  ```
+  [backend] ❌ MongoDB connection error: connect ECONNREFUSED 127.0.0.1:27017
+  ```
+
+  That is phase C.
+- 441 tests across three packages (438 passing, 3 skipped), zero residue.
+
+### Still to come
+
+Databases are not provisioned (phase C), and a browser-hardcoded `http://localhost:5001`
+still cannot be satisfied — container aliases are invisible to the browser, so the API
+has to be published on the host port the page actually calls (phase D). The dashboard
+still shows one pipeline and one URL for what is now several services (phase E).
+
 ## 2026-09-17 — Multi-service, phase A: see the whole project, not one folder of it
 
 A real repository exposed the limitation this starts to close. `Prompt-Engine` reached

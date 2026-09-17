@@ -15,6 +15,13 @@ export interface CreateContainerOptions {
   workingDir: string;
   /** Internal port to expose. Phase 3 consumes the resulting host mapping. */
   exposePort?: number | null;
+  /**
+   * Names other containers on the same network can reach this one by.
+   *
+   * Only meaningful when `hostConfig.NetworkMode` names a user-defined network: Docker's
+   * embedded DNS serves aliases there, and not on the default bridge.
+   */
+  networkAliases?: string[];
 }
 
 export interface ExitResult {
@@ -95,8 +102,19 @@ export class DockerManager {
       bindings[key] = [{ HostPort: '' }];
     }
 
+    // Aliases are what let one service reach another by name. They live on the network
+    // endpoint, not on the host config, so a container that needs one has to declare it
+    // at creation time — attaching later would leave a window where the name does not
+    // resolve and a dependent service's first request fails.
+    const networkName = opts.hostConfig?.NetworkMode;
+    const networking =
+      opts.networkAliases?.length && typeof networkName === 'string'
+        ? { EndpointsConfig: { [networkName]: { Aliases: opts.networkAliases } } }
+        : undefined;
+
     return this.docker.createContainer({
       Image: opts.image,
+      NetworkingConfig: networking,
       Entrypoint: ['/bin/sh', `${config.container.wrapperPath}/run.sh`],
       Env: opts.env,
       Labels: opts.labels,

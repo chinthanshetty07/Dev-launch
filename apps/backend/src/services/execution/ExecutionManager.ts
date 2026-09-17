@@ -25,6 +25,12 @@ export type Phase = 'none' | 'install' | 'build' | 'start';
 export interface LaunchOptions {
   sessionId: string;
   plan: RunPlan;
+  /**
+   * Names other services reach this container by, on the shared network.
+   *
+   * Absent for a single-service run, which has nothing to talk to.
+   */
+  networkAliases?: string[];
   /** Host directory whose contents become /workspace inside the container. */
   sourceDir: string;
   image: string;
@@ -349,6 +355,10 @@ export class ExecutionManager {
         }),
         workingDir: workdir,
         exposePort: opts.plan.expectedPort,
+        // Only honoured on the user-defined network, which is also the only place the
+        // egress policy applies — so a project that needs name resolution gets the
+        // hardened network or neither.
+        networkAliases: networkName ? opts.networkAliases : undefined,
       });
     } catch (err) {
       await cleanup.cleanup();

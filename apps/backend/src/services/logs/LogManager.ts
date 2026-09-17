@@ -98,6 +98,17 @@ export class LogManager extends EventEmitter {
     });
   }
 
+  /**
+   * Record a line that did not come from a container's stream, and tell listeners.
+   *
+   * `buffer.push` alone stores a line without emitting, so a connected client sees it
+   * only on its next resume. Aggregated service output has to arrive live, which is the
+   * whole point of a log stream.
+   */
+  write(stream: LogStream, text: string, ts = Date.now()): void {
+    this.emit('entry', this.buffer.push(stream, text, ts));
+  }
+
   private ingest(stream: LogStream, raw: string): void {
     const line = stripAnsi(raw);
     if (line.length === 0) return;

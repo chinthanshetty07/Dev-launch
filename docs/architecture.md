@@ -140,6 +140,21 @@ QUEUED → CLONING → ANALYZING → PLANNING → VALIDATING ─┬─→ AWAITI
 and the monorepo picker need a "blocked on a person" state, and without one the only
 alternatives are guessing or failing.
 
+## Projects, not applications
+
+A repository is not one application. `frontend/` calling `backend/` is the ordinary shape
+of a web project, and running one of them yields a page that loads and then fails every
+request it makes — indistinguishable, from the browser, from a broken tool.
+
+When discovery finds more than one runnable service, each is planned separately (the same
+detectors, applied per directory) and run in its own container on the shared network,
+where Docker's embedded DNS resolves one service's name from another. The session is
+`READY` only when every service that serves traffic is.
+
+Services share `devlaunch-net` rather than getting a network of their own, because the
+egress policy is keyed to that network's subnet: a per-session network would come up
+unfiltered. Aliases give name resolution without touching isolation.
+
 ## Two clocks, deliberately
 
 - **Time to ready** (~10 min): clone, install, build, start, readiness.

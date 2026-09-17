@@ -9,6 +9,7 @@ import { SessionManager } from './services/session/SessionManager.js';
 import { GitManager } from './services/git/GitManager.js';
 import { RepositoryAnalyzer } from './services/analysis/RepositoryAnalyzer.js';
 import { RuleBasedPlanner } from './services/planning/RuleBasedPlanner.js';
+import { ProjectPlanner } from './services/planning/ProjectPlanner.js';
 import { GroqProvider } from './services/ai/GroqProvider.js';
 import { AIPlanner } from './services/ai/AIPlanner.js';
 import { AIRepair } from './services/ai/AIRepair.js';
@@ -72,10 +73,12 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     console.log('AI fallback disabled (no GROQ_API_KEY); planning is fully deterministic.');
   }
 
+  const planner = new RuleBasedPlanner(analyzer);
   const sessions = new SessionManager(exec, {
     git: new GitManager(),
     analyzer,
-    planner: new RuleBasedPlanner(analyzer),
+    planner,
+    projectPlanner: new ProjectPlanner(analyzer, planner),
     aiPlanner: provider ? new AIPlanner(provider) : undefined,
     aiRepair: provider ? new AIRepair(provider) : undefined,
   });

@@ -39,6 +39,33 @@ export const RunPlanSchema = z.object({
   planSource: z.enum(['rule-based', 'ai-fallback']),
 });
 
+/**
+ * One service's plan, within a project made of several.
+ *
+ * A repository is not one application: `frontend/` calling `backend/` is the ordinary
+ * shape of a web project, and running only one of them produces a page that loads and
+ * then fails every request it makes.
+ */
+export const ServiceRunPlanSchema = RunPlanSchema.extend({
+  /** Unique within the project, and the DNS name other services reach it on. */
+  name: z.string().min(1).regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'must be a DNS label'),
+  role: z.enum(['web', 'api', 'worker']),
+});
+
+/**
+ * Everything a repository needs running, as one unit.
+ *
+ * Readiness belongs to the project rather than to any single service: a frontend that
+ * answers while its API is still starting is not a project a person can use.
+ */
+export const ProjectPlanSchema = z.object({
+  services: z.array(ServiceRunPlanSchema).min(1),
+  planSource: z.enum(['rule-based', 'ai-fallback']),
+});
+
+export type ServiceRunPlan = z.infer<typeof ServiceRunPlanSchema>;
+export type ProjectPlan = z.infer<typeof ProjectPlanSchema>;
+
 export type RunPlan = z.infer<typeof RunPlanSchema>;
 export type EnvVar = z.infer<typeof EnvVarSchema>;
 export type HealthCheck = z.infer<typeof HealthCheckSchema>;

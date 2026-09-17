@@ -7,6 +7,7 @@ import {
   type EnvExampleVar,
   type FailureDetail,
   type RepositoryMetadata,
+  type ProjectPlan,
   type RunPlan,
   type WorkspacePackage,
 } from '@devlaunch/shared';
@@ -21,6 +22,8 @@ import {
 import type { GitManager } from '../git/GitManager.js';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
+import type { ProjectPlanner } from '../planning/ProjectPlanner.js';
+import { ProjectExecutor, type ProjectRun } from '../execution/ProjectExecutor.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import type { AIPlanner } from '../ai/AIPlanner.js';
@@ -65,6 +68,8 @@ export interface Session {
   /** Detector that matched, e.g. "vite". Null once the AI fallback exists and was used. */
   detected?: string | null;
   plan?: RunPlan;
+  /** Set instead of `plan` when the repository needs several services running together. */
+  project?: ProjectPlan;
   planWarnings?: string[];
   pending?: PendingInput;
 
@@ -74,6 +79,8 @@ export interface Session {
   endedReason?: string;
 
   handle?: LaunchHandle;
+  /** Set instead of `handle` for a multi-service run. */
+  run?: ProjectRun;
   cleanupRepo?: () => Promise<void>;
 
   /** Plans already tried by the repair loop, so an attempt cannot repeat one. */
@@ -106,6 +113,8 @@ export interface SessionManagerDeps {
   git?: GitManager;
   analyzer?: RepositoryAnalyzer;
   planner?: RuleBasedPlanner;
+  /** Plans repositories made of several services. Absent means single-service only. */
+  projectPlanner?: ProjectPlanner;
   /** Fallback planner. Absent in a no-AI deployment, which is the v1 default. */
   aiPlanner?: AIPlanner;
   /** Bounded repair. Absent in a no-AI deployment. */
@@ -250,6 +259,38 @@ export class SessionManager extends EventEmitter {
     session.metadata = await analyzer.analyze(dir, subdir ?? '.');
 
     this.setState(session, ExecutionState.PLANNING);
+
+    // A repository with several services is planned as one project. Tried first because
+    // the single-service planner would pick one of them and silently drop the rest —
+    // which produces a page that loads and then fails every request it makes.
+    if (!subdir && this.deps.projectPlanner && (session.metadata.services?.length ?? 0) > 1) {
+      const project = await this.deps.projectPlanner.planProject(dir, session.metadata);
+      for (const w of project.warnings) session.logs.buffer.push('stderr', `warning: ${w}`);
+
+      if (project.plan) {
+        session.project = project.plan;
+        session.detected = `project:${project.plan.services.map((sv) => sv.role).join('+')}`;
+        session.logs.buffer.push(
+          'stdout',
+          `Detected ${project.plan.services.length} services: ` +
+            project.plan.services.map((sv) => `${sv.name} (${sv.role})`).join(', '),
+        );
+        for (const skip of project.skipped) {
+          session.logs.buffer.push('stderr', `Skipping ${skip.name}: ${skip.reason}`);
+        }
+        await this.startProject(session, dir, req);
+        return;
+      }
+
+      // Falling through is deliberate: a repository whose services could not all be
+      // planned is still worth running as the one thing we do understand.
+      session.logs.buffer.push(
+        'stdout',
+        `Multi-service planning declined (${project.reason ?? 'no reason given'}); ` +
+          'continuing as a single service.',
+      );
+    }
+
     const outcome = subdir
       ? planner.plan(session.metadata, subdir)
       : await planner.planRepository(dir);
@@ -358,6 +399,56 @@ export class SessionManager extends EventEmitter {
       });
       await this.teardown(session);
     }
+  }
+
+  /**
+   * Run every service in a project, and gate readiness on all of them.
+   *
+   * Kept beside `startAndVerify` rather than folded into it: the single-service path is
+   * correct for the repositories it already handles, and a shared code path that has to
+   * branch on "is this one service or several" at every step is how both get worse.
+   */
+  private async startProject(
+    session: Session,
+    sourceDir: string,
+    req: LaunchRequest,
+  ): Promise<void> {
+    const project = session.project!;
+
+    this.setState(session, ExecutionState.VALIDATING);
+    // Every service passes the same gate a lone plan would.
+    for (const plan of project.services) {
+      this.validator.validate({
+        plan,
+        image: imageForRuntime(plan.runtime.language, plan.runtime.version),
+      });
+    }
+
+    this.setState(session, ExecutionState.STARTING);
+    const executor = new ProjectExecutor(this.exec);
+    session.run = await executor.launch({
+      sessionId: session.id,
+      project,
+      sourceDir,
+      logs: session.logs,
+    });
+
+    this.setState(session, ExecutionState.WAITING_FOR_READY);
+    const outcome = await executor.waitForReady(session.run, req.readinessTimeoutMs);
+
+    if (outcome.state === ExecutionState.READY) {
+      session.readyAt = Date.now();
+      session.url = outcome.url;
+      session.failure = undefined;
+      for (const service of session.run.services) service.handle.clearStartupBudget?.();
+      this.setState(session, ExecutionState.READY);
+      this.armLifetime(session);
+      return;
+    }
+
+    session.failure = outcome.failure;
+    this.setState(session, ExecutionState.FAILED);
+    await this.teardown(session);
   }
 
   private async startAndVerify(
@@ -666,7 +757,8 @@ export class SessionManager extends EventEmitter {
       // cleanup() collects per-container failures and resolves successfully, so the
       // catch below never sees them. Ignoring the returned errors meant a container
       // that failed to stop left no trace at all until the next process start.
-      const result = await session.handle?.cleanup();
+      const result = session.run ? await session.run.cleanup() : await session.handle?.cleanup();
+      session.run = undefined;
       for (const err of result?.errors ?? []) {
         session.logs.buffer.push('stderr', `cleanup warning: ${err.message}`);
       }
