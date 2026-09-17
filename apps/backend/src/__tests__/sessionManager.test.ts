@@ -147,12 +147,25 @@ describe('SessionManager', () => {
   });
 
   it('keeps an active session even when finished ones pile up', async () => {
+    // The name claims an interaction between eviction pressure and a live session, so
+    // the test has to create that pressure. Previously it only proved a lone session
+    // survived in isolation, which eviction never threatened.
     const stalled = new SessionManager(
       fakeExec(() => new Promise<ReadyOutcome>(() => {}) as unknown as ReadyOutcome),
     );
     const active = await stalled.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
     await settle();
-    expect(stalled.get(active.id)).toBeDefined();
+
+    // Force finished sessions past the retention cap alongside the active one.
+    const finished = new SessionManager(fakeExec(failed));
+    for (let i = 0; i < config.concurrency.retainFinished + 3; i++) {
+      await finished.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+      await settle();
+    }
+    (stalled as unknown as { evictFinished(): void }).evictFinished();
+
+    expect(stalled.get(active.id), 'an active session must never be evicted').toBeDefined();
     await stalled.shutdown();
+    await finished.shutdown();
   });
 });

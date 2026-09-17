@@ -116,6 +116,11 @@ describe('FailureClassifier — behaviour', () => {
   });
 
   it('gives every signature a remedy', () => {
+    // Guard the loop itself: with an empty table the body never runs and the
+    // assertions below are vacuously true, so this test would stay green even if
+    // every signature were deleted.
+    expect(SIGNATURES.length).toBeGreaterThan(10);
+
     // A classification with no suggested action is only half a diagnosis.
     for (const sig of SIGNATURES) {
       expect(sig.remedy.length, `${sig.id} needs a remedy`).toBeGreaterThan(20);

@@ -4,14 +4,38 @@ import type { AIProvider, PlanRequest, RepairRequest } from './AIProvider.js';
 import { planPrompt, repairPrompt, systemPrompt } from './prompts.js';
 
 const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
-const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+/**
+ * Groq's catalogue changes; this is verified against a live account rather than
+ * assumed. Override with GROQ_MODEL, and list what an account can actually reach at
+ * https://api.groq.com/openai/v1/models.
+ */
+const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 
 export interface GroqOptions {
   apiKey?: string;
   model?: string;
   timeoutMs?: number;
+  /** Retries on HTTP 429. Rate limits are normal operation, not an exceptional failure. */
+  maxRetries?: number;
   /** Injectable for tests, so no network is required to exercise the parsing path. */
   fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * How long to wait before retrying a rate-limited request.
+ *
+ * Groq sends `retry-after`, and also states the delay in the error message. Both are
+ * preferred over a guess, because the server knows when the window actually resets.
+ */
+export function retryDelayMs(res: Response, body: string, attempt: number): number {
+  const header = Number(res.headers.get('retry-after'));
+  if (Number.isFinite(header) && header > 0) return Math.min(header * 1000 + 250, 30_000);
+
+  const stated = /try again in ([\d.]+)s/i.exec(body);
+  if (stated) return Math.min(Number(stated[1]) * 1000 + 250, 30_000);
+
+  return Math.min(1000 * 2 ** attempt, 30_000);
 }
 
 export class AIUnavailable extends Error {}
@@ -60,9 +84,35 @@ export class GroqProvider implements AIProvider {
     const model = this.opts.model ?? process.env.GROQ_MODEL ?? DEFAULT_MODEL;
     const doFetch = this.opts.fetchImpl ?? fetch;
 
-    let res: Response;
+    // A free tier resets its token budget once a minute, and the server states how
+    // long to wait. Five retries at server-stated (capped) delays covers a full window;
+    // three did not, which made the suite non-deterministic under load.
+    const maxRetries = this.opts.maxRetries ?? 5;
+    const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.request(doFetch, key, model, userPrompt);
+
+      // A rate limit is a "wait", not a "no". Groq states how long to wait, so the
+      // delay comes from the server rather than from a guess.
+      if (res.status === 429 && attempt < maxRetries) {
+        const body = await res.text().catch(() => '');
+        await sleep(retryDelayMs(res, body, attempt));
+        continue;
+      }
+
+      return this.parse(res, model);
+    }
+  }
+
+  private async request(
+    doFetch: typeof fetch,
+    key: string,
+    model: string,
+    userPrompt: string,
+  ): Promise<Response> {
     try {
-      res = await doFetch(ENDPOINT, {
+      return await doFetch(ENDPOINT, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -88,14 +138,21 @@ export class GroqProvider implements AIProvider {
         `Could not reach Groq: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
 
+  private async parse(res: Response, model: string): Promise<unknown> {
     if (!res.ok) {
       // The body may echo request content; the key is never in it, and is never logged.
       const detail = await res.text().catch(() => '');
-      throw new AIUnavailable(
-        `Groq returned ${res.status}${res.status === 401 ? ' (check GROQ_API_KEY)' : ''}: ` +
-          detail.slice(0, 300),
-      );
+      const hint =
+        res.status === 401
+          ? ' (check GROQ_API_KEY)'
+          : res.status === 404
+            ? ` (model "${model}" unavailable; set GROQ_MODEL to one this account can reach)`
+            : res.status === 429
+              ? ' (rate limited, and retries were exhausted)'
+              : '';
+      throw new AIUnavailable(`Groq returned ${res.status}${hint}: ${detail.slice(0, 300)}`);
     }
 
     const body = (await res.json()) as {

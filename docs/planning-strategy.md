@@ -394,3 +394,19 @@ Excluded deliberately: a missing database cannot be provisioned by v1, an x86-on
 dependency cannot be rewritten, `OUT_OF_MEMORY` is a configuration change rather than a
 plan change, and `MISSING_ENV` needs a person. Retrying those spends a model call to
 arrive at the same answer.
+
+### Operational notes from running it live
+
+- **Model availability is per-account.** `llama-3.3-70b-versatile` was not reachable on
+  the account this was verified against. The default is `openai/gpt-oss-120b`, and a 404
+  now names the remedy (`set GROQ_MODEL`) rather than reporting an opaque failure. List
+  what an account can reach at `https://api.groq.com/openai/v1/models`.
+- **Rate limits are normal operation, not an exceptional failure.** A free tier caps at
+  8000 tokens per minute and a plan request costs roughly 1,600, so a repair loop can
+  hit the ceiling mid-session. A 429 is a *wait*, not a *no*: the provider retries using
+  the delay the server states, since the server knows when its window resets. Failing a
+  session on the first 429 would have made the fallback unusable on a free tier.
+- **A live model is not a test oracle.** Asserting that it cooperates would be a flaky
+  test of someone else's service. The invariants worth asserting are ours: either a
+  valid plan comes back, or it is rejected for a stated reason. An unsafe command is
+  never executable either way.

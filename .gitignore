@@ -3,5 +3,5 @@ dist/
 .env
 .DS_Store
 *.log
-.devlaunch-tmp/
 apps/frontend/dist/
+.claude/tasks/

@@ -72,14 +72,22 @@ describe('Phase 5 — repository intake (network)', () => {
   }, 180_000);
 
   it('leaves nothing behind when a clone is rejected', async () => {
-    const tiny = new GitManager({ maxBytes: 1 });
-    await expect(tiny.clone('https://github.com/octocat/Hello-World')).rejects.toThrow();
-    // The failure path must clean up after itself, not leak a partial clone.
-    const { readdir } = await import('node:fs/promises');
+    // A dedicated root, not the shared default. Asserting the shared directory is
+    // empty made this test depend on every other file that clones — it failed when a
+    // different suite legitimately had a clone in flight, which says nothing about
+    // whether *this* failure path cleans up.
+    const { mkdtemp, readdir } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
-    const root = join(tmpdir(), 'devlaunch-repos');
-    const left = await readdir(root).catch(() => []);
-    expect(left).toEqual([]);
+    const root = await mkdtemp(join(tmpdir(), 'devlaunch-clonetest-'));
+
+    const tiny = new GitManager({ rootDir: root, maxBytes: 1 });
+    await expect(tiny.clone('https://github.com/octocat/Hello-World')).rejects.toThrow();
+
+    // The failure path must clean up after itself, not leak a partial clone.
+    expect(await readdir(root)).toEqual([]);
+
+    const { rm } = await import('node:fs/promises');
+    await rm(root, { recursive: true, force: true });
   }, 180_000);
 });

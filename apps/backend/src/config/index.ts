@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +41,17 @@ export const config = {
     /** Label applied to every container we create, so cleanup can find orphans. */
     managedLabel: 'com.devlaunch.managed',
     sessionLabel: 'com.devlaunch.session',
+    /**
+     * Identifies the process that created a container.
+     *
+     * Orphan sweeping matched on the managed label alone, which meant any DevLaunch
+     * process removed every other one's containers — a developer running `pnpm start`
+     * in one terminal and `pnpm test` in another had live containers destroyed
+     * underneath them. Scoping by instance keeps a sweep to containers whose creator is
+     * genuinely gone.
+     */
+    instanceLabel: 'com.devlaunch.instance',
+    instanceId: randomUUID(),
     /**
      * User-defined network carrying the RFC1918 egress policy installed by
      * scripts/setup-network-policy.sh. If it does not exist the runner falls back to

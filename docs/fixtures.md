@@ -19,6 +19,7 @@ They are deliberately not in the automated suite.
 | `python-django-basic` | Django detection from `manage.py` |
 | `node-monorepo` | Workspace with exactly one runnable package |
 | `node-monorepo-ambiguous` | Two runnable packages → the user is asked which |
+| `unrecognized-app` | No known framework and a non-approved script name, so only the AI fallback can plan it. Its README carries a live prompt injection, used to prove the allowlist rejects the payload |
 
 ## Failure paths
 

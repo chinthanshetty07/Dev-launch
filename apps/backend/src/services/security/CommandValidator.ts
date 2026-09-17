@@ -149,6 +149,51 @@ export const RESERVED_ENV_PREFIX = 'DL_';
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/**
+ * Environment variables that grant code execution without touching the command.
+ *
+ * The command allowlist constrains what runs. It does nothing about *how* a runtime
+ * bootstraps, and several variables inject code before the program's first line:
+ * `NODE_OPTIONS=--require=./evil.js`, `LD_PRELOAD`, `PYTHONSTARTUP`, or simply `PATH`
+ * pointing at an attacker-supplied `node`.
+ *
+ * This channel defeated the allowlist entirely: a plan whose startCommand validated
+ * cleanly still executed arbitrary code. Found by adversarial review, reproduced
+ * against the real runner image with the full hardening profile applied.
+ *
+ * A key allowlist is not possible — applications legitimately need arbitrary
+ * configuration — so this is a denylist of the known execution vectors.
+ */
+const CODE_INJECTING_ENV_KEYS: ReadonlySet<string> = new Set([
+  // Resolution hijacking
+  'PATH', 'IFS',
+  // Node
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_REPL_EXTERNAL_MODULE',
+  // Dynamic linker (Linux and macOS)
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT',
+  'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+  // glibc loads modules from these paths, which is the standard LD_PRELOAD alternative
+  // once LD_* is blocked. Added during cold review of the LD_* fix itself.
+  'GCONV_PATH', 'LOCPATH', 'NLSPATH', 'RESOLV_HOST_CONF',
+  // Python
+  'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'PYTHONEXECUTABLE',
+  // Shells
+  'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS',
+  // Other runtimes
+  'PERL5OPT', 'PERL5LIB', 'RUBYOPT', 'RUBYLIB',
+  // Git can be made to run a command
+  'GIT_SSH_COMMAND', 'GIT_EXTERNAL_DIFF', 'GIT_PAGER',
+]);
+
+/** Prefixes that are reserved or that configure a package manager's own execution. */
+const DENIED_ENV_PREFIXES: readonly string[] = [
+  RESERVED_ENV_PREFIX,
+  'LD_',
+  'DYLD_',
+  'npm_config_',
+  'NPM_CONFIG_',
+];
+
 export function validateEnvVarKey(key: string): string {
   if (!ENV_KEY_PATTERN.test(key)) {
     throw new SecurityRejection(
@@ -163,6 +208,28 @@ export function validateEnvVarKey(key: string): string {
         'prefix, which carries the wrapper\'s validated commands.',
     );
   }
+
+  // Checked case-insensitively: the environment is case-sensitive on Linux, but a
+  // near-miss like "Node_Options" signals intent and has no legitimate use.
+  const upper = key.toUpperCase();
+  if (CODE_INJECTING_ENV_KEYS.has(upper)) {
+    throw new SecurityRejection(
+      FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,
+      `Environment variable ${JSON.stringify(key)} can inject code before the start ` +
+        'command runs, which would bypass the command allowlist entirely.',
+    );
+  }
+
+  const deniedPrefix = DENIED_ENV_PREFIXES.find(
+    (p) => key.startsWith(p) || upper.startsWith(p.toUpperCase()),
+  );
+  if (deniedPrefix) {
+    throw new SecurityRejection(
+      FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,
+      `Environment variable ${JSON.stringify(key)} uses the reserved "${deniedPrefix}" prefix.`,
+    );
+  }
+
   return key;
 }
 

@@ -23,7 +23,18 @@ function loadEnv(): void {
 }
 loadEnv();
 
-const configured = GroqProvider.isConfigured();
+/**
+ * Live tests are opt-in, not merely key-gated.
+ *
+ * They call someone else's rate-limited service, so they cannot be deterministic: a
+ * free tier caps at 8000 tokens per minute, and a full suite run can exhaust the window
+ * regardless of retries. Leaving them in the default suite meant a green run and a red
+ * run proved the same thing, which makes the suite useless as a signal.
+ *
+ * Run them deliberately:  DEVLAUNCH_LIVE_AI=1 pnpm --filter @devlaunch/backend test
+ */
+const optedIn = process.env.DEVLAUNCH_LIVE_AI === '1';
+const configured = GroqProvider.isConfigured() && optedIn;
 
 /**
  * Exercises the real Groq API.
@@ -35,17 +46,23 @@ const configured = GroqProvider.isConfigured();
 describe.skipIf(!configured)('Phase 8 — live Groq', () => {
   const analyzer = new RepositoryAnalyzer();
   let planner: AIPlanner;
+  let metadata: Awaited<ReturnType<RepositoryAnalyzer['analyze']>>;
+  let planned: Awaited<ReturnType<AIPlanner['plan']>>;
 
-  beforeAll(() => {
+  // One planning call, shared. Each live call costs ~1,600 tokens against an 8000 TPM
+  // free tier, so four calls in a suite run exhaust the window faster than retries can
+  // absorb — which is what made this file flaky.
+  beforeAll(async () => {
     planner = new AIPlanner(new GroqProvider());
-  });
-
-  it('plans an unrecognised repository, and the result survives validation', async () => {
-    const metadata = await analyzer.analyze(`${FIXTURES}/unrecognized-app`);
-    const { plan, note } = await planner.plan(
+    metadata = await analyzer.analyze(`${FIXTURES}/unrecognized-app`);
+    planned = await planner.plan(
       metadata,
       'package.json present but no recognised framework or start script.',
     );
+  }, 120_000);
+
+  it('plans an unrecognised repository, and the result survives validation', () => {
+    const { plan, note } = planned;
 
     // Whatever the model chose, these are enforced rather than requested.
     expect(plan.planSource).toBe('ai-fallback');
@@ -58,16 +75,14 @@ describe.skipIf(!configured)('Phase 8 — live Groq', () => {
     expect(plan.startCommand).not.toMatch(/curl|evil/i);
 
     console.log(`  live plan: ${plan.startCommand}${note ? ` — ${note}` : ''}`);
-  }, 120_000);
+  });
 
   it('proposes a different plan when asked to repair one', async () => {
-    const metadata = await analyzer.analyze(`${FIXTURES}/unrecognized-app`);
     const { AIRepair } = await import('../../services/ai/AIRepair.js');
     const repair = new AIRepair(new GroqProvider());
 
-    const broken = (await planner.plan(metadata, 'no match')).plan;
     const result = await repair.repair({
-      plan: { ...broken, startCommand: 'node does-not-exist.js' },
+      plan: { ...planned.plan, startCommand: 'node does-not-exist.js' },
       failure: {
         code: 'START_COMMAND_FAILED',
         message: 'Start command exited with code 1.',
@@ -83,10 +98,50 @@ describe.skipIf(!configured)('Phase 8 — live Groq', () => {
     expect(result.plan.planSource).toBe('ai-fallback');
     console.log(`  live repair: ${result.plan.startCommand}`);
   }, 120_000);
+
+  it('never lets an unsafe repair through, whatever the model proposes', async () => {
+    // Asserting that a live model cooperates would be a flaky test of someone else's
+    // service. The invariant worth asserting is ours: either a valid plan comes back,
+    // or it is rejected for a stated reason. An unsafe command is never executable.
+    const { AIRepair } = await import('../../services/ai/AIRepair.js');
+    const repair = new AIRepair(new GroqProvider());
+
+    const outcome = await repair
+      .repair({
+        plan: {
+          runtime: { language: 'node', version: '20' },
+          packageManager: 'npm',
+          installCommand: null,
+          buildCommand: null,
+          startCommand: 'node does-not-exist.js',
+          workingDirectory: '.',
+          expectedPort: 3000,
+          hostBinding: 'unknown',
+          environmentVariables: [],
+          healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200] },
+          planSource: 'ai-fallback',
+        } as never,
+        failure: { code: 'START_COMMAND_FAILED', message: 'exited 1' } as never,
+        logs: "Error: Cannot find module '/workspace/does-not-exist.js'",
+        metadata,
+        previousAttempts: [],
+      })
+      .then((r) => ({ ok: true as const, plan: r.plan }))
+      .catch((e: unknown) => ({ ok: false as const, error: e }));
+
+    if (outcome.ok) {
+      expect(outcome.plan.workingDirectory).toBe('.');
+      expect(outcome.plan.planSource).toBe('ai-fallback');
+      expect(outcome.plan.startCommand).not.toMatch(/curl|wget|;|\||&&|\$\(/);
+    } else {
+      // A rejection is a correct outcome, not a test failure.
+      expect(String(outcome.error)).toMatch(/rejected|identical|not an approved/i);
+    }
+  }, 120_000);
 });
 
 describe.skipIf(configured)('Phase 8 — live Groq (skipped)', () => {
-  it('is skipped because GROQ_API_KEY is not set', () => {
+  it('is skipped unless DEVLAUNCH_LIVE_AI=1 and GROQ_API_KEY are both set', () => {
     expect(configured).toBe(false);
   });
 });

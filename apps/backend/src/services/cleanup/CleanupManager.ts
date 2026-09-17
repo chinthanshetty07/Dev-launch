@@ -52,11 +52,33 @@ export class CleanupManager {
   }
 
   /**
-   * Remove containers left behind by a crashed backend. Safe because the label is
-   * only ever applied by DevLaunch.
+   * Remove containers this process created and has not released.
+   *
+   * Deliberately scoped to the current instance. Sweeping every container carrying the
+   * managed label removed containers belonging to *other live* DevLaunch processes —
+   * a developer running the server in one terminal and the test suite in another had
+   * working sessions destroyed mid-run, and the session kept reporting READY against a
+   * URL that no longer existed.
+   *
+   * Containers from genuinely dead processes are handled by `sweepAllOrphans`, which is
+   * called only at startup, when no other instance of ours can be mid-run.
    */
   static async sweepOrphans(docker: DockerManager): Promise<number> {
-    const managed = await docker.listManaged();
+    return CleanupManager.sweep(docker, 'instance');
+  }
+
+  /**
+   * Remove every DevLaunch container regardless of creator.
+   *
+   * Only safe at startup: a crashed process leaves containers nothing else will claim,
+   * and at that moment this process is by definition not mid-run.
+   */
+  static async sweepAllOrphans(docker: DockerManager): Promise<number> {
+    return CleanupManager.sweep(docker, 'all');
+  }
+
+  private static async sweep(docker: DockerManager, scope: 'all' | 'instance'): Promise<number> {
+    const managed = await docker.listManaged(scope);
     let removed = 0;
     for (const info of managed) {
       try {

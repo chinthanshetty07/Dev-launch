@@ -169,7 +169,7 @@ clone → analyse → plan → validate → [ask the user] → run → verify
 - **Image allowlist**, frozen at module load
 - **Path traversal rejection**, including escapes only visible after normalisation
 - **Network egress policy** blocking RFC1918, link-local, and the VM host itself
-- 67 security tests (54 unit, 13 integration) covering all ten checks in §27
+- 116 security tests (102 unit, 14 integration) covering all ten checks in §27
 
 ### What Phase 1 delivers
 
@@ -240,6 +240,11 @@ printf 'GROQ_API_KEY=%s\n' 'your-key' >> .env
 
 `.env` is gitignored. Without a key DevLaunch plans deterministically — that is the
 shipped default, not a degraded mode.
+
+Model availability varies by account; the default is `openai/gpt-oss-120b`. Override with
+`GROQ_MODEL`, and list what yours can reach at `https://api.groq.com/openai/v1/models`.
+A 429 is retried using the delay the server states, because on a free tier a repair loop
+can otherwise exhaust the per-minute token budget mid-session.
 
 ## Design notes worth knowing
 

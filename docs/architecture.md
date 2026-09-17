@@ -26,7 +26,7 @@ RepositoryAnalyzer ──── reads manifests, lockfiles, configs, .env.exampl
     ▼
 RuleBasedPlanner ────── 22 detectors → Run Plan, zero model calls
     │                        │
-    │                        └── no match → AIProvider (Phase 8, absent in v1)
+    │                        └── no match → AIProvider (opt-in; off without a key)
     ▼
 RunPlanValidator ────── one gate, identical for every plan source
     │
@@ -71,7 +71,7 @@ ReadinessChecker ────── HTTP poll with backoff; any response counts
 | `logs/LogManager` | Stream demux, ANSI stripping, sequence numbers |
 | `session/SessionManager` | Pipeline orchestration and lifetime |
 | `cleanup/CleanupManager` | Idempotent teardown, orphan sweeping |
-| `ai/AIProvider` | Interface only in v1; default refuses |
+| `ai/AIProvider` | Fallback planning and bounded repair; opt-in, default refuses |
 
 ## Decisions that shaped the design
 
@@ -126,7 +126,11 @@ QUEUED → CLONING → ANALYZING → PLANNING → VALIDATING ─┬─→ AWAITI
                                                        │
                                         ┌──────────────┼──────────────┐
                                         ▼              ▼              ▼
-                                      READY         FAILED      CLEANING_UP
+                                      READY        REPAIRING     CLEANING_UP
+                                        │              │              │
+                                        │              └──> (retry, max 2) ──┐
+                                        │                                    │
+                                        │              FAILED <──────────────┘
                                         │                            │
                                         └──────→ COMPLETED ◄─────────┘
                                                  CANCELLED

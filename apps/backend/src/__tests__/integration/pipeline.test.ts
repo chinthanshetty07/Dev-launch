@@ -14,12 +14,17 @@ const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.
 const docker = new DockerManager();
 const analyzer = new RepositoryAnalyzer();
 
+/** Every manager a test creates, so afterAll can release all of them. */
+const created: SessionManager[] = [];
+
 function newManager(): SessionManager {
-  return new SessionManager(new ExecutionManager(docker), {
+  const mgr = new SessionManager(new ExecutionManager(docker), {
     git: new GitManager(),
     analyzer,
     planner: new RuleBasedPlanner(analyzer),
   });
+  created.push(mgr);
+  return mgr;
 }
 
 /** Wait until a session reaches one of `states`, or throw with what it actually did. */
@@ -53,7 +58,10 @@ describe('Full pipeline — analyse, plan, gate, run', () => {
   }, 300_000);
 
   afterAll(async () => {
-    await sessions?.shutdown();
+    // `sessions` is reassigned per test, so shutting down only that one left earlier
+    // managers holding containers and cloned repositories — which then broke an
+    // unrelated suite's residue assertion.
+    await Promise.all(created.map((m) => m.shutdown().catch(() => undefined)));
     await CleanupManager.sweepOrphans(docker);
   });
 

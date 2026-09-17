@@ -10,9 +10,16 @@ function emit(key, value) {
 emit('uid', process.getuid());
 emit('gid', process.getgid());
 
-// CapEff is the effective capability bitmask: 0 means every capability was dropped.
 const status = fs.readFileSync('/proc/self/status', 'utf8');
+
+// CapEff is the *effective* set. For a non-root process it is zero regardless of
+// --cap-drop, so asserting it alone proves only that we are not root.
 emit('capeff', (status.match(/^CapEff:\s*(\S+)/m) || [, 'unknown'])[1]);
+
+// CapBnd is the *bounding* set: the ceiling on what this process could ever acquire,
+// including via a setuid binary. This is the value --cap-drop ALL actually zeroes, so
+// it is the one that proves capabilities were dropped rather than merely unused.
+emit('capbnd', (status.match(/^CapBnd:\s*(\S+)/m) || [, 'unknown'])[1]);
 
 // The read-only rootfs must actually refuse writes.
 try {
@@ -32,6 +39,38 @@ try {
 }
 
 emit('docker_socket', fs.existsSync('/var/run/docker.sock') ? 'present' : 'absent');
+
+// no-new-privileges, as the kernel records it. Asserting the Docker flag instead would
+// only prove what was requested.
+emit('no_new_privs', (status.match(/^NoNewPrivs:\s*(\d+)/m) || [, 'unknown'])[1]);
+
+// /tmp must be mounted noexec,nosuid, so it cannot be used to stage a payload.
+let tmpOpts = 'unknown';
+try {
+  const mount = fs
+    .readFileSync('/proc/mounts', 'utf8')
+    .split('\n')
+    .find((l) => l.split(' ')[1] === '/tmp');
+  if (mount) tmpOpts = mount.split(' ')[3];
+} catch { /* fall through as unknown */ }
+emit('tmp_mount_opts', tmpOpts);
+
+// And prove it, rather than trusting the mount flags: staging an executable and running
+// it must be refused.
+try {
+  fs.writeFileSync('/tmp/probe-exec', '#!/bin/sh\necho ran\n', { mode: 0o755 });
+  require('node:child_process').execFileSync('/tmp/probe-exec');
+  emit('tmp_exec', 'allowed');
+} catch {
+  emit('tmp_exec', 'refused');
+}
+
+// CPU quota as the cgroup reports it: "<quota> <period>", so 200000 100000 is 2 cores.
+let cpuMax = 'unknown';
+for (const p of ['/sys/fs/cgroup/cpu.max', '/sys/fs/cgroup/cpu/cpu.cfs_quota_us']) {
+  try { cpuMax = fs.readFileSync(p, 'utf8').trim(); break; } catch { /* next */ }
+}
+emit('cpu_max', cpuMax);
 
 // Memory ceiling as the cgroup reports it, which is what the kernel will enforce.
 let memLimit = 'unknown';

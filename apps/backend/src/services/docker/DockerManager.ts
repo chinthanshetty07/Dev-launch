@@ -283,12 +283,19 @@ export class DockerManager {
     return container.inspect();
   }
 
-  /** Every container DevLaunch has ever created and not removed. */
-  async listManaged(): Promise<Dockerode.ContainerInfo[]> {
-    return this.docker.listContainers({
-      all: true,
-      filters: { label: [`${config.docker.managedLabel}=true`] },
-    });
+  /**
+   * Containers DevLaunch created and has not removed.
+   *
+   * `scope: 'instance'` restricts this to the current process. Anything wider will
+   * match containers a *different* live DevLaunch owns, and removing those destroys a
+   * healthy session belonging to someone else.
+   */
+  async listManaged(scope: 'all' | 'instance' = 'all'): Promise<Dockerode.ContainerInfo[]> {
+    const label = [`${config.docker.managedLabel}=true`];
+    if (scope === 'instance') {
+      label.push(`${config.docker.instanceLabel}=${config.docker.instanceId}`);
+    }
+    return this.docker.listContainers({ all: true, filters: { label } });
   }
 
   getContainer(id: string): Dockerode.Container {

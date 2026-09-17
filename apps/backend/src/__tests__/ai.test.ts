@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { FailureCode, type RepositoryMetadata, type RunPlan } from '@devlaunch/shared';
 import { AIPlanner } from '../services/ai/AIPlanner.js';
 import { AIRepair } from '../services/ai/AIRepair.js';
-import { GroqProvider, AIUnavailable } from '../services/ai/GroqProvider.js';
+import { GroqProvider, AIUnavailable, retryDelayMs } from '../services/ai/GroqProvider.js';
 import { UnavailableAIProvider, MAX_REPAIR_ATTEMPTS } from '../services/ai/AIProvider.js';
 import { untrusted, systemPrompt, describeRepository } from '../services/ai/prompts.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
@@ -283,6 +283,80 @@ describe('GroqProvider', () => {
     await expect(
       provider.generateRunPlan({ metadata: meta(), ruleBasedReason: 'x' }),
     ).rejects.toBeInstanceOf(SecurityRejection);
+  });
+});
+
+describe('GroqProvider rate limiting', () => {
+  const rateLimited = (body = '', headers: Record<string, string> = {}) =>
+    new Response(body, { status: 429, headers });
+
+  it('prefers the server-stated delay over a guess', () => {
+    // The server knows when its window resets; we do not.
+    expect(retryDelayMs(rateLimited('', { 'retry-after': '3' }), '', 0)).toBe(3250);
+    expect(retryDelayMs(rateLimited(), 'Please try again in 6.075s.', 0)).toBe(6325);
+  });
+
+  it('falls back to exponential backoff when the server says nothing', () => {
+    expect(retryDelayMs(rateLimited(), '', 0)).toBe(1000);
+    expect(retryDelayMs(rateLimited(), '', 2)).toBe(4000);
+  });
+
+  it('caps the wait, so a pathological value cannot stall a session', () => {
+    expect(retryDelayMs(rateLimited('', { 'retry-after': '9999' }), '', 0)).toBe(30_000);
+    expect(retryDelayMs(rateLimited(), '', 20)).toBe(30_000);
+  });
+
+  it('retries a rate-limited request and then succeeds', async () => {
+    // A 429 is a "wait", not a "no". Failing the session on one would make the
+    // fallback unusable on a free tier.
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      if (calls === 1) return rateLimited('rate limited. try again in 0.01s');
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify(GOOD_PLAN) } }] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const provider = new GroqProvider({ apiKey: 'k', fetchImpl, sleep: async () => undefined });
+    await expect(
+      provider.generateRunPlan({ metadata: meta(), ruleBasedReason: 'x' }),
+    ).resolves.toMatchObject({ startCommand: 'npm run start' });
+    expect(calls).toBe(2);
+  });
+
+  it('gives up after the retry budget, and says why', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return rateLimited('still limited');
+    }) as unknown as typeof fetch;
+
+    const provider = new GroqProvider({
+      apiKey: 'k',
+      fetchImpl,
+      maxRetries: 2,
+      sleep: async () => undefined,
+    });
+    await expect(
+      provider.generateRunPlan({ metadata: meta(), ruleBasedReason: 'x' }),
+    ).rejects.toThrow(/retries were exhausted/);
+    expect(calls).toBe(3); // the original plus two retries
+  });
+
+  it('does not retry a 401, which retrying cannot fix', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return new Response('bad key', { status: 401 });
+    }) as unknown as typeof fetch;
+
+    const provider = new GroqProvider({ apiKey: 'k', fetchImpl, sleep: async () => undefined });
+    await expect(
+      provider.generateRunPlan({ metadata: meta(), ruleBasedReason: 'x' }),
+    ).rejects.toThrow(/GROQ_API_KEY/);
+    expect(calls).toBe(1);
   });
 });
 

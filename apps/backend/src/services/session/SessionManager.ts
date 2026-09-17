@@ -533,9 +533,20 @@ export class SessionManager extends EventEmitter {
   private async teardown(session: Session): Promise<void> {
     this.clearTimers(session.id);
     try {
-      await session.handle?.cleanup();
-    } catch {
-      // Cleanup failures must never mask the transition that triggered teardown.
+      // cleanup() collects per-container failures and resolves successfully, so the
+      // catch below never sees them. Ignoring the returned errors meant a container
+      // that failed to stop left no trace at all until the next process start.
+      const result = await session.handle?.cleanup();
+      for (const err of result?.errors ?? []) {
+        session.logs.buffer.push('stderr', `cleanup warning: ${err.message}`);
+      }
+    } catch (err) {
+      // A thrown failure must not mask the transition that triggered teardown, but it
+      // should still be visible.
+      session.logs.buffer.push(
+        'stderr',
+        `cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
     try {
       await session.cleanupRepo?.();

@@ -68,8 +68,14 @@ describe('Phase 2 — security hardening (§27)', () => {
   });
 
   it('all capabilities are dropped', () => {
-    // CapEff is the effective capability mask the kernel enforces. Asserting the
-    // Docker config instead would only prove what we asked for.
+    // CapBnd, not CapEff, is the assertion that bites.
+    //
+    // For a non-root process CapEff is zero whether or not --cap-drop was applied
+    // (measured: 0000000000000000 either way), so asserting it alone proves we are not
+    // root and nothing more. CapBnd is the bounding set — the ceiling on what the
+    // process could ever acquire, including through a setuid binary — and that is what
+    // --cap-drop ALL actually zeroes (measured: a80425fb without it).
+    expect(probe.capbnd, 'capability bounding set must be empty').toMatch(/^0+$/);
     expect(probe.capeff).toMatch(/^0+$/);
   });
 
@@ -80,6 +86,27 @@ describe('Phase 2 — security hardening (§27)', () => {
 
   it('the Docker socket is not reachable from inside the container', () => {
     expect(probe.docker_socket).toBe('absent');
+  });
+
+  it('privilege escalation is blocked, as the kernel records it', () => {
+    // Previously asserted only from the Docker config, which proves what was asked for
+    // rather than what is in force.
+    expect(probe.no_new_privs).toBe('1');
+  });
+
+  it('scratch space cannot be used to stage an executable', () => {
+    // /tmp is the one writable place besides the workspace. Mount flags are checked and
+    // then actually exercised, because a flag that is set but not enforced is worthless.
+    expect(probe.tmp_mount_opts).toMatch(/noexec/);
+    expect(probe.tmp_mount_opts).toMatch(/nosuid/);
+    expect(probe.tmp_exec, 'an executable staged in /tmp must not run').toBe('refused');
+  });
+
+  it('the CPU quota is applied by the kernel', () => {
+    // cpu.max is "<quota> <period>"; quota/period is the effective core count.
+    const parts = (probe.cpu_max ?? '').split(/\s+/).map(Number);
+    expect(parts, 'cpu.max should be "<quota> <period>"').toHaveLength(2);
+    expect(parts[0]! / parts[1]!).toBe(config.container.cpus);
   });
 
   it('memory and PID limits are applied by the kernel', () => {

@@ -26,13 +26,13 @@ no host access, no network access to your LAN, no persistence, no privilege.
 | Control | Setting | Verified by |
 |---|---|---|
 | Non-root | uid/gid 1000 | `id` inside the container |
-| Capabilities | `capDrop ALL` | `CapEff` is all zeros in `/proc/self/status` |
-| Privilege escalation | `no-new-privileges` | container config |
+| Capabilities | `capDrop ALL` | `CapBnd` is all zeros in `/proc/self/status` |
+| Privilege escalation | `no-new-privileges` | `NoNewPrivs: 1` in `/proc/self/status` |
 | Root filesystem | read-only | a write to `/` is refused |
 | Writable area | volume at `/workspace` only | a write there succeeds |
-| Scratch space | tmpfs at `/tmp`, `noexec,nosuid` | container config |
+| Scratch space | tmpfs at `/tmp`, `noexec,nosuid` | `/proc/mounts`, **and** a staged executable is refused |
 | Memory | 1 GB, swap equal to it | cgroup `memory.max` |
-| CPU | 2 cores | container config |
+| CPU | 2 cores | cgroup `cpu.max` quota/period |
 | Processes | 256 | cgroup `pids.max` |
 | Docker socket | never mounted | absent inside the container |
 | Egress | RFC1918 + link-local + VM host blocked | gateway connection times out |
@@ -89,6 +89,18 @@ reported `refused`, proving the gateway had answered. Both chains are now instal
 Both begin with a conntrack `ESTABLISHED,RELATED` return, without which replies to
 published ports are dropped — the reply travels back toward the Docker gateway, which is
 itself inside a blocked range.
+
+### `CapEff` does not prove capabilities were dropped
+
+The capability check originally asserted `CapEff` (the effective set) was empty. It was
+— but it is empty for **any** non-root process, with or without `--cap-drop`. Measured
+inside this runner image: `CapEff` is `0000000000000000` in both cases, so the assertion
+proved only that the container is non-root, which another test already covered.
+
+`CapBnd`, the bounding set, is the value `--cap-drop ALL` actually zeroes
+(`00000000a80425fb` without it). It is the ceiling on what a process could ever acquire,
+including through a setuid binary, so it is the meaningful assertion. Found by deleting
+`CapDrop` from the container config and observing that the capability test stayed green.
 
 ### Environment variables could override validated commands
 

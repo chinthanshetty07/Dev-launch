@@ -66,6 +66,7 @@ describe('Phase 6 — planning real fixtures', () => {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const root = await mkdtemp(join(tmpdir(), 'devlaunch-mono-'));
+    const { rm } = await import('node:fs/promises');
     await writeFile(join(root, 'package.json'), JSON.stringify({ workspaces: ['apps/*'] }));
     for (const name of ['web', 'admin']) {
       await mkdir(join(root, 'apps', name), { recursive: true });
@@ -79,6 +80,7 @@ describe('Phase 6 — planning real fixtures', () => {
     expect(out.plan).toBeNull();
     expect(out.choices?.map((c) => c.dir).sort()).toEqual(['apps/admin', 'apps/web']);
     expect(out.reason).toMatch(/monorepo with 2 runnable packages/);
+    await rm(root, { recursive: true, force: true });
   });
 
   it('runs a Node fixture end to end from nothing but a plan', async () => {

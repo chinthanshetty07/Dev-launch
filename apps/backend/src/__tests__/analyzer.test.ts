@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { normaliseRepoUrl, measureTree } from '../services/git/GitManager.js';
@@ -12,6 +12,13 @@ import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../fixtures');
 const analyzer = new RepositoryAnalyzer();
+
+/** Scratch directories created by tests, removed afterwards. */
+const scratch: string[] = [];
+afterAll(async () => {
+  const { rm } = await import('node:fs/promises');
+  await Promise.all(scratch.map((d) => rm(d, { recursive: true, force: true }).catch(() => undefined)));
+});
 
 describe('normaliseRepoUrl', () => {
   it.each([
@@ -162,6 +169,7 @@ describe('RepositoryAnalyzer', () => {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const dir = await mkdtemp(join(tmpdir(), 'devlaunch-bad-'));
+    scratch.push(dir);
     await writeFile(join(dir, 'package.json'), '{ not json', 'utf8');
 
     const meta = await analyzer.analyze(dir);
@@ -174,6 +182,7 @@ describe('RepositoryAnalyzer', () => {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const dir = await mkdtemp(join(tmpdir(), 'devlaunch-empty-'));
+    scratch.push(dir);
 
     const meta = await analyzer.analyze(dir);
     expect(meta.packageJson).toBeUndefined();

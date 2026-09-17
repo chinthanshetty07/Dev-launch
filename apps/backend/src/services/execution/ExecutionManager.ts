@@ -189,6 +189,8 @@ export class ExecutionManager {
   private readonly readiness = new ReadinessChecker();
   private readonly validator = new RunPlanValidator();
   private readonly classifier = new FailureClassifier();
+  /** Why the last inspect failed, so an unattributable failure can say what went wrong. */
+  private lastInspectError: string | undefined;
 
   constructor(private readonly docker: DockerManager) {
     this.ports = new PortManager(docker);
@@ -366,8 +368,10 @@ export class ExecutionManager {
       port: hostPort,
       healthCheck: plan.healthCheck,
       timeoutMs: budget,
-      // Polling a container that has already died just burns the whole budget.
-      abortIf: async () => !(await this.isRunning(container)),
+      // Polling a container that has already died just burns the whole budget — but
+      // only abort when we *know* it is gone. An inspect failure means unknown, and
+      // aborting on unknown would cut readiness short for a healthy application.
+      abortIf: async () => (await this.containerState(container))?.running === false,
     });
 
     if (readiness.ready) {
@@ -394,11 +398,40 @@ export class ExecutionManager {
     readiness: ReadinessResult,
     logs?: LogManager,
   ): Promise<{ failure: FailureDetail; diagnosis?: PortDiagnosis }> {
+    // One inspect, not two. Calling isRunning() and then inspect() again left a window
+    // in which the container could change state between them.
+    const state = await this.containerState(container);
+
+    if (state === null) {
+      // Not knowing is its own answer. Reporting a phase failure here would be
+      // inventing a diagnosis out of a Docker API hiccup.
+      return {
+        failure: {
+          code: FailureCode.UNKNOWN_RUNTIME_ERROR,
+          message: 'The container could not be inspected, so the failure cannot be attributed.',
+          evidence: this.lastInspectError,
+          remedy: 'Check that the Docker daemon is responsive and retry.',
+          confidence: 'low',
+        },
+      };
+    }
+
+    // A container that no longer exists was removed by cleanup, not by the application
+    // failing. Attributing a phase failure to it would invent a cause.
+    if (state.removed) {
+      return {
+        failure: {
+          code: FailureCode.UNKNOWN_RUNTIME_ERROR,
+          message: 'The container was removed before readiness completed.',
+          confidence: 'low',
+        },
+      };
+    }
+
     // A container that has exited cannot be introspected, and its exit code is the
     // more informative answer anyway.
-    if (!(await this.isRunning(container))) {
-      const info = await this.docker.inspect(container);
-      const exitCode = info.State.ExitCode ?? -1;
+    if (!state.running) {
+      const exitCode = state.exitCode;
       const { failure, phase } = classifyExit({ exitCode, timedOut: false }, sentinels);
       const coarse = failure ?? {
         code: FailureCode.UNKNOWN_RUNTIME_ERROR,
@@ -460,12 +493,50 @@ export class ExecutionManager {
     };
   }
 
-  private async isRunning(container: Dockerode.Container): Promise<boolean> {
-    try {
-      return (await this.docker.inspect(container)).State.Running === true;
-    } catch {
-      return false;
+  /**
+   * Container state as three outcomes, not two.
+   *
+   * The previous version swallowed every inspect error and returned false, which turned
+   * "I could not determine the state" into "it has exited" — and the caller then built a
+   * diagnosis from an exit code belonging to a container that was very likely still
+   * running. Under load a transient Docker API error is entirely normal, so that
+   * conflation produced confident, wrong failure attribution.
+   *
+   * Returning null for "unknown" forces the caller to decide what to do about not
+   * knowing, rather than being handed a fabricated certainty.
+   */
+  private async containerState(
+    container: Dockerode.Container,
+    attempts = 3,
+  ): Promise<{ running: boolean; exitCode: number; removed?: boolean } | null> {
+    let lastError: unknown;
+
+    // Inspect is an idempotent read, so a transient failure is worth retrying rather
+    // than escalating. Measured under full-suite load, the Docker API intermittently
+    // refuses a request while many containers are churning; a single attempt turned
+    // that hiccup into an unattributable failure for a healthy application.
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const info = await this.docker.inspect(container);
+        this.lastInspectError = undefined;
+        return { running: info.State.Running === true, exitCode: info.State.ExitCode ?? -1 };
+      } catch (err) {
+        // 404 is an answer, not a failure to get one: the container has been removed,
+        // so it is definitively not running. Retrying cannot change that, and reporting
+        // it as "unknown" discards information we actually have.
+        if ((err as { statusCode?: number }).statusCode === 404) {
+          this.lastInspectError = undefined;
+          return { running: false, exitCode: -1, removed: true };
+        }
+        lastError = err;
+        if (i < attempts - 1) await new Promise((r) => setTimeout(r, 150 * 2 ** i));
+      }
     }
+
+    // Kept so the failure can name *why* it could not be attributed. An unexplained
+    // "unknown" is only marginally better than a wrong answer.
+    this.lastInspectError = lastError instanceof Error ? lastError.message : String(lastError);
+    return null;
   }
 }
 

@@ -57,5 +57,7 @@ export function buildLabels(sessionId: string): Record<string, string> {
   return {
     [config.docker.managedLabel]: 'true',
     [config.docker.sessionLabel]: sessionId,
+    // Stamps the creating process, so another instance's sweep leaves this alone.
+    [config.docker.instanceLabel]: config.docker.instanceId,
   };
 }

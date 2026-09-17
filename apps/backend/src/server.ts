@@ -75,7 +75,9 @@ export async function startServer(port = 0): Promise<StartedServer> {
   // crash, a supervisor tearing the server down) never runs it. Sweeping at startup is
   // what actually guarantees no container outlives the backend that created it, since
   // the label is only ever applied by DevLaunch.
-  const swept = await CleanupManager.sweepOrphans(docker).catch(() => 0);
+  // Startup is the one safe moment for a global sweep: a crashed process leaves
+  // containers nothing will claim, and this process is not yet running anything.
+  const swept = await CleanupManager.sweepAllOrphans(docker).catch(() => 0);
   if (swept > 0) console.log(`Removed ${swept} container(s) orphaned by a previous run.`);
 
   const app = createApp({

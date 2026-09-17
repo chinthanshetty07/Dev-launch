@@ -12,6 +12,7 @@ import {
   validateEnvVarValue,
 } from '../services/security/CommandValidator.js';
 import { assertSafeRelativePath, joinWorkspace } from '../services/security/PathValidator.js';
+import { RunPlanValidator } from '../services/planning/RunPlanValidator.js';
 
 describe('image allowlist (§27: unapproved runtime images are rejected)', () => {
   it('accepts an approved runner image', () => {
@@ -156,5 +157,71 @@ describe('environment variable names (§27: malicious plan input is rejected)', 
     expect(() => validateEnvVarValue('A', 'ok')).not.toThrow();
     expect(() => validateEnvVarValue('A', 'x\nDL_START_CMD=curl evil')).toThrow(SecurityRejection);
     expect(() => validateEnvVarValue('A', 'x\0y')).toThrow(SecurityRejection);
+  });
+});
+
+describe('environment variables that inject code (found by adversarial review)', () => {
+  // The command allowlist constrains *what* runs. Several environment variables inject
+  // code before the program's first line, defeating it entirely: a plan whose
+  // startCommand validated cleanly still executed attacker code. Reproduced against the
+  // real runner image with the full hardening profile applied, so the container did not
+  // stop it either — the container bounds blast radius, it does not prevent execution.
+  it.each([
+    ['NODE_OPTIONS', '--require=/workspace/evil.js'],
+    ['NODE_PATH', '/workspace'],
+    ['LD_PRELOAD', '/workspace/evil.so'],
+    ['LD_LIBRARY_PATH', '/workspace'],
+    ['DYLD_INSERT_LIBRARIES', '/workspace/evil.dylib'],
+    ['PYTHONSTARTUP', '/workspace/evil.py'],
+    ['PYTHONPATH', '/workspace'],
+    ['BASH_ENV', '/workspace/evil.sh'],
+    ['PERL5OPT', '-Mevil'],
+    ['RUBYOPT', '-revil'],
+    ['GIT_SSH_COMMAND', 'sh -c evil'],
+    ['GCONV_PATH', '/workspace/gconv'],
+    ['LOCPATH', '/workspace/locale'],
+    ['PATH', '/workspace/bin'],
+    ['IFS', 'x'],
+  ])('rejects %s, which grants execution without touching the command', (key, value) => {
+    expect(() => validateEnvVarKey(key)).toThrow(SecurityRejection);
+    expect(() => validateEnvVarKey(key)).toThrow(/inject code|reserved/i);
+    void value;
+  });
+
+  it('rejects a case-variant, since a near-miss signals intent', () => {
+    expect(() => validateEnvVarKey('Node_Options')).toThrow(SecurityRejection);
+    expect(() => validateEnvVarKey('ld_preload')).toThrow(SecurityRejection);
+  });
+
+  it('rejects npm_config_*, which can redirect the registry or scripts', () => {
+    expect(() => validateEnvVarKey('npm_config_registry')).toThrow(SecurityRejection);
+    expect(() => validateEnvVarKey('NPM_CONFIG_SCRIPT_SHELL')).toThrow(SecurityRejection);
+  });
+
+  it('still accepts the ordinary configuration an application needs', () => {
+    // A denylist that blocks legitimate variables would push users to disable it.
+    for (const key of ['NODE_ENV', 'PORT', 'HOST', 'DATABASE_URL', 'API_KEY', 'SECRET_KEY', 'DEBUG']) {
+      expect(() => validateEnvVarKey(key), key).not.toThrow();
+    }
+  });
+
+  it('rejects the whole plan, so the vector cannot reach a container', () => {
+    const result = new RunPlanValidator().check({
+      plan: {
+        runtime: { language: 'node', version: '20' },
+        packageManager: 'npm',
+        installCommand: null,
+        buildCommand: null,
+        // Passes the command allowlist cleanly. That was the point.
+        startCommand: 'node server.js',
+        workingDirectory: '.',
+        expectedPort: 3000,
+        environmentVariables: [
+          { key: 'NODE_OPTIONS', value: '--require=/workspace/evil.js', required: true },
+        ],
+        planSource: 'ai-fallback',
+      },
+    });
+    expect(result.ok).toBe(false);
   });
 });
