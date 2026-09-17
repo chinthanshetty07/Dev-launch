@@ -1,5 +1,85 @@
 # Changelog
 
+## 2026-09-18 — Multi-service, phase D: the browser can finally reach the API
+
+Phase C left a healthy stack that still looked broken. Every service ran, the database
+was connected, and the page said `Failed to fetch` — because the browser resolves
+`http://localhost:5001` on the *user's machine*, where no container alias, network or
+amount of correct orchestration reaches.
+
+### Ports are chosen before anything starts
+
+Docker assigning a host port is fine for a lone service and impossible for a project: a
+frontend's `VITE_API_URL` and an API's `CORS_ORIGIN` both have to be written before
+either container is created, and a port Docker has not assigned yet cannot be written
+into anything. DevLaunch now picks the ports itself, preferring the one a sibling already
+hardcodes — `http://localhost:5001` in a frontend's source is not a preference, it is the
+only address that will ever be requested.
+
+When the preferred port is taken, it says so plainly rather than substituting silently:
+
+```
+Port 5173 is in use on this machine, so frontend is published on 56767 instead.
+A hardcoded reference to 5173 will not reach it.
+```
+
+### Two variables decide whether a working stack looks broken
+
+Both are set from what each service *declares*, never guessed — the same rule the
+database URL follows:
+
+- the frontend's API base (`VITE_API_URL` and a dozen framework spellings), or every
+  request the page makes is refused;
+- the API's permitted origin (`CORS_ORIGIN`, `ALLOWED_ORIGINS`, …), or every request is
+  refused *by CORS*, which looks identical from the browser and is not.
+
+Inventing a variable is worse than doing nothing: `CORS_ORIGIN` on a service that reads
+`ALLOWED_ORIGINS` achieves nothing, and on a service that reads neither it can narrow a
+permissive default into a broken one.
+
+`import.meta.env.X` is now scanned alongside `process.env.X`, because Vite and SvelteKit
+expose configuration there and a frontend is exactly the service whose API base must be
+injected. Without it the real repository's `VITE_API_URL` was invisible.
+
+### A bug found only because a real machine had something else running
+
+`isPortFree` probed `127.0.0.1` and called 5173 free. It was not: another project's dev
+server held `::1:5173`, and `localhost` resolves to `::1` **first**. Docker published on
+IPv4 and succeeded, the page loaded, and the browser had been talking to the other
+application entirely — a different app's UI, served from DevLaunch's URL.
+
+Measured on the machine that exposed it: `127.0.0.1:5173` bindable, `::1:5173` not, and a
+dual-stack bind on `::` bindable too — so only an explicit `::1` probe sees it. Both
+loopback stacks are now required to be free.
+
+### Verified — the real repository works, end to end
+
+`Prompt-Engine`, from nothing but a GitHub URL:
+
+```
+Access-Control-Allow-Origin: http://localhost:56767
+POST /api/optimize → {"success":true,"_id":"6aac34664c04640bbb6260be",
+                      "optimizedPrompt":"Act as a senior software engineer..."}
+```
+
+Frontend, backend, MongoDB, CORS and the API base URL — all wired, with a document
+persisted to the database. Loaded in a browser: no console errors, and
+`GET /api/history → 200`.
+
+- 9 unit tests and 1 integration test. **Proven able to fail:** not publishing where the
+  frontend looks turns 1 red; not wiring CORS turns 2 unit tests red and the integration
+  test with it; probing IPv4 only turns the IPv6 test red.
+- 459 tests across three packages (456 passing, 3 skipped), zero residue.
+
+### What is left
+
+A service's `.env.example` is still read only at the repository root, so a per-service
+secret — `GROQ_API_KEY` lives in `backend/.env.example` here — is never asked for. This
+repository ships a working default, so it runs regardless; one that did not would fail
+with a configuration error rather than a prompt. The dashboard still shows one pipeline
+and one URL for what is now several services, and there is no restart control or resource
+monitoring: phase E.
+
 ## 2026-09-17 — Multi-service, phase C: the databases a project expects
 
 Phase B ran every service. One of them still would not start:

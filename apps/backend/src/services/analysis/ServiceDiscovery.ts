@@ -151,6 +151,7 @@ async function inspectDir(
     if (!scripts.includes('dev') && !scripts.includes('start')) return null;
 
     const { role, evidence } = classifyNode(dir, manifest);
+    const envKeys = await serviceEnvKeys(base);
     const candidate: ServiceCandidate = {
       name: manifest.name ?? baseName(dir),
       dir,
@@ -159,19 +160,18 @@ async function inspectDir(
       scripts,
       evidence,
       declaredPort: await findDeclaredPort(base, manifest),
+      envKeys,
     };
     if (role === 'web') {
       const origins = await findCalledOrigins(base);
       if (origins.length) candidate.callsOrigins = origins;
     }
-    return {
-      candidate,
-      backing: backingFor(Object.keys(manifest.dependencies), await serviceEnvKeys(base)),
-    };
+    return { candidate, backing: backingFor(Object.keys(manifest.dependencies), envKeys) };
   }
 
   const python = await readPythonDeps(base);
   if (!python) return null;
+  const pythonEnvKeys = await serviceEnvKeys(base);
   const isApi = python.deps.some((d) => PYTHON_API_DEPS.includes(d)) || python.hasManagePy;
   if (!isApi) return null;
 
@@ -184,8 +184,9 @@ async function inspectDir(
       scripts: [],
       evidence: python.hasManagePy ? 'has manage.py' : `requires ${python.deps.find((d) => PYTHON_API_DEPS.includes(d))}`,
       declaredPort: python.hasManagePy ? 8000 : undefined,
+      envKeys: pythonEnvKeys,
     },
-    backing: backingFor(python.deps, await serviceEnvKeys(base)),
+    backing: backingFor(python.deps, pythonEnvKeys),
   };
 }
 
@@ -263,6 +264,9 @@ async function serviceEnvKeys(base: string): Promise<string[]> {
     const raw = await readCapped(file);
     if (raw === null) continue;
     for (const m of raw.matchAll(/process\.env\.([A-Z][A-Z0-9_]{2,})/g)) keys.add(m[1]!);
+    // Vite, SvelteKit and friends expose build-time configuration here instead, and a
+    // frontend is exactly the kind of service whose API base URL has to be injected.
+    for (const m of raw.matchAll(/import\.meta\.env\.([A-Z][A-Z0-9_]{2,})/g)) keys.add(m[1]!);
     for (const m of raw.matchAll(/os\.environ(?:\.get)?[[(]['"]([A-Z][A-Z0-9_]{2,})['"]/g)) keys.add(m[1]!);
   }
 

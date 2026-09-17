@@ -168,6 +168,21 @@ images: their entrypoints only need to chown and switch user when started as roo
 
 Data is in anonymous volumes and lasts exactly as long as the session.
 
+## The browser is not on the container network
+
+Services reach each other by name, but a page's `fetch` is resolved by the user's
+machine. An API that a frontend hardcodes as `http://localhost:5001` is unreachable at
+any other address, however correctly the project is orchestrated.
+
+So host ports are chosen by DevLaunch before any container is created — preferring the
+port a sibling hardcodes — and each service is told where the others are through the
+variables it declares: the frontend's API base, the API's permitted origin. A preferred
+port that is taken is reported, never silently substituted.
+
+Both loopback stacks are checked when testing whether a port is free. `localhost`
+resolves to `::1` first, so a port free on IPv4 and held on IPv6 will publish
+successfully and send the browser to whatever already owns the address.
+
 ## Two clocks, deliberately
 
 - **Time to ready** (~10 min): clone, install, build, start, readiness.

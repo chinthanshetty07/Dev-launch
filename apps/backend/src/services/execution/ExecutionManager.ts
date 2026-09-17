@@ -31,6 +31,8 @@ export interface LaunchOptions {
    * Absent for a single-service run, which has nothing to talk to.
    */
   networkAliases?: string[];
+  /** Publish on this host port instead of letting Docker choose one. */
+  hostPort?: number;
   /** Host directory whose contents become /workspace inside the container. */
   sourceDir: string;
   image: string;
@@ -355,6 +357,7 @@ export class ExecutionManager {
         }),
         workingDir: workdir,
         exposePort: opts.plan.expectedPort,
+        hostPort: opts.hostPort,
         // Only honoured on the user-defined network, which is also the only place the
         // egress policy applies — so a project that needs name resolution gets the
         // hardened network or neither.

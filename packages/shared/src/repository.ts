@@ -125,6 +125,14 @@ export interface ServiceCandidate {
    * the page makes is refused.
    */
   callsOrigins?: string[];
+  /**
+   * Environment variables this service names for itself.
+   *
+   * Read from its own `.env.example` and its source. What a service *declares* is the
+   * only reliable way to hand it a value: a frontend reading `VITE_API_URL` ignores
+   * `REACT_APP_API_URL`, and a variable nobody reads is the same as no configuration.
+   */
+  envKeys?: string[];
 }
 
 /** A database or cache the repository expects to be running. */

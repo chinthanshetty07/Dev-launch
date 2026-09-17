@@ -73,7 +73,7 @@ describe('a repository made of several services', () => {
     // proof of the whole chain: provisioned, healthy, named, injected, and connected.
     const api = s.run!.services.find((sv) => sv.role === 'api')!;
     expect(api.state).toBe(ExecutionState.READY);
-    const body = await (await fetch(api.url!)).json();
+    const body = (await (await fetch(api.url!)).json()) as { database?: string };
     expect(body).toMatchObject({ ok: true, service: 'backend' });
     expect(body.database).toContain('mongodb:27017');
 
@@ -90,6 +90,37 @@ describe('a repository made of several services', () => {
 
     const alive = await docker.listManaged();
     expect(alive.map((c) => c.Id), 'a database must not outlive its session').not.toContain(dbId);
+  }, 420_000);
+
+  it('publishes the API where the frontend is hardcoded to look', async () => {
+    // The last thing standing between a healthy stack and a working page. The browser
+    // resolves `http://localhost:5001` itself, so a container alias cannot satisfy it
+    // and a random host port guarantees `Failed to fetch`.
+    const sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    expect(await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED])).toBe(
+      ExecutionState.READY,
+    );
+
+    const api = s.run!.services.find((sv) => sv.role === 'api')!;
+    // 5001 may be occupied on the machine running these tests, in which case DevLaunch
+    // says so rather than pretending; the guarantee is that it tried.
+    const substituted = s.logs.buffer.all().some((l) => /Port 5001 is in use/.test(l.text));
+    if (!substituted) expect(api.hostPort).toBe(5001);
+
+    // Whichever port it landed on, the frontend is told about it and CORS allows it.
+    const web = s.run!.services.find((sv) => sv.role === 'web')!;
+    const apiUrl = web.plan.environmentVariables.find((v) => v.key === 'VITE_API_URL')?.value;
+    expect(apiUrl).toBe(`http://localhost:${api.hostPort}`);
+
+    const corsOrigin = api.plan.environmentVariables.find((v) => v.key === 'CORS_ORIGIN')?.value;
+    expect(corsOrigin).toBe(`http://localhost:${web.hostPort}`);
+
+    // And the wiring actually reached the process, not just the plan.
+    const page = await (await fetch(web.url!)).text();
+    expect(page).toContain(`data-api="http://localhost:${api.hostPort}"`);
+
+    await sessions.stop(s.id);
   }, 420_000);
 
   it('runs both halves of a frontend/backend repository', async () => {

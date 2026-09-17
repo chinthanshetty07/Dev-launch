@@ -11,6 +11,8 @@ import {
 import { config } from '../../config/index.js';
 import { buildLabels } from '../docker/ContainerSecurity.js';
 import { BACKING_SPECS, connectionEnv, databaseName } from './BackingServices.js';
+import { preferredApiHostPort, wireService } from './CrossServiceWiring.js';
+import { choosePort } from '../ports/HostPorts.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { ExecutionManager, LaunchHandle, ReadyOutcome } from './ExecutionManager.js';
@@ -23,6 +25,8 @@ export interface ServiceRun {
   /** This service's own output, kept separate so its sentinels stay its own. */
   logs: LogManager;
   url?: string;
+  /** Host port chosen before the container existed, so siblings could be told about it. */
+  hostPort?: number;
   state: ExecutionState;
   failure?: FailureDetail;
 }
@@ -50,6 +54,11 @@ export interface ProjectLaunchOptions {
   backing?: BackingService[];
   /** Used to name the database, so it reads as the project's rather than as a default. */
   repoName?: string;
+  /** Per service: absolute origins its source hardcodes, and the variables it declares. */
+  discovery?: {
+    callsOrigins: Record<string, string[]>;
+    envKeys: Record<string, string[]>;
+  };
   /** The repository root; each service runs from its own subdirectory of it. */
   sourceDir: string;
   /** Aggregated, user-visible output. Each line arrives tagged with its service. */
@@ -135,15 +144,52 @@ export class ProjectExecutor {
       );
     }
 
+    // Host ports are chosen here rather than by Docker, because each service's URL has
+    // to appear in its siblings' configuration and a port Docker has not assigned yet
+    // cannot be written into anything. An API is published where the frontend already
+    // looks, when the frontend hardcodes an address at all.
+    const taken = new Set<number>();
+    const urls: Record<string, string> = {};
+    const hostPorts: Record<string, number> = {};
+
+    for (const plan of ordered) {
+      if (plan.expectedPort === null) continue;
+      const choice = await choosePort(
+        [
+          preferredApiHostPort(plan, ordered, opts.discovery?.callsOrigins ?? {}),
+          plan.expectedPort,
+        ],
+        taken,
+      );
+      hostPorts[plan.name] = choice.port;
+      urls[plan.name] = `http://localhost:${choice.port}/`;
+      if (choice.substituted && choice.preferred) {
+        opts.logs.write(
+          'stderr',
+          `Port ${choice.preferred} is in use on this machine, so ${plan.name} is published ` +
+            `on ${choice.port} instead. A hardcoded reference to ${choice.preferred} will not reach it.`,
+        );
+      }
+    }
+
     for (const base of ordered) {
       // A variable the repository already supplies wins: the user's own value for
       // MONGO_URI is a decision, and overwriting it would be DevLaunch overruling it.
       const declared = new Set(base.environmentVariables.filter((v) => v.value !== null).map((v) => v.key));
+      const wired = wireService(base, ordered, {
+        urls,
+        envKeys: opts.discovery?.envKeys ?? {},
+      });
+      for (const v of wired) {
+        opts.logs.write('stdout', `${base.name}: ${v.key}=${v.value} (${v.reason})`);
+      }
+
       const plan: ServiceRunPlan = {
         ...base,
         environmentVariables: [
           ...base.environmentVariables,
           ...injected.filter((v) => !declared.has(v.key)),
+          ...wired.map((v) => ({ key: v.key, value: v.value, required: false })),
         ],
       };
       const logs = new LogManager();
@@ -163,8 +209,17 @@ export class ProjectExecutor {
           // repository's own configuration expects, and the scoped one stays unique if
           // more than one session is ever allowed to run at a time.
           networkAliases: [plan.name, `${plan.name}-${opts.sessionId.slice(0, 8)}`],
+          hostPort: hostPorts[plan.name],
         });
-        services.push({ name: plan.name, role: plan.role, plan, handle, logs, state: ExecutionState.STARTING });
+        services.push({
+          name: plan.name,
+          role: plan.role,
+          plan,
+          handle,
+          logs,
+          hostPort: hostPorts[plan.name],
+          state: ExecutionState.STARTING,
+        });
       } catch (err) {
         // A service that cannot even be created sinks the project: releasing what is
         // already running is better than leaving a half-started one behind.

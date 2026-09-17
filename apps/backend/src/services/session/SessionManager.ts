@@ -433,6 +433,7 @@ export class SessionManager extends EventEmitter {
       logs: session.logs,
       backing: session.metadata?.backing,
       repoName: session.metadata?.packageJson?.name ?? repoNameFromUrl(session.repoUrl),
+      discovery: discoveryByService(session, project),
     });
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
@@ -820,6 +821,28 @@ export class SessionManager extends EventEmitter {
     this.sessions.clear();
     this.watchGeneration.clear();
   }
+}
+
+/**
+ * What discovery learned about each service, keyed by the name the plan gave it.
+ *
+ * Discovery works in directories and planning works in service names, so the two have to
+ * be joined before either the hardcoded origins or the declared variables can be used.
+ */
+function discoveryByService(
+  session: Session,
+  project: ProjectPlan,
+): { callsOrigins: Record<string, string[]>; envKeys: Record<string, string[]> } {
+  const callsOrigins: Record<string, string[]> = {};
+  const envKeys: Record<string, string[]> = {};
+
+  for (const plan of project.services) {
+    const found = session.metadata?.services?.find((c) => c.dir === plan.workingDirectory);
+    if (!found) continue;
+    if (found.callsOrigins) callsOrigins[plan.name] = found.callsOrigins;
+    if (found.envKeys) envKeys[plan.name] = found.envKeys;
+  }
+  return { callsOrigins, envKeys };
 }
 
 /** The repository's own name, for naming its database after it rather than after nothing. */

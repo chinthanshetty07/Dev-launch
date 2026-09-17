@@ -16,6 +16,13 @@ export interface CreateContainerOptions {
   /** Internal port to expose. Phase 3 consumes the resulting host mapping. */
   exposePort?: number | null;
   /**
+   * Host port to publish on, rather than letting Docker choose.
+   *
+   * Only used when the port must be known in advance; the caller is responsible for
+   * having checked it is free.
+   */
+  hostPort?: number;
+  /**
    * Names other containers on the same network can reach this one by.
    *
    * Only meaningful when `hostConfig.NetworkMode` names a user-defined network: Docker's
@@ -97,9 +104,13 @@ export class DockerManager {
     if (opts.exposePort) {
       const key = `${opts.exposePort}/tcp`;
       exposed[key] = {};
-      // Empty HostPort lets Docker assign a free port; we read the mapping back
-      // rather than scanning the host. See docs/planning-strategy.md.
-      bindings[key] = [{ HostPort: '' }];
+      // Empty HostPort lets Docker assign a free port; we read the mapping back rather
+      // than scanning the host. See docs/planning-strategy.md.
+      //
+      // A project names one instead: its services' URLs appear in each other's
+      // configuration and have to be decided before any container exists, which a port
+      // Docker has not assigned yet cannot be.
+      bindings[key] = [{ HostPort: opts.hostPort ? String(opts.hostPort) : '' }];
     }
 
     // Aliases are what let one service reach another by name. They live on the network
