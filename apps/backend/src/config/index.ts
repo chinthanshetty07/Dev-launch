@@ -118,6 +118,14 @@ export const config = {
      */
     awaitingInputMs: intEnv('DEVLAUNCH_TIMEOUT_AWAITING_INPUT_MS', 600_000),
     sessionHardCapMs: intEnv('DEVLAUNCH_TIMEOUT_SESSION_HARD_CAP_MS', 3_600_000),
+    /**
+     * How often a READY session re-checks that its container is still alive.
+     *
+     * Readiness is a measurement, not a promise: an application can be serving traffic
+     * one minute and dead the next. Without this the session keeps reporting READY,
+     * and hands out a URL that answers nothing, until the idle clock expires.
+     */
+    livenessMs: intEnv('DEVLAUNCH_TIMEOUT_LIVENESS_MS', 5_000),
     /** Grace period for SIGTERM before SIGKILL on stop. */
     stopGraceSec: intEnv('DEVLAUNCH_STOP_GRACE_SEC', 5),
   },

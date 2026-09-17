@@ -205,15 +205,39 @@ export class DockerManager {
    * Wait for exit, bounded. On timeout the container is stopped so the caller is never
    * left holding a running container it believes has finished.
    */
-  async waitForExit(container: Dockerode.Container, timeoutMs: number): Promise<ExitResult> {
+  /**
+   * Resolve when the container exits, or stop it once `timeoutMs` elapses.
+   *
+   * `budget` lifts the timeout without disturbing the wait. The deadline here is a
+   * *time-to-ready* budget, and an application that has become ready must outlive it —
+   * otherwise a healthy session is killed mid-use by the clock that was only ever
+   * meant to bound startup. Aborting the signal leaves `container.wait()` to decide
+   * the outcome alone, which is what the session lifetime clock then bounds.
+   */
+  async waitForExit(
+    container: Dockerode.Container,
+    timeoutMs: number,
+    budget?: AbortSignal,
+  ): Promise<ExitResult> {
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
 
     const timeout = new Promise<'timeout'>((resolve) => {
+      // An already-lifted budget leaves this promise permanently pending, so the race
+      // below is settled by the container itself.
+      if (budget?.aborted) return;
       timer = setTimeout(() => {
         timedOut = true;
         resolve('timeout');
       }, timeoutMs);
+      budget?.addEventListener(
+        'abort',
+        () => {
+          if (timer) clearTimeout(timer);
+          timer = undefined;
+        },
+        { once: true },
+      );
     });
 
     // Kept in a variable so the rejection can be absorbed: if the timeout wins the

@@ -145,9 +145,9 @@ doesn't:
 ## By the numbers
 
 - ~8,000 lines of TypeScript across backend, frontend and a shared contracts package
-- **331 tests**, of which roughly 100 are security tests and 50 drive real containers
-- 22 deterministic detectors; 13 failure signatures; 20 failure categories
-- 17 vendored fixtures, each reproducing exactly one behaviour — including one carrying
+- **399 tests**, of which 107 are security tests and 75 drive real containers or the network
+- 22 deterministic detectors; 13 failure signatures; 21 failure categories
+- 18 vendored fixtures, each reproducing exactly one behaviour — including one carrying
   a live prompt injection, to prove the allowlist stops it
 
 ## In ten seconds

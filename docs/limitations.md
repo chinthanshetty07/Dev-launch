@@ -76,3 +76,8 @@ rather than silent.
 READY means an HTTP server accepted a connection and returned a complete response. It
 does not mean the application works, that its routes behave, or that its data layer is
 healthy. A configured health check status is surfaced as a hint, never as a gate.
+
+Nor does it keep meaning anything. A READY session re-checks every five seconds that its
+container is still alive, and ends as `APPLICATION_EXITED` when it is not — but that
+check asks whether the process exists, not whether it still serves traffic. An
+application that wedges without exiting, or starts returning 500s, stays READY.

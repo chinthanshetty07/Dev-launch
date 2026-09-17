@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { ExecutionState, FailureCode, Sentinel, WrapperExit } from '@devlaunch/shared';
-import { classifyExit } from '../services/execution/ExecutionManager.js';
+import {
+  classifyExit,
+  classifyPostReadyExit,
+} from '../services/execution/ExecutionManager.js';
 
 const seen = (...markers: string[]) => new Set(markers);
 
@@ -85,5 +88,57 @@ describe('classifyExit', () => {
     const r = classifyExit({ exitCode: 127, timedOut: false }, seen());
     expect(r.failure?.code).toBe(FailureCode.UNKNOWN_RUNTIME_ERROR);
     expect(r.phase).toBe('none');
+  });
+});
+
+describe('classifyPostReadyExit', () => {
+  it('leaves a running container alone', () => {
+    expect(classifyPostReadyExit({ kind: 'running' })).toBeNull();
+  });
+
+  it('does not end a session because the container could not be inspected', () => {
+    // The decisive property. A Docker API hiccup is not evidence that an application
+    // died, and reporting it as one would hand the user a confident, invented failure
+    // — the same conflation that made exit-code attribution wrong before it was fixed.
+    expect(classifyPostReadyExit({ kind: 'unknown', error: 'socket hang up' })).toBeNull();
+  });
+
+  it('reports a crash after readiness as APPLICATION_EXITED, not a start failure', () => {
+    // START_COMMAND_FAILED would be wrong and actively misleading: the command was
+    // right, it ran, and it served traffic. Only the tail of the log explains this.
+    const v = classifyPostReadyExit({ kind: 'exited', exitCode: 1, oomKilled: false }, 'boom');
+    expect(v?.state).toBe(ExecutionState.FAILED);
+    expect(v?.failure?.code).toBe(FailureCode.APPLICATION_EXITED);
+    expect(v?.failure?.exitCode).toBe(1);
+    expect(v?.failure?.evidence).toBe('boom');
+  });
+
+  it('treats a clean exit as completion rather than failure', () => {
+    const v = classifyPostReadyExit({ kind: 'exited', exitCode: 0, oomKilled: false });
+    expect(v?.state).toBe(ExecutionState.COMPLETED);
+    expect(v?.failure).toBeUndefined();
+  });
+
+  it('names the signal behind a signal exit code', () => {
+    const v = classifyPostReadyExit({ kind: 'exited', exitCode: 137, oomKilled: false });
+    expect(v?.failure?.message).toContain('SIGKILL');
+  });
+
+  it('distinguishes an OOM kill from an ordinary crash', () => {
+    // Both surface as 137. The kernel SIGKILLs the process, so it writes nothing on the
+    // way out and the log classifier has nothing to match — State.OOMKilled is the only
+    // evidence that survives, and the remedy it points to is completely different.
+    const v = classifyPostReadyExit({ kind: 'exited', exitCode: 137, oomKilled: true });
+    expect(v?.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
+    expect(v?.failure?.remedy).toMatch(/memory|MEMORY/);
+  });
+
+  it('attributes a vanished container to removal rather than to the application', () => {
+    const v = classifyPostReadyExit({ kind: 'removed' });
+    expect(v?.state).toBe(ExecutionState.FAILED);
+    expect(v?.failure?.message).toMatch(/disappeared/i);
+    // Lower confidence: we know it is gone, not that the application had anything to
+    // do with it.
+    expect(v?.failure?.confidence).toBe('medium');
   });
 });

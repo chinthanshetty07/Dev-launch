@@ -27,6 +27,32 @@ function plan(overrides: Partial<RunPlan>): RunPlan {
   });
 }
 
+/**
+ * Connect to a freshly published host port, tolerating the forwarder's setup window.
+ *
+ * "The application is listening" and "the host port accepts connections" are different
+ * events. Under Colima the host side of a published port lives in the Lima VM's
+ * forwarder, which is wired up asynchronously after the container starts — so a
+ * connection attempted microseconds after the app logs that it is listening can be
+ * refused while everything is working correctly.
+ *
+ * Only ECONNREFUSED is retried, and only briefly. A wrong status, a wrong body, or any
+ * other error still fails immediately: the assertions this test exists for are
+ * unchanged. Production code never hits this because the readiness checker polls.
+ */
+async function connect(url: string, timeoutMs = 10_000): Promise<Response> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await fetch(url);
+    } catch (err) {
+      const code = (err as { cause?: { code?: string } }).cause?.code;
+      if (code !== 'ECONNREFUSED' || Date.now() > deadline) throw err;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+}
+
 describe('Phase 1 — Docker runner (integration)', () => {
   beforeAll(async () => {
     await docker.ping();
@@ -133,7 +159,7 @@ describe('Phase 1 — Docker runner (integration)', () => {
       const hostPort = await handle.hostPort();
       expect(hostPort).toBeTruthy();
 
-      const res = await fetch(`http://127.0.0.1:${hostPort}/hello`);
+      const res = await connect(`http://127.0.0.1:${hostPort}/hello`);
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({
         ok: true,

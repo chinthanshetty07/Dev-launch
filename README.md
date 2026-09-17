@@ -225,7 +225,7 @@ than passing with weaker isolation.
 |---|---|
 | [architecture.md](docs/architecture.md) | Pipeline, module map, and the decisions that shaped them |
 | [security.md](docs/security.md) | Threat model, what is enforced, and what deliberately is not |
-| [failure-model.md](docs/failure-model.md) | The 20 failure categories and how a cause is decided |
+| [failure-model.md](docs/failure-model.md) | The 21 failure categories and how a cause is decided |
 | [planning-strategy.md](docs/planning-strategy.md) | Every settled design decision. Ground truth for the build |
 | [setup.md](docs/setup.md) | Getting it running, configuration, troubleshooting |
 | [fixtures.md](docs/fixtures.md) | What each fixture exercises, and why they are vendored |

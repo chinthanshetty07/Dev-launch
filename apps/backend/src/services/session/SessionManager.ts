@@ -12,7 +12,12 @@ import {
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
 import { LogManager } from '../logs/LogManager.js';
-import type { ExecutionManager, LaunchHandle } from '../execution/ExecutionManager.js';
+import {
+  classifyPostReadyExit,
+  type ContainerLiveness,
+  type ExecutionManager,
+  type LaunchHandle,
+} from '../execution/ExecutionManager.js';
 import type { GitManager } from '../git/GitManager.js';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
@@ -107,6 +112,8 @@ export interface SessionManagerDeps {
   aiRepair?: AIRepair;
   /** Overridable so the unanswered-input timeout can be tested without waiting minutes. */
   awaitingInputMs?: number;
+  /** Overridable so the liveness watch can be tested without waiting seconds. */
+  livenessIntervalMs?: number;
 }
 
 /**
@@ -124,6 +131,8 @@ export interface SessionManagerDeps {
 export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, Session>();
   private readonly timers = new Map<string, NodeJS.Timeout[]>();
+  /** Current liveness watch per session, so a re-armed lifetime supersedes the old one. */
+  private readonly watchGeneration = new Map<string, number>();
   private readonly validator = new RunPlanValidator();
 
   constructor(
@@ -379,14 +388,36 @@ export class SessionManager extends EventEmitter {
     if (outcome.state === ExecutionState.READY) {
       session.readyAt = Date.now();
       session.url = outcome.url;
+      // A repaired session carries the diagnosis of the attempt that failed. Once it is
+      // ready that diagnosis is history, and leaving it set would show an error against
+      // a working application.
+      session.failure = undefined;
+      // The startup budget has done its job. Left in place it stops this container the
+      // moment it elapses — a ten-minute ceiling on a session the lifetime clock
+      // believes it has an hour to run.
+      handle.clearStartupBudget?.();
       this.setState(session, ExecutionState.READY);
       this.armLifetime(session);
       return;
     }
 
+    // Keep the first diagnosis. It describes the repository as the user wrote it; every
+    // later one describes a plan the model invented. Overwriting it answers a question
+    // nobody asked — and makes the reported cause depend on model output, which is why
+    // an application that plainly binds loopback could be reported as failing to start.
+    const original = (session.failure ??= outcome.failure);
+
     if (await this.tryRepair(session, outcome.failure, sourceDir, req)) return;
 
-    session.failure = outcome.failure;
+    if (session.repairAttempts?.length && outcome.failure?.code !== original?.code) {
+      session.logs.buffer.push(
+        'stderr',
+        `Repair did not help. Reporting the original diagnosis (${original?.code}); the ` +
+          `last attempt reported ${outcome.failure?.code ?? 'no failure'}.`,
+      );
+    }
+
+    session.failure = original ?? outcome.failure;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
   }
@@ -505,6 +536,105 @@ export class SessionManager extends EventEmitter {
     ];
     for (const t of timers) t.unref?.();
     this.timers.set(session.id, timers);
+    this.watchLiveness(session);
+  }
+
+  /**
+   * Keep checking that a READY session's container is still alive.
+   *
+   * Readiness was a measurement taken once. An application can serve a request and
+   * then crash, get OOM-killed, or have its container removed from underneath it —
+   * after which the session went on reporting READY, and handing out a URL that
+   * answered nothing, until the idle clock expired half an hour later.
+   *
+   * Only a definite answer ends the session. "I could not inspect the container" is
+   * not evidence that an application died, and treating it as such would turn every
+   * Docker API hiccup into a spurious failure report.
+   */
+  private watchLiveness(session: Session): void {
+    const handle = session.handle;
+    if (typeof handle?.liveness !== 'function') return;
+    const interval = this.deps.livenessIntervalMs ?? config.timeouts.livenessMs;
+    let unknowns = 0;
+
+    // `touch()` re-arms the lifetime on every session read, which starts a new watch.
+    // Without a generation the old one survives its in-flight probe and re-schedules
+    // itself into the new timer list, so an actively-polled session would accumulate
+    // watchers.
+    const generation = (this.watchGeneration.get(session.id) ?? 0) + 1;
+    this.watchGeneration.set(session.id, generation);
+    const current = (): boolean =>
+      this.watchGeneration.get(session.id) === generation &&
+      session.state === ExecutionState.READY;
+
+    const schedule = (): void => {
+      // A cleared timer list means the session was torn down. Not re-scheduling is how
+      // this watch stops, so it cannot outlive the session it belongs to.
+      const timers = this.timers.get(session.id);
+      if (!timers || !current()) return;
+      const timer = setTimeout(() => void tick(), interval);
+      timer.unref?.();
+      timers.push(timer);
+    };
+
+    const tick = async (): Promise<void> => {
+      if (!current()) return;
+
+      let liveness: ContainerLiveness;
+      try {
+        liveness = await handle.liveness();
+      } catch (err) {
+        liveness = { kind: 'unknown', error: err instanceof Error ? err.message : String(err) };
+      }
+
+      // Re-checked after the await: the session may have been torn down, or superseded
+      // by a newer watch, while the probe was in flight. Reviving either would be worse
+      // than missing one poll.
+      if (!current()) return;
+
+      if (liveness.kind === 'unknown') {
+        // Reported once per run of consecutive failures rather than every poll, which
+        // at a five-second interval would bury the application's own output.
+        if (unknowns === 0) {
+          session.logs.buffer.push(
+            'stderr',
+            `Liveness check could not read the container state${
+              liveness.error ? `: ${liveness.error}` : ''
+            }. The session is still treated as ready.`,
+          );
+        }
+        unknowns++;
+        schedule();
+        return;
+      }
+      unknowns = 0;
+
+      const verdict = classifyPostReadyExit(liveness, lastLogLine(session));
+      if (!verdict) {
+        schedule();
+        return;
+      }
+
+      // The URL is dead the moment the container is. Continuing to advertise it is the
+      // whole defect this watch exists to close.
+      session.url = undefined;
+      if (verdict.failure) {
+        session.failure = verdict.failure;
+        session.logs.buffer.push('stderr', verdict.failure.message);
+      } else {
+        session.logs.buffer.push('stdout', 'The application exited cleanly.');
+      }
+
+      this.setState(session, ExecutionState.CLEANING_UP);
+      await this.teardown(session);
+      this.setState(
+        session,
+        verdict.state,
+        verdict.failure ? 'the application stopped running' : 'the application exited',
+      );
+    };
+
+    schedule();
   }
 
   touch(id: string): void {
@@ -584,6 +714,7 @@ export class SessionManager extends EventEmitter {
     for (let i = 0; i < excess; i++) {
       const stale = finished[i]!;
       this.clearTimers(stale.id);
+      this.watchGeneration.delete(stale.id);
       stale.logs.removeAllListeners();
       stale.logs.buffer.clear();
       this.sessions.delete(stale.id);
@@ -593,5 +724,16 @@ export class SessionManager extends EventEmitter {
   async shutdown(): Promise<void> {
     await Promise.all(this.list().map((s) => this.cancel(s.id)));
     this.sessions.clear();
+    this.watchGeneration.clear();
   }
+}
+
+/** The last line the application wrote, which is where a post-ready death explains itself. */
+function lastLogLine(session: Session): string | undefined {
+  const entries = session.logs.buffer.all();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const text = entries[i]!.text.trim();
+    if (text) return text.slice(0, 500);
+  }
+  return undefined;
 }

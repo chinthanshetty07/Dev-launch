@@ -30,7 +30,9 @@ interface Explained {
 /** Reach the private attribution path directly; it is the branch under test. */
 type Internals = {
   explainNotReady(...args: unknown[]): Promise<Explained>;
-  containerState(container: unknown): Promise<{ running: boolean; exitCode: number } | null>;
+  containerState(
+    container: unknown,
+  ): Promise<{ running: boolean; exitCode: number; oomKilled?: boolean } | null>;
 };
 
 const internals = (exec: ExecutionManager) => exec as unknown as Internals;
@@ -98,7 +100,9 @@ describe('container state attribution', () => {
     );
 
     const state = await internals(exec).containerState({});
-    expect(state).toEqual({ running: true, exitCode: 0 });
+    // Exact shape, not a subset: a field silently going missing is the kind of change
+    // this assertion exists to catch.
+    expect(state).toEqual({ running: true, exitCode: 0, oomKilled: false });
     expect(calls).toBe(3);
   });
 

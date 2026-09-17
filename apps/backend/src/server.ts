@@ -43,7 +43,18 @@ export interface StartedServer {
   close: () => Promise<void>;
 }
 
-export async function startServer(port = 0): Promise<StartedServer> {
+export interface ServerOptions {
+  /**
+   * Force the AI fallback off even when a key is configured.
+   *
+   * A repairable failure costs two live model calls, so any test that provokes one
+   * inherits an external, rate-limited service's latency and output. Tests that are not
+   * about AI turn it off and stay deterministic; the default is unchanged.
+   */
+  ai?: boolean;
+}
+
+export async function startServer(port = 0, opts: ServerOptions = {}): Promise<StartedServer> {
   loadDotEnv();
 
   const docker = new DockerManager();
@@ -53,7 +64,7 @@ export async function startServer(port = 0): Promise<StartedServer> {
   // AI is opt-in. Without a key DevLaunch plans deterministically and reports
   // UNSUPPORTED_PROJECT for anything its detectors do not recognise — which is the
   // shipped v1 behaviour, not a degraded mode.
-  const aiEnabled = GroqProvider.isConfigured();
+  const aiEnabled = opts.ai !== false && GroqProvider.isConfigured();
   const provider = aiEnabled ? new GroqProvider() : undefined;
   if (aiEnabled) {
     console.log(`AI fallback enabled via ${provider!.name} (${process.env.GROQ_MODEL ?? 'default model'})`);

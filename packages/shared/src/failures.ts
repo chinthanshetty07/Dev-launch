@@ -31,6 +31,14 @@ export const FailureCode = {
    * 1 GB ceiling a React install reaches it routinely.
    */
   OUT_OF_MEMORY: 'OUT_OF_MEMORY',
+  /**
+   * Added: the application exited *after* it had been reported ready.
+   *
+   * Distinct from START_COMMAND_FAILED, which means it never started at all. The
+   * remedy differs: the command was right, and the interesting evidence is the tail of
+   * the log rather than the plan.
+   */
+  APPLICATION_EXITED: 'APPLICATION_EXITED',
   CONTAINER_CREATE_FAILED: 'CONTAINER_CREATE_FAILED',
   UNKNOWN_RUNTIME_ERROR: 'UNKNOWN_RUNTIME_ERROR',
 } as const;

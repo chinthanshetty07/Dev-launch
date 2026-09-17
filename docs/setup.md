@@ -109,6 +109,7 @@ Everything is optional; defaults live in `apps/backend/src/config`.
 | `DEVLAUNCH_TIMEOUT_TIME_TO_READY_MS` | 600000 | Clone → ready budget |
 | `DEVLAUNCH_TIMEOUT_SESSION_IDLE_MS` | 1800000 | Idle timeout, starts at READY |
 | `DEVLAUNCH_TIMEOUT_AWAITING_INPUT_MS` | 600000 | How long an unanswered gate holds the slot |
+| `DEVLAUNCH_TIMEOUT_LIVENESS_MS` | 5000 | How often a READY session re-checks its container |
 
 ## Troubleshooting
 

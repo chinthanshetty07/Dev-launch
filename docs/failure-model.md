@@ -29,8 +29,9 @@ codes are consulted **only while the wrapper still owns the process** — that i
 
 ## Taxonomy
 
-20 codes. The original plan defined 14; five were added from things that actually
-happened during the build, and one (`CONTAINER_CREATE_FAILED`) from a setup failure mode.
+21 codes. The original plan defined 14; five were added from things that actually
+happened during the build, one (`CONTAINER_CREATE_FAILED`) from a setup failure mode, and
+one (`APPLICATION_EXITED`) once sessions started re-checking liveness after readiness.
 
 | Code | Meaning |
 |---|---|
@@ -52,6 +53,7 @@ happened during the build, and one (`CONTAINER_CREATE_FAILED`) from a setup fail
 | **`ARCH_INCOMPATIBLE`** | x86-only dependency on arm64 |
 | **`REPOSITORY_TOO_LARGE`** | Exceeded intake caps |
 | **`OUT_OF_MEMORY`** | Killed for exceeding the memory limit |
+| **`APPLICATION_EXITED`** | Died *after* it had become ready |
 | `CONTAINER_CREATE_FAILED` | Working directory missing inside the container |
 | `UNKNOWN_RUNTIME_ERROR` | Not confidently classifiable |
 
@@ -71,6 +73,29 @@ into `DEPENDENCY_INSTALL_FAILED` would hide the one useful fact.
 **`ARCH_INCOMPATIBLE`** exists because development targets Apple Silicon and v1 does not
 emulate. Without it these land in `UNKNOWN_RUNTIME_ERROR` with a cryptic
 `Exec format error`.
+
+**`APPLICATION_EXITED`** is the only code that describes something going wrong *after*
+success. `START_COMMAND_FAILED` would be actively misleading here: the command was right,
+it ran, and it served traffic. Nothing about the plan needs changing, so the remedy points
+at the end of the log rather than at the planner — and unlike every other code in this
+table, it is never repairable, because there is nothing in the plan to repair.
+
+## Liveness after readiness
+
+Readiness is a measurement taken once, not a promise that holds. An application can
+answer a request and then crash, get OOM-killed, or have its container removed from
+underneath it.
+
+A `READY` session therefore re-checks its container every five seconds
+(`DEVLAUNCH_TIMEOUT_LIVENESS_MS`) and ends when it is gone. Three rules govern that check:
+
+- **Only a definite answer ends the session.** "I could not inspect the container" is not
+  evidence that an application died. Treating a busy Docker daemon as a dead application
+  would be a worse failure than the one this catches.
+- **A clean exit is completion, not failure.** A server that returns `0` shut itself down.
+- **An OOM kill is told apart from an ordinary crash.** Both surface as exit `137`, and
+  the kernel's `SIGKILL` means the process writes nothing on its way out — so the log
+  classifier has no signature to match and `State.OOMKilled` is the only evidence left.
 
 ## Signature matching
 

@@ -1,5 +1,161 @@
 # Changelog
 
+## 2026-09-17 — Liveness after readiness, and two defects found closing it
+
+Follows `828d0fb`. Closes the item that verification left open, and two more that closing
+it exposed. Not deployed; local tool.
+
+### 1. A `READY` session never checked whether its application was still running
+
+Readiness was a measurement taken once and then trusted indefinitely. An application that
+answered a request and crashed a minute later left the session reporting `READY`, and
+offering a URL that answered nothing, until the idle clock expired half an hour on.
+
+A `READY` session now re-checks its container every five seconds
+(`DEVLAUNCH_TIMEOUT_LIVENESS_MS`) and ends when it is gone: `APPLICATION_EXITED` for a
+crash, `COMPLETED` for a clean exit, `OUT_OF_MEMORY` when the kernel killed it. The URL is
+cleared, and the container released rather than merely relabelled.
+
+Three rules govern the check:
+
+- **Only a definite answer ends the session.** `unknown` — an inspect that failed after
+  three retries — leaves the session `READY` and logs once. The opposite choice would
+  turn every busy-daemon hiccup into a fabricated report that the user's app had died,
+  which is a worse failure than the one being caught. This is the same conflation that
+  made exit-code attribution wrong in defect 4 of the previous entry.
+- **A clean exit is completion, not failure.** A server that returns 0 shut itself down.
+- **An OOM kill is told apart from an ordinary crash.** Both surface as exit `137`, and
+  the kernel's `SIGKILL` leaves no log line for the signature classifier to match, so
+  `State.OOMKilled` is the only evidence that survives.
+
+`APPLICATION_EXITED` is new, and is the only code describing something going wrong after
+success. `START_COMMAND_FAILED` would be actively misleading: the command was right, it
+ran, and it served traffic.
+
+- **Verified:** a new fixture, `node-dies-after-ready`, serves a real HTTP 200 and then
+  exits 3. The session reaches `READY`, is fetched successfully, and flips to `FAILED` /
+  `APPLICATION_EXITED` with `exitCode: 3` about three seconds later, quoting the app's
+  last log line as evidence. A second test kills a healthy container with `SIGKILL` from
+  outside and gets `APPLICATION_EXITED` naming the signal.
+- **Proven able to fail:** with the watch removed, the same test reports
+  `Timed out waiting for FAILED/COMPLETED; session is READY` after 60 seconds — which is
+  precisely the defect. Three further mutations (treating `unknown` as death, keeping the
+  dead URL, skipping the budget release) each turned a test red and green again on
+  restore.
+- **A defect in this fix, caught by mutation testing.** `touch()` re-arms the lifetime on
+  every `GET /api/sessions/:id`, and each re-arm starts a watch; a watch whose probe was
+  in flight survived the timer sweep and re-scheduled itself into the new list, so an
+  actively-polled session accumulated watchers. A generation token now supersedes the old
+  watch. The first version of the test for this passed with the guard removed, because a
+  fake probe that resolves in a microtask never creates the window the bug needs —
+  measured with a 15 ms probe, a polled session ran 40 probes per 200 ms against a
+  correct 10.
+
+### 2. Every session was killed at ten minutes, whatever the lifetime clock said
+
+Found immediately by the watch in defect 1, which reported healthy applications dying for
+no visible reason.
+
+`docs/architecture.md` documented two clocks, "deliberately": a ~10 minute time-to-ready
+budget, and a session lifetime of 30 minutes idle / 60 minutes hard cap starting at
+`READY`. The code did not implement that. `waitForExit` enforces the budget by **stopping
+the container** when it elapses, and nothing released it on `READY` — so the container was
+stopped ten minutes after launch regardless, with nothing in the logs to explain it. The
+document asserted the exact property the code violated.
+
+The budget is now liftable via an `AbortSignal`, and a session releases it on `READY`.
+
+- **Verified:** a container launched with a 2-second budget, made ready, then left for 6
+  seconds, is still running and still serving HTTP 200. Reverting the fix turns that test
+  red with `expected false to be true`.
+- **Also verified: the budget still bites.** A container that never becomes ready is
+  still stopped when its budget elapses — lifting it on `READY` must not disarm it for an
+  application that never gets there.
+- A derived `.catch()` now absorbs the exit promise's rejection. Nothing awaits it on the
+  session path, and lifting the budget makes "container removed while the wait is in
+  flight" a reachable state rather than a theoretical one.
+
+### 3. Repair replaced an accurate diagnosis with a guess about its own guess
+
+Found while establishing determinism: one full run in three failed with
+`expected 'START_COMMAND_FAILED' to be 'PORT_BOUND_TO_LOCALHOST'`.
+
+`node-bind-localhost` hardcodes `127.0.0.1`, which no plan change can fix — but
+`PORT_BOUND_TO_LOCALHOST` is repairable in general (Vite, Flask and Django all bind
+loopback *by default*, where `--host 0.0.0.0` genuinely fixes it), so the session spent
+two live model calls on it. When repair was exhausted the session reported the **last**
+attempt's failure, which describes a plan the model invented rather than the repository
+the user wrote. Measured directly against the real pipeline, three runs of the same input
+ended on three different plans: `npm run start -- --host 0.0.0.0`, `npm run start`, and
+`node server.js`.
+
+So the cause a user was shown depended on model output, and an application that plainly
+binds loopback could be reported as failing to start. The first diagnosis is now kept, and
+what the attempts produced is logged rather than presented as the cause.
+
+- **Verified:** the real pipeline now reports `PORT_BOUND_TO_LOCALHOST` regardless of
+  which plans repair tries. Reverting to last-failure-wins reproduces the original suite
+  failure exactly.
+- **A consequence of this fix, found by review.** Retaining the first failure meant a
+  session that repair *did* fix arrived at `READY` still carrying the diagnosis of the
+  attempt that failed — an error shown against a working application. Cleared at `READY`;
+  reverting that turns its test red.
+- **Not addressed:** `tryRepair`'s comment claims each attempt "must differ from the
+  last", and nothing enforces it — one probe run had the model return the identical
+  command and it was accepted, spending a container launch to learn nothing. Enforcing it
+  changes how many model calls a repair costs, which is a product decision rather than a
+  bug fix.
+
+### A second suite taken off the live model
+
+The same streaming suite failed a different way on another run: the listener timed out
+after 90 seconds, and the next test then failed on the concurrency limit because the
+session was still going. The cause is the same test provoking a repairable failure with a
+key configured — two live model calls, whose latency belongs to a rate-limited external
+service.
+
+The previous entry made the Groq tests opt-in for exactly this reason. This suite was
+paying the same cost without being about AI at all, so `startServer` now takes
+`{ ai: false }` and the streaming tests use it. The default is unchanged.
+
+- **Verified:** three consecutive runs of that suite, 7 passed each.
+
+### One test made honest about a race it was losing
+
+`dockerRunner`'s "serves real traffic" test fetched a published host port immediately
+after the application logged that it was listening. Under Colima the host side of a
+published port lives in the Lima VM's forwarder, wired up asynchronously after the
+container starts, so the connection can be refused while everything works correctly. It
+passed 5/5 alone and failed roughly 1 in 3 under full-suite load.
+
+The fetch now retries **only** `ECONNREFUSED`, for at most 10 seconds. Every assertion is
+unchanged, and pointing the same test at a genuinely unreachable application still fails
+it. Production code never meets this race because the readiness checker polls.
+
+### Testing
+
+- Suite grew from 379 to 399 tests (396 passing, 3 skipped).
+- **Four** consecutive full runs are identical, with zero residual containers, clone
+  directories or scratch directories.
+- Nine mutations were used to prove the new tests can fail; each is named above. One of
+  them initially did *not* fail, which is how the generation-guard test was found to be
+  testing nothing.
+- **End to end, by hand:** `https://github.com/heroku/node-js-getting-started` cloned,
+  detected as `express` by the rule-based planner, `READY` in 9.1 s serving HTTP 200 and
+  9,109 bytes. Killing its container from outside moved the session to `FAILED` /
+  `APPLICATION_EXITED` — "terminated by SIGKILL after it had become ready" — 5.1 seconds
+  later, with the URL cleared. The 5-second poll interval accounts for the delay.
+- **Live AI suite (opt-in, `DEVLAUNCH_LIVE_AI=1`): 1 passed, 2 failed on quota, not on
+  code.** Groq's free tier has a *daily* token budget, and a day of repair probing
+  exhausted it: `tokens per day (TPD): Limit 200000, Used 198916`. Planning prompts are
+  small enough to still get through; repair prompts carry logs and metadata and do not.
+  The product behaves correctly under it — the repair reports
+  `429 (rate limited, and retries were exhausted)`, the session falls back to the original
+  diagnosis, and no container leaks. Re-runnable tomorrow.
+- **Not addressed, still open:** the liveness check asks whether the process exists, not
+  whether it still serves traffic. An application that wedges without exiting, or starts
+  returning 500s, stays `READY`. Recorded in `docs/limitations.md`.
+
 ## 2026-09-17 — Independent verification, and nine defects it found
 
 Branch `main`, working tree on top of `46ca3c1`. Not deployed; local tool.
@@ -58,7 +214,7 @@ unscoped `sweepAllOrphans` runs only at startup, when no run of ours can be in f
   each other. After the fix, three consecutive full runs were identical.
 - **Known limitation:** a session that is already `READY` when its container disappears
   still reports `READY` — nothing re-checks liveness after readiness is reached. Recorded
-  below as not done.
+  below as not done, and closed by the entry above this one.
 
 ### 3. The capability test proved something other than what it claimed
 
@@ -171,6 +327,7 @@ against a real Express server with a stubbed executor.
   readiness, the session reports `READY` against a dead URL indefinitely. Found by the
   verifier; scoping the orphan sweep removes the common cause but not the class. Needs a
   periodic health re-check, which is a behavioural change beyond a verification pass.
+  **Closed** by defect 1 of the entry above.
 - **`RepositoryMetadata.fileCount`/`sizeBytes` measure the repository root even when
   analysing a subdirectory.** Cosmetic; no consumer depends on it.
 - **The denylist in defect 1 is not exhaustive by construction.** An allowlist is not

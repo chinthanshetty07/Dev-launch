@@ -148,5 +148,17 @@ alternatives are guessing or failing.
 The original plan had a single ~10 minute budget covering everything, which would have
 killed a working application while someone was still using it.
 
+The handover between them has to be explicit. The time-to-ready budget is enforced by
+stopping the container when it elapses, so a session that reaches READY **releases** it;
+left armed it did exactly what splitting the clocks was meant to prevent — a ten-minute
+ceiling on every session, with nothing in the logs to explain the death.
+
+Once the lifetime clock owns the session, a **liveness check** every five seconds decides
+whether the application is still there. Readiness was a measurement taken once, and an
+application that has served a request can still crash a minute later; without the check
+the session reported READY, and offered a URL that answered nothing, until the idle clock
+expired. Only a definite answer ends it — an un-inspectable container is not evidence of a
+dead application.
+
 A third bound covers `AWAITING_INPUT` (10 min). Concurrency is 1, so a session nobody
 answers would otherwise hold the only slot until the process restarted.

@@ -63,7 +63,12 @@ describe('Phase 4 — log streaming reaches a client', () => {
   beforeAll(async () => {
     await docker.ping();
     await docker.ensureImage('devlaunch/node:20');
-    server = await startServer(0);
+    // AI off: this suite is about log streaming, and `node-bind-localhost` provokes a
+    // repairable failure. With a key configured that costs two live model calls, whose
+    // latency is a rate-limited external service's to decide — one run spent 90 seconds
+    // on them and timed the listener out, then wedged the next test on the concurrency
+    // limit. The failure this suite asserts is deterministic; the repair around it is not.
+    server = await startServer(0, { ai: false });
   }, 300_000);
 
   afterAll(async () => {

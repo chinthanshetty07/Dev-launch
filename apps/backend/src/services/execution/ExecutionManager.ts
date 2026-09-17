@@ -63,9 +63,31 @@ export interface LaunchHandle {
   hostPort(): Promise<string | null>;
   /** Poll until the application answers, then explain the result either way. */
   waitForReady(timeoutMs?: number): Promise<ReadyOutcome>;
+  /** Is the container still alive? Answers "I do not know" rather than guessing. */
+  liveness(): Promise<ContainerLiveness>;
+  /**
+   * Stop applying the time-to-ready budget to this container.
+   *
+   * Called once the application is ready. The budget exists to bound *startup*; left
+   * running it stops a perfectly healthy container the moment it elapses, which is a
+   * ten-minute ceiling on every session regardless of the lifetime clock.
+   */
+  clearStartupBudget(): void;
   stop(): Promise<void>;
   cleanup(): Promise<{ errors: Error[] }>;
 }
+
+/**
+ * What a liveness probe found.
+ *
+ * `unknown` is a first-class answer, not an error to be smoothed over: a Docker API
+ * hiccup must never be reported to the user as their application having died.
+ */
+export type ContainerLiveness =
+  | { kind: 'running' }
+  | { kind: 'exited'; exitCode: number; oomKilled: boolean }
+  | { kind: 'removed' }
+  | { kind: 'unknown'; error?: string };
 
 export interface RunResult {
   state: ExecutionState;
@@ -181,6 +203,100 @@ export function classifyExit(
   };
 }
 
+/**
+ * Decide what a liveness probe means for a session that had already become ready.
+ *
+ * Separate from `classifyExit` because the two answer different questions. That one
+ * asks "which phase did this die in", and leans on sentinels to work it out. By the
+ * time an application is ready every phase has already succeeded, so the phase is
+ * known and the only open questions are whether it died and why.
+ *
+ * Returns null when the session should be left alone — which covers "still running"
+ * and, importantly, "I could not tell". Reporting a Docker API hiccup as a dead
+ * application would be inventing a failure out of a failure to observe one.
+ *
+ * Pure and exported so every branch can be tested without Docker.
+ */
+export function classifyPostReadyExit(
+  liveness: ContainerLiveness,
+  evidence?: string,
+): { state: ExecutionState; failure?: FailureDetail } | null {
+  if (liveness.kind === 'running' || liveness.kind === 'unknown') return null;
+
+  if (liveness.kind === 'removed') {
+    return {
+      state: ExecutionState.FAILED,
+      failure: {
+        code: FailureCode.APPLICATION_EXITED,
+        message: 'The container disappeared while the application was running.',
+        phase: 'start',
+        remedy:
+          'Something outside DevLaunch removed it — check for a stray `docker rm` or a ' +
+          'system prune, then start the session again.',
+        confidence: 'medium',
+      },
+    };
+  }
+
+  const { exitCode, oomKilled } = liveness;
+
+  if (oomKilled) {
+    return {
+      state: ExecutionState.FAILED,
+      failure: {
+        code: FailureCode.OUT_OF_MEMORY,
+        message:
+          `The application was killed for exceeding the container's ` +
+          `${config.container.memoryMb} MB memory limit after it had become ready.`,
+        exitCode,
+        phase: 'start',
+        remedy:
+          'Raise DEVLAUNCH_CONTAINER_MEMORY_MB, or run the production build instead of ' +
+          'a dev server — watch mode holds the whole module graph in memory.',
+        confidence: 'high',
+      },
+    };
+  }
+
+  // A server that returns 0 shut itself down rather than crashed. Calling that a
+  // failure would be wrong; the session is simply over.
+  if (exitCode === 0) {
+    return { state: ExecutionState.COMPLETED };
+  }
+
+  // Exit codes above 128 encode the signal that killed the process. Naming it turns an
+  // opaque "137" into something the user can act on.
+  const signal = exitCode > 128 && exitCode < 256 ? SIGNALS[exitCode - 128] : undefined;
+
+  return {
+    state: ExecutionState.FAILED,
+    failure: {
+      code: FailureCode.APPLICATION_EXITED,
+      message: signal
+        ? `The application was terminated by ${signal} after it had become ready.`
+        : `The application exited with code ${exitCode} after it had become ready.`,
+      exitCode,
+      phase: 'start',
+      evidence,
+      remedy:
+        'It started correctly, so the plan is not the problem. The end of the log is ' +
+        'where the cause will be.',
+      confidence: 'high',
+    },
+  };
+}
+
+/** Signal names for the exit codes that encode them, for the ones a container sees. */
+const SIGNALS: Readonly<Record<number, string>> = {
+  1: 'SIGHUP',
+  2: 'SIGINT',
+  3: 'SIGQUIT',
+  6: 'SIGABRT',
+  9: 'SIGKILL',
+  11: 'SIGSEGV',
+  15: 'SIGTERM',
+};
+
 export class ExecutionManager {
   /** Network the most recent launch used; undefined means the egress policy is absent. */
   lastNetworkUsed: string | undefined;
@@ -262,12 +378,27 @@ export class ExecutionManager {
       const stream = await this.docker.followLogs(container);
       const streaming = logs.attach(container, stream);
 
+      // The time-to-ready budget stops the container when it elapses. That is right
+      // for a container that never became ready and wrong for one that did, so the
+      // deadline is made liftable and the session releases it on READY.
+      const startupBudget = new AbortController();
+
       const exit = this.docker
-        .waitForExit(container, opts.timeoutMs ?? config.timeouts.timeToReadyMs)
+        .waitForExit(
+          container,
+          opts.timeoutMs ?? config.timeouts.timeToReadyMs,
+          startupBudget.signal,
+        )
         .then(async (r) => {
           await streaming.catch(() => undefined);
           return r;
         });
+
+      // Once the budget is lifted this promise outlives readiness, and in the session
+      // path nobody awaits it. Absorbing the rejection on a *derived* promise keeps a
+      // container removed mid-wait from taking the process down, while an awaiting
+      // caller (runToCompletion) still sees the error.
+      exit.catch(() => undefined);
 
       return {
         sessionId: opts.sessionId,
@@ -287,6 +418,8 @@ export class ExecutionManager {
         hostPort: () => this.ports.hostPortFor(container, opts.plan.expectedPort),
         waitForReady: (timeoutMs) =>
           this.waitForReady(container, opts.plan, sentinels, timeoutMs, logs),
+        liveness: () => this.liveness(container),
+        clearStartupBudget: () => startupBudget.abort(),
         stop: () => this.docker.stop(container),
         cleanup: () => cleanup.cleanup(),
       };
@@ -505,10 +638,29 @@ export class ExecutionManager {
    * Returning null for "unknown" forces the caller to decide what to do about not
    * knowing, rather than being handed a fabricated certainty.
    */
+  /**
+   * One inspect, reported as a liveness answer rather than as a diagnosis.
+   *
+   * Deliberately thin: the decision about what a dead container *means* belongs to
+   * `classifyPostReadyExit`, which is pure and therefore testable without Docker.
+   */
+  private async liveness(container: Dockerode.Container): Promise<ContainerLiveness> {
+    const state = await this.containerState(container);
+    if (state === null) return { kind: 'unknown', error: this.lastInspectError };
+    if (state.removed) return { kind: 'removed' };
+    if (state.running) return { kind: 'running' };
+    return { kind: 'exited', exitCode: state.exitCode, oomKilled: state.oomKilled === true };
+  }
+
   private async containerState(
     container: Dockerode.Container,
     attempts = 3,
-  ): Promise<{ running: boolean; exitCode: number; removed?: boolean } | null> {
+  ): Promise<{
+    running: boolean;
+    exitCode: number;
+    removed?: boolean;
+    oomKilled?: boolean;
+  } | null> {
     let lastError: unknown;
 
     // Inspect is an idempotent read, so a transient failure is worth retrying rather
@@ -519,14 +671,21 @@ export class ExecutionManager {
       try {
         const info = await this.docker.inspect(container);
         this.lastInspectError = undefined;
-        return { running: info.State.Running === true, exitCode: info.State.ExitCode ?? -1 };
+        return {
+          running: info.State.Running === true,
+          exitCode: info.State.ExitCode ?? -1,
+          // The kernel's OOM killer sends SIGKILL, so the process writes nothing on its
+          // way out. This flag is the only evidence that survives, which makes it the
+          // only way to tell an out-of-memory death from an ordinary crash.
+          oomKilled: info.State.OOMKilled === true,
+        };
       } catch (err) {
         // 404 is an answer, not a failure to get one: the container has been removed,
         // so it is definitively not running. Retrying cannot change that, and reporting
         // it as "unknown" discards information we actually have.
         if ((err as { statusCode?: number }).statusCode === 404) {
           this.lastInspectError = undefined;
-          return { running: false, exitCode: -1, removed: true };
+          return { running: false, exitCode: -1, removed: true, oomKilled: false };
         }
         lastError = err;
         if (i < attempts - 1) await new Promise((r) => setTimeout(r, 150 * 2 ** i));

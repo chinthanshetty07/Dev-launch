@@ -1,0 +1,7 @@
+{
+  "name": "fixture-node-dies-after-ready",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serves traffic, then exits non-zero. Exercises the post-ready liveness watch.",
+  "scripts": { "start": "node server.js" }
+}
