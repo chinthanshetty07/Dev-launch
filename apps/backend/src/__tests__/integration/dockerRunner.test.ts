@@ -8,7 +8,7 @@ import { CleanupManager } from '../../services/cleanup/CleanupManager.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(HERE, '../../../../../fixtures');
-const IMAGE = 'node:20-slim';
+const IMAGE = 'devlaunch/node:20';
 
 const docker = new DockerManager();
 const exec = new ExecutionManager(docker);

@@ -27,8 +27,14 @@ Containers can reach the public internet, because `npm install` and `pip install
 require registry access. Restricting this meaningfully would need a MITM proxy with a
 package allowlist, which is out of scope.
 
-What *is* enforced: RFC1918 and 169.254.0.0/16 are blocked, so a container cannot
-reach the LAN or cloud metadata endpoints.
+What *is* enforced, once `scripts/setup-network-policy.sh` has been run: RFC1918 and
+169.254.0.0/16 are blocked, and so is the VM host itself, so a container cannot reach
+the LAN, the cloud metadata endpoint, or anything listening on the Colima VM.
+
+The rules live inside the Colima VM and do **not** survive recreating that VM. If the
+network is absent the runner falls back to the default bridge and the security test
+fails loudly rather than passing silently — but a run started that way has weaker
+isolation than this document otherwise claims.
 
 ## ARM64 only
 

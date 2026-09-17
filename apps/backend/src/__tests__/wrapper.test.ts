@@ -78,9 +78,11 @@ describe('buildWrapperEnv', () => {
     expect(env).not.toContain('PORT=4000');
   });
 
-  it('carries a command containing shell metacharacters verbatim', () => {
-    // Intentional: real dev scripts chain commands. The container is the boundary,
-    // not the wrapper. See docs/planning-strategy.md.
+  it('transports a command verbatim, leaving rejection to the validator', () => {
+    // The wrapper is a transport, not a gate: it carries whatever it is handed. A
+    // command like this is rejected upstream by CommandValidator before launch ever
+    // reaches the wrapper, which is asserted in CommandValidator.test.ts. Keeping the
+    // two layers separate is deliberate — the transport must not silently mangle input.
     const env = buildWrapperEnv(plan({ buildCommand: 'tsc && vite build' }), '/workspace');
     expect(env).toContain('DL_BUILD_CMD=tsc && vite build');
   });

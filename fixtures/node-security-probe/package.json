@@ -1,0 +1,7 @@
+{
+  "name": "fixture-node-security-probe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reports the security state actually enforced inside the container.",
+  "scripts": { "start": "node probe.js" }
+}

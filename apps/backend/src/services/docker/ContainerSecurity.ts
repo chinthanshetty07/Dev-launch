@@ -4,47 +4,52 @@ import { config } from '../../config/index.js';
 /**
  * Container hardening.
  *
- * PHASE 1 (this file, now): resource limits, correct PID 1, no Docker socket, and a
- * writable workspace so `npm install` can run at all.
- *
- * PHASE 2 (next): read-only root filesystem, capDrop ALL, non-root user, PID limits,
- * and the RFC1918 egress block. The seams are marked below.
+ * Every control here is asserted by an integration test against a real container —
+ * a security claim nothing verifies is just a comment. See security.test.ts.
  */
 export interface SecurityOptions {
   sessionId: string;
   /** Named volume reused across runs to cache package downloads. */
   packageCacheVolume?: string;
+  /** User-defined network carrying the RFC1918 egress policy, when installed. */
+  networkName?: string;
 }
 
 export function buildHostConfig(opts: SecurityOptions): Dockerode.HostConfig {
   const binds: string[] = [];
-  if (opts.packageCacheVolume) {
-    binds.push(`${opts.packageCacheVolume}:/cache`);
-  }
+  if (opts.packageCacheVolume) binds.push(`${opts.packageCacheVolume}:/cache`);
 
   return {
-    // Resource ceilings. The Colima VM is 4 GB total; see docs/limitations.md.
+    // --- Resource ceilings -----------------------------------------------------
     Memory: config.container.memoryMb * 1024 * 1024,
-    // Prevent the container escaping its memory cap via swap.
+    // Equal to Memory: without this the container escapes its cap through swap.
     MemorySwap: config.container.memoryMb * 1024 * 1024,
     NanoCpus: config.container.cpus * 1_000_000_000,
+    PidsLimit: config.container.pidsLimit,
 
-    // tini as PID 1: reaps zombies and forwards signals to the exec'd app.
+    // --- Filesystem ------------------------------------------------------------
+    ReadonlyRootfs: true,
+    // The rootfs is read-only, so npm's scratch space must come from somewhere.
+    // noexec/nosuid stop /tmp being used to stage an executable payload.
+    Tmpfs: { '/tmp': `rw,noexec,nosuid,size=${config.container.tmpSizeMb}m` },
+
+    // --- Privilege -------------------------------------------------------------
+    CapDrop: ['ALL'],
+    // Blocks privilege escalation through setuid binaries.
+    SecurityOpt: ['no-new-privileges'],
+    Privileged: false,
+
+    // tini as PID 1: reaps zombies and forwards signals to the exec'd application.
     Init: true,
 
-    // The Docker socket is never mounted. Stated explicitly because its absence is
-    // a security property, not an oversight.
+    // The Docker socket is never mounted. Stated explicitly because its absence is a
+    // security property rather than an omission.
     Binds: binds.length > 0 ? binds : undefined,
 
-    AutoRemove: false, // CleanupManager owns removal, so exit codes stay readable.
+    NetworkMode: opts.networkName,
 
-    // --- PHASE 2 seams ---------------------------------------------------------
-    // ReadonlyRootfs: true,
-    // CapDrop: ['ALL'],
-    // SecurityOpt: ['no-new-privileges'],
-    // PidsLimit: 256,
-    // Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=64m' },
-    // ---------------------------------------------------------------------------
+    // CleanupManager owns removal, so exit codes stay readable after failure.
+    AutoRemove: false,
   };
 }
 

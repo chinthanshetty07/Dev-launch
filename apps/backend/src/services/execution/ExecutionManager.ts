@@ -14,6 +14,9 @@ import { buildWrapperEnv, buildWrapperScript } from '../docker/wrapper.js';
 import { CleanupManager } from '../cleanup/CleanupManager.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { LogEntry } from '../logs/LogBuffer.js';
+import { assertImageApproved } from '../security/ImageAllowlist.js';
+import { validateCommand, validateOptionalCommand } from '../security/CommandValidator.js';
+import { assertSafeRelativePath, joinWorkspace } from '../security/PathValidator.js';
 
 export type Phase = 'none' | 'install' | 'build' | 'start';
 
@@ -24,6 +27,8 @@ export interface LaunchOptions {
   sourceDir: string;
   image: string;
   packageCacheVolume?: string;
+  /** Overrides the time-to-ready budget. Exists so timeout behaviour is testable. */
+  timeoutMs?: number;
 }
 
 export interface LaunchHandle {
@@ -149,6 +154,9 @@ export function classifyExit(
 }
 
 export class ExecutionManager {
+  /** Network the most recent launch used; undefined means the egress policy is absent. */
+  lastNetworkUsed: string | undefined;
+
   constructor(private readonly docker: DockerManager) {}
 
   /**
@@ -160,10 +168,24 @@ export class ExecutionManager {
   async launch(opts: LaunchOptions): Promise<LaunchHandle> {
     const cleanup = new CleanupManager(this.docker);
 
+    // Validate before anything is created. A rejected plan must never reach Docker.
+    assertImageApproved(opts.image);
+    validateCommand(opts.plan.startCommand, 'startCommand');
+    validateOptionalCommand(opts.plan.installCommand, 'installCommand');
+    validateOptionalCommand(opts.plan.buildCommand, 'buildCommand');
+    assertSafeRelativePath(opts.plan.workingDirectory);
+
     await this.docker.ensureImage(opts.image);
     if (opts.packageCacheVolume) await this.docker.ensureVolume(opts.packageCacheVolume);
 
-    const workdir = joinPosix(config.container.workspacePath, opts.plan.workingDirectory);
+    // The egress policy lives on a user-defined network. Without it the run still
+    // works, but with weaker isolation, so the degradation is explicit rather than silent.
+    const networkName = (await this.docker.networkExists(config.docker.networkName))
+      ? config.docker.networkName
+      : undefined;
+    this.lastNetworkUsed = networkName;
+
+    const workdir = joinWorkspace(config.container.workspacePath, opts.plan.workingDirectory);
 
     let container: Dockerode.Container;
     try {
@@ -174,6 +196,7 @@ export class ExecutionManager {
         hostConfig: buildHostConfig({
           sessionId: opts.sessionId,
           packageCacheVolume: opts.packageCacheVolume,
+          networkName,
         }),
         workingDir: workdir,
         exposePort: opts.plan.expectedPort,
@@ -185,10 +208,10 @@ export class ExecutionManager {
     cleanup.trackContainer(container);
 
     try {
-      // Order matters: the wrapper and the repository must both be in place before
-      // the entrypoint runs.
-      await this.docker.installWrapper(container, buildWrapperScript(), config.container.wrapperPath);
+      // Repository first, wrapper second: both land inside the /workspace volume, and
+      // copying the wrapper last guarantees a repository cannot shadow it.
       await this.docker.copyDirInto(container, opts.sourceDir, config.container.workspacePath);
+      await this.docker.installWrapper(container, buildWrapperScript(), config.container.wrapperPath);
 
       const logs = new LogManager();
       const sentinels = new Set<string>();
@@ -207,7 +230,7 @@ export class ExecutionManager {
       const streaming = logs.attach(container, stream);
 
       const exit = this.docker
-        .waitForExit(container, config.timeouts.timeToReadyMs)
+        .waitForExit(container, opts.timeoutMs ?? config.timeouts.timeToReadyMs)
         .then(async (r) => {
           await streaming.catch(() => undefined);
           return r;
@@ -294,7 +317,3 @@ function waitForLog(
   });
 }
 
-function joinPosix(base: string, rel: string): string {
-  if (!rel || rel === '.') return base;
-  return `${base}/${rel.replace(/^\.\//, '').replace(/^\/+/, '')}`;
-}

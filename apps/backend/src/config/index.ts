@@ -40,14 +40,37 @@ export const config = {
     /** Label applied to every container we create, so cleanup can find orphans. */
     managedLabel: 'com.devlaunch.managed',
     sessionLabel: 'com.devlaunch.session',
+    /**
+     * User-defined network carrying the RFC1918 egress policy installed by
+     * scripts/setup-network-policy.sh. If it does not exist the runner falls back to
+     * the default bridge and says so — the policy is a hardening layer, not a
+     * prerequisite for running at all.
+     */
+    networkName: process.env.DEVLAUNCH_NETWORK ?? 'devlaunch-net',
   },
 
   container: {
     memoryMb: intEnv('DEVLAUNCH_CONTAINER_MEMORY_MB', 1024),
     cpus: intEnv('DEVLAUNCH_CONTAINER_CPUS', 2),
-    /** Writable mount point. Root filesystem is read-only from Phase 2 onward. */
+    /** Fork-bomb ceiling. */
+    pidsLimit: intEnv('DEVLAUNCH_CONTAINER_PIDS_LIMIT', 256),
+    /** Non-root. Matches the `node` user baked into the runner image. */
+    user: process.env.DEVLAUNCH_CONTAINER_USER ?? '1000:1000',
+
+    /**
+     * The only writable location, backed by an anonymous volume.
+     *
+     * It must be a volume rather than a rootfs directory for two reasons found by
+     * testing: with ReadonlyRootfs the Docker API refuses `docker cp` into the rootfs
+     * outright ("container rootfs is marked read-only"), and a volume over a path the
+     * image does not pre-create mounts root-owned, which a non-root process cannot
+     * write to. The runner image creates /workspace owned by `node` to solve both.
+     */
     workspacePath: '/workspace',
-    wrapperPath: '/devlaunch',
+    /** Wrapper lives inside the volume, since the rootfs cannot be written to. */
+    wrapperPath: '/workspace/.devlaunch',
+    /** npm needs scratch space, and the rootfs is read-only. */
+    tmpSizeMb: intEnv('DEVLAUNCH_CONTAINER_TMP_MB', 64),
   },
 
   concurrency: {

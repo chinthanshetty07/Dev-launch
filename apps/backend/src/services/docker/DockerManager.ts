@@ -57,6 +57,15 @@ export class DockerManager {
     });
   }
 
+  async networkExists(name: string): Promise<boolean> {
+    try {
+      await this.docker.getNetwork(name).inspect();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async ensureVolume(name: string): Promise<void> {
     try {
       await this.docker.getVolume(name).inspect();
@@ -82,6 +91,13 @@ export class DockerManager {
       Env: opts.env,
       Labels: opts.labels,
       WorkingDir: opts.workingDir,
+      // Non-root. The runner image owns /workspace as this uid.
+      User: config.container.user,
+      // Declares an anonymous volume at /workspace. This is what makes the workspace
+      // writable under ReadonlyRootfs, and what allows `docker cp` to land at all —
+      // the API refuses copies into a read-only rootfs, but a volume is a separate
+      // mount and accepts them.
+      Volumes: { [config.container.workspacePath]: {} },
       ExposedPorts: opts.exposePort ? exposed : undefined,
       HostConfig: { ...opts.hostConfig, PortBindings: opts.exposePort ? bindings : undefined },
       Tty: false, // Keep stdout/stderr framed separately for demuxing.
@@ -90,32 +106,59 @@ export class DockerManager {
   }
 
   /**
-   * Copy a host directory's *contents* into `destPath` inside the container.
+   * Copy a host directory's contents to `destPath` inside the container.
    *
-   * `putArchive` requires the destination to already exist, and neither /workspace nor
-   * /devlaunch exists in a stock base image — and a stopped container cannot be exec'd
-   * into to create them. So instead of extracting *into* the destination, we rewrite
-   * each tar entry to sit under it and extract at `/`, letting the archive create the
-   * directory itself.
+   * Three constraints shape this, all found by testing rather than documentation:
+   *
+   * 1. With ReadonlyRootfs the Docker API refuses any copy whose extraction target is
+   *    the rootfs — "container rootfs is marked read-only". Only the /workspace volume
+   *    accepts writes, so every copy must extract *there*.
+   * 2. `putArchive` requires its target to already exist, and a stopped container
+   *    cannot be exec'd into to create one. So for a destination *below* the mount,
+   *    entries are re-prefixed and extracted at the mount, letting the archive create
+   *    the intermediate directory itself.
+   * 3. Host ownership and permissions carry through the tar verbatim, and the
+   *    container runs as a different uid. A directory staged at mkdtemp's default 0700
+   *    arrives unreadable; a file owned by the host user cannot be rewritten by
+   *    `npm install`. Both are normalised below.
    */
   async copyDirInto(
     container: Dockerode.Container,
     hostDir: string,
     destPath: string,
+    mountBase: string = config.container.workspacePath,
   ): Promise<void> {
-    const prefix = destPath.replace(/^\/+/, '').replace(/\/+$/, '');
-    if (prefix === '') {
-      await container.putArchive(tarFs.pack(hostDir), { path: '/' });
-      return;
+    const normalisedDest = destPath.replace(/\/+$/, '');
+    const normalisedBase = mountBase.replace(/\/+$/, '');
+
+    let prefix = '';
+    if (normalisedDest !== normalisedBase) {
+      if (!normalisedDest.startsWith(`${normalisedBase}/`)) {
+        throw new Error(
+          `Refusing to copy to "${destPath}": only the writable mount at ` +
+            `"${normalisedBase}" accepts writes under a read-only rootfs.`,
+        );
+      }
+      prefix = normalisedDest.slice(normalisedBase.length + 1);
     }
+
+    const [uid, gid] = containerUidGid();
 
     const pack = tarFs.pack(hostDir, {
       map: (header) => {
-        header.name = `${prefix}/${header.name}`.replace(/\/+/g, '/');
+        if (prefix !== '') {
+          header.name = `${prefix}/${header.name}`.replace(/\/+/g, '/');
+        }
+        // The container user must own what it has to modify — npm rewrites
+        // package-lock.json, and a file owned by the host uid is not writable.
+        header.uid = uid;
+        header.gid = gid;
+        header.mode = normaliseMode(header.mode);
         return header;
       },
     });
-    await container.putArchive(pack, { path: '/' });
+
+    await container.putArchive(pack, { path: normalisedBase });
   }
 
   /** Place the generated wrapper script, staged through a temp dir so the repo is untouched. */
@@ -209,4 +252,23 @@ export class DockerManager {
   getContainer(id: string): Dockerode.Container {
     return this.docker.getContainer(id);
   }
+}
+
+/** Parse the configured "uid:gid" into numbers. */
+function containerUidGid(): [number, number] {
+  const [u, g] = config.container.user.split(':');
+  return [Number.parseInt(u ?? '1000', 10), Number.parseInt(g ?? u ?? '1000', 10)];
+}
+
+/**
+ * Grant group and other whatever read/execute the owner has — never write.
+ *
+ * A 0700 directory becomes 0755 so it can be traversed; a 0644 file is unchanged.
+ * Without this, mkdtemp's 0700 staging directory arrives as `drwx------` and the
+ * entrypoint inside it cannot be opened.
+ */
+function normaliseMode(mode: number | undefined): number {
+  const m = mode ?? 0o644;
+  const readExec = ((m >> 6) & 0o7) & 0o5;
+  return m | (readExec << 3) | readExec;
 }

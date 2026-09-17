@@ -79,7 +79,14 @@ with `--init` for correct PID 1 semantics and zombie reaping.
 ### Base images
 
 **`-slim` (glibc), never Alpine.** musl breaks native modules, and Vite depends on
-esbuild. Images are allowlisted and pinned by digest.
+esbuild. Images are allowlisted; the allowlist is frozen at module load.
+
+DevLaunch builds its **own** runner images (`docker/runner/`, built by
+`scripts/build-runner-images.sh`) rather than running stock upstream ones, because a
+runner image must pre-create `/workspace` owned by the non-root user. An anonymous
+volume inherits ownership from the image path it shadows, so a volume over a path the
+image does not create mounts **root-owned** — and a non-root process then cannot write
+to it at all.
 
 One **"fat" Node image including `build-essential` + `python3`** is shipped so
 `node-gyp` source builds succeed — this converts a whole class of hard ARM failures
@@ -94,6 +101,7 @@ runs, which captures most of the speed benefit without BuildKit complexity.
 |---|---|
 | Root filesystem | Read-only |
 | Writable area | Volume at `/workspace`, with npm cache and `HOME` redirected there |
+| Scratch space | tmpfs at `/tmp`, `noexec,nosuid` |
 | Memory | 1 GB per container |
 | Concurrency | **1 session** |
 | Network | General egress allowed; **RFC1918 and 169.254.0.0/16 blocked** |
@@ -104,10 +112,41 @@ runs, which captures most of the speed benefit without BuildKit complexity.
 Read-only root plus a writable `/workspace` resolves the original plan's
 contradiction between "read-only root filesystem" and "run `npm install`".
 
+Two consequences of `ReadonlyRootfs` that only surfaced under test:
+
+- The Docker API refuses **any** `docker cp` whose extraction target is the rootfs
+  ("container rootfs is marked read-only"), even while the container is stopped. Every
+  copy must therefore extract at the `/workspace` volume, which is a separate mount and
+  does accept writes.
+- Host ownership and permissions carry through the tar archive verbatim. A staging
+  directory created at `mkdtemp`'s default `0700` arrives as `drwx------` owned by the
+  host uid, and the container user cannot traverse it. Copies now normalise ownership
+  to the container user and grant group/other whatever read/execute the owner has —
+  never write.
+
 Egress must stay open for package registries — restricting it would require a MITM
 proxy, which is out of scope. Blocking private ranges is achievable and meaningful:
 it stops untrusted containers reaching the LAN or cloud metadata endpoints. The
 security docs claim only what is actually implemented.
+
+### Two chains are required, not one
+
+`scripts/setup-network-policy.sh` installs the policy. It needs **both** an egress
+chain jumped to from `DOCKER-USER` and an input chain jumped to from `INPUT`:
+
+- `DOCKER-USER` sees only **forwarded** traffic — packets passing *through* the VM
+  toward another host.
+- A packet from a container to the VM itself, **its own default gateway included**,
+  terminates locally and hits `INPUT`. `DOCKER-USER` never sees it.
+
+With only the forward chain, a container could still reach every service listening on
+the VM host. This was caught by a test asserting the gateway times out: the probe
+reported `refused`, which proves the gateway answered.
+
+Both chains begin with a conntrack `ESTABLISHED,RELATED` return, without which replies
+to published ports are dropped — the reply travels back toward the Docker gateway,
+which is itself inside a blocked range. Outbound internet traffic is unaffected by the
+input chain, since that path is `FORWARD` plus `POSTROUTING` masquerade.
 
 ## Ports and host binding
 

