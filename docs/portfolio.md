@@ -137,15 +137,18 @@ doesn't:
 - **One session at a time**, bounded by an 8 GB development machine.
 - **Sessions are in-memory.** Restarting the backend loses them, which is correct for a
   single-user local tool.
-- **AI is not implemented in v1.** The interface is defined and the default refuses
-  loudly, so the fallback is additive rather than a rewrite.
+- **AI is opt-in and off by default.** Without a key, planning is fully deterministic
+  and unrecognised repositories are reported rather than guessed at. The fallback is
+  narrow on purpose: 22 detectors mean it fires rarely, and repair is capped at two
+  attempts over a fixed whitelist of fields.
 
 ## By the numbers
 
 - ~8,000 lines of TypeScript across backend, frontend and a shared contracts package
-- **294 tests**, of which roughly 70 are security tests and 40 drive real containers
+- **331 tests**, of which roughly 100 are security tests and 50 drive real containers
 - 22 deterministic detectors; 13 failure signatures; 20 failure categories
-- 16 vendored fixtures, each reproducing exactly one behaviour
+- 17 vendored fixtures, each reproducing exactly one behaviour — including one carrying
+  a live prompt injection, to prove the allowlist stops it
 
 ## In ten seconds
 

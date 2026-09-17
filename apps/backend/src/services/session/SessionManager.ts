@@ -18,6 +18,27 @@ import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
+import type { AIPlanner } from '../ai/AIPlanner.js';
+import type { AIRepair } from '../ai/AIRepair.js';
+import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
+
+/**
+ * Failures a different plan could plausibly fix.
+ *
+ * The rest are excluded on purpose. A missing database cannot be provisioned by v1, an
+ * x86-only dependency cannot be rewritten, OUT_OF_MEMORY is a configuration change
+ * rather than a plan change, and MISSING_ENV needs a person. Retrying those would spend
+ * a model call to arrive at the same answer.
+ */
+const REPAIRABLE_FAILURES: readonly FailureCode[] = [
+  FailureCode.START_COMMAND_FAILED,
+  FailureCode.PORT_NOT_LISTENING,
+  FailureCode.PORT_BOUND_TO_LOCALHOST,
+  FailureCode.READINESS_TIMEOUT,
+  FailureCode.DEPENDENCY_INSTALL_FAILED,
+  FailureCode.BUILD_FAILED,
+  FailureCode.WRONG_RUNTIME_VERSION,
+];
 
 /** What a session is blocked on while in AWAITING_INPUT. */
 export interface PendingInput {
@@ -49,6 +70,11 @@ export interface Session {
 
   handle?: LaunchHandle;
   cleanupRepo?: () => Promise<void>;
+
+  /** Plans already tried by the repair loop, so an attempt cannot repeat one. */
+  repairAttempts?: RunPlan[];
+  /** The model's own account of what it inferred. Displayed, never acted on. */
+  aiNote?: string;
 }
 
 export interface LaunchRequest {
@@ -75,6 +101,10 @@ export interface SessionManagerDeps {
   git?: GitManager;
   analyzer?: RepositoryAnalyzer;
   planner?: RuleBasedPlanner;
+  /** Fallback planner. Absent in a no-AI deployment, which is the v1 default. */
+  aiPlanner?: AIPlanner;
+  /** Bounded repair. Absent in a no-AI deployment. */
+  aiRepair?: AIRepair;
   /** Overridable so the unanswered-input timeout can be tested without waiting minutes. */
   awaitingInputMs?: number;
 }
@@ -226,20 +256,50 @@ export class SessionManager extends EventEmitter {
     }
 
     if (!outcome.plan) {
-      this.fail(session, {
-        code: FailureCode.UNSUPPORTED_PROJECT,
-        message: outcome.reason ?? 'No deterministic plan could be produced.',
-        remedy:
-          'The rule-based planner recognised no known pattern. An AI fallback would ' +
-          'handle this, and is not part of v1.',
-        confidence: 'high',
-      });
-      await this.teardown(session);
-      return;
-    }
+      const reason = outcome.reason ?? 'No deterministic plan could be produced.';
 
-    session.plan = outcome.plan;
-    session.logs.buffer.push('stdout', `Detected ${outcome.detected} (plan source: rule-based)`);
+      // The one place the fallback planner runs: the deterministic path declined.
+      if (this.deps.aiPlanner) {
+        session.logs.buffer.push(
+          'stdout',
+          `No known pattern matched (${reason}) — asking the fallback planner.`,
+        );
+        try {
+          const ai = await this.deps.aiPlanner.plan(session.metadata, reason);
+          session.plan = ai.plan;
+          session.detected = 'ai-fallback';
+          session.aiNote = ai.note;
+          session.logs.buffer.push(
+            'stdout',
+            `Fallback plan accepted (plan source: ai-fallback)${ai.note ? ` — ${ai.note}` : ''}`,
+          );
+        } catch (err) {
+          this.fail(session, {
+            code: FailureCode.UNSUPPORTED_PROJECT,
+            message: `${reason} The fallback planner could not help either.`,
+            evidence: err instanceof Error ? err.message.slice(0, 400) : undefined,
+            remedy: 'Supply the commands manually, or add a detector for this project type.',
+            confidence: 'high',
+          });
+          await this.teardown(session);
+          return;
+        }
+      } else {
+        this.fail(session, {
+          code: FailureCode.UNSUPPORTED_PROJECT,
+          message: reason,
+          remedy:
+            'The rule-based planner recognised no known pattern, and no AI fallback is ' +
+            'configured. Set GROQ_API_KEY to enable it.',
+          confidence: 'high',
+        });
+        await this.teardown(session);
+        return;
+      }
+    } else {
+      session.plan = outcome.plan;
+      session.logs.buffer.push('stdout', `Detected ${outcome.detected} (plan source: rule-based)`);
+    }
 
     // Pre-flight gate: ask for configuration before building a container that would
     // only crash for want of it.
@@ -324,9 +384,76 @@ export class SessionManager extends EventEmitter {
       return;
     }
 
+    if (await this.tryRepair(session, outcome.failure, sourceDir, req)) return;
+
     session.failure = outcome.failure;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
+  }
+
+  /**
+   * Attempt one bounded repair. Returns true when a retry was started.
+   *
+   * Capped at two attempts, each of which must differ from the last, and only for
+   * failures a different plan could plausibly fix.
+   */
+  private async tryRepair(
+    session: Session,
+    failure: FailureDetail | undefined,
+    sourceDir: string,
+    req: LaunchRequest,
+  ): Promise<boolean> {
+    const repair = this.deps.aiRepair;
+    if (!repair || !failure || !session.plan || !session.metadata) return false;
+    if (!REPAIRABLE_FAILURES.includes(failure.code)) return false;
+
+    const previous = session.repairAttempts ?? [];
+    if (previous.length >= MAX_REPAIR_ATTEMPTS) {
+      session.logs.buffer.push('stderr', `Repair limit of ${MAX_REPAIR_ATTEMPTS} reached.`);
+      return false;
+    }
+
+    this.setState(session, ExecutionState.REPAIRING);
+    session.logs.buffer.push(
+      'stdout',
+      `Attempting repair ${previous.length + 1}/${MAX_REPAIR_ATTEMPTS} for ${failure.code}...`,
+    );
+
+    // The previous container is released before a retry, so two never overlap.
+    try {
+      await session.handle?.cleanup();
+      session.handle = undefined;
+    } catch {
+      /* teardown failures must not mask the repair attempt */
+    }
+
+    try {
+      const result = await repair.repair({
+        plan: session.plan,
+        failure,
+        logs: session.logs.buffer.all().map((l) => l.text).join('\n'),
+        metadata: session.metadata,
+        previousAttempts: previous,
+      });
+
+      session.repairAttempts = [...previous, session.plan];
+      session.plan = result.plan;
+      session.aiNote = result.note;
+      session.logs.buffer.push(
+        'stdout',
+        `Repair ${result.attempt}: start=${result.plan.startCommand}` +
+          (result.note ? ` — ${result.note}` : ''),
+      );
+
+      await this.startAndVerify(session, sourceDir, req);
+      return true;
+    } catch (err) {
+      session.logs.buffer.push(
+        'stderr',
+        `Repair failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
   }
 
   private awaitInput(session: Session, pending: PendingInput): void {

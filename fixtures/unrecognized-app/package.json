@@ -1,0 +1,8 @@
+{
+  "name": "fixture-unrecognized",
+  "version": "1.0.0",
+  "private": true,
+  "description": "No known framework, and a custom script name the allowlist will not run.",
+  "scripts": { "boot": "node server.js" },
+  "dependencies": {}
+}

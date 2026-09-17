@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createApp } from './api/app.js';
@@ -8,10 +9,33 @@ import { SessionManager } from './services/session/SessionManager.js';
 import { GitManager } from './services/git/GitManager.js';
 import { RepositoryAnalyzer } from './services/analysis/RepositoryAnalyzer.js';
 import { RuleBasedPlanner } from './services/planning/RuleBasedPlanner.js';
+import { GroqProvider } from './services/ai/GroqProvider.js';
+import { AIPlanner } from './services/ai/AIPlanner.js';
+import { AIRepair } from './services/ai/AIRepair.js';
 import { LogSocketServer } from './websocket/LogSocketServer.js';
 import { CleanupManager } from './services/cleanup/CleanupManager.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Minimal .env loader.
+ *
+ * Node 20 has no built-in loader and dotenv would be a dependency for six lines. Values
+ * already present in the environment win, so an explicit export always beats the file.
+ */
+function loadDotEnv(): void {
+  const file = resolve(HERE, '../../../.env');
+  if (!existsSync(file)) return;
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = trimmed.slice(eq + 1).trim();
+  }
+}
 
 export interface StartedServer {
   port: number;
@@ -20,13 +44,29 @@ export interface StartedServer {
 }
 
 export async function startServer(port = 0): Promise<StartedServer> {
+  loadDotEnv();
+
   const docker = new DockerManager();
   const exec = new ExecutionManager(docker);
   const analyzer = new RepositoryAnalyzer();
+
+  // AI is opt-in. Without a key DevLaunch plans deterministically and reports
+  // UNSUPPORTED_PROJECT for anything its detectors do not recognise — which is the
+  // shipped v1 behaviour, not a degraded mode.
+  const aiEnabled = GroqProvider.isConfigured();
+  const provider = aiEnabled ? new GroqProvider() : undefined;
+  if (aiEnabled) {
+    console.log(`AI fallback enabled via ${provider!.name} (${process.env.GROQ_MODEL ?? 'default model'})`);
+  } else {
+    console.log('AI fallback disabled (no GROQ_API_KEY); planning is fully deterministic.');
+  }
+
   const sessions = new SessionManager(exec, {
     git: new GitManager(),
     analyzer,
     planner: new RuleBasedPlanner(analyzer),
+    aiPlanner: provider ? new AIPlanner(provider) : undefined,
+    aiRepair: provider ? new AIRepair(provider) : undefined,
   });
 
   // Sweep before accepting traffic.

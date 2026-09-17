@@ -15,7 +15,7 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**v1.0 complete — Phases 1–7, 9 and 10. Zero AI dependency.**
+**All ten phases complete.** v1.0 runs with zero AI; the fallback is opt-in.
 
 | | Phase | State |
 |---|---|---|
@@ -26,7 +26,7 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 5 | Repository analyzer | ✅ Complete |
 | 6 | Rule-based plan generator | ✅ Complete |
 | 7 | Failure classifier | ✅ Complete |
-| 8 | AI fallback planner + repair | Stretch — not started |
+| 8 | AI fallback planner + repair | ✅ Complete (opt-in) |
 | 9 | Frontend | ✅ Complete |
 | 10 | Documentation + portfolio | ✅ Complete |
 
@@ -46,6 +46,27 @@ A React + TypeScript + Vite + Tailwind interface in `apps/frontend`:
 
 The backend serves the built UI, falling back to a plain harness page when it has not
 been built, so it is never left serving nothing.
+
+### What Phase 8 delivers
+
+The AI fallback, **opt-in and deliberately narrow**. Without `GROQ_API_KEY` nothing
+changes: planning stays fully deterministic and unrecognised repositories are reported
+as `UNSUPPORTED_PROJECT`.
+
+- **Fallback planner** — runs *only* when the rule-based planner declines. With 22
+  detectors that is the uncommon case, which is the whole argument
+- **Bounded repair** — at most 2 attempts, each of which must differ from the last, and
+  only for failures a different plan could plausibly fix. A missing database or an
+  x86-only dependency does not get a retry it cannot use
+- **Blast radius enforced in code, not in the prompt.** Repair may change a fixed
+  whitelist of fields; everything else in the response is discarded. A model cannot
+  relocate the working directory, claim to be rule-based, or edit repository files
+- Model output passes the **same `RunPlanValidator`** as a rule-based plan and runs in
+  the same sandbox
+
+A fixture README carries a real prompt injection telling the model to emit `curl`. A
+test proves that even a fully obedient model cannot get it executed — the allowlist
+rejects it before a container exists.
 
 ### What Phase 10 delivers
 
@@ -210,6 +231,15 @@ than passing with weaker isolation.
 | [fixtures.md](docs/fixtures.md) | What each fixture exercises, and why they are vendored |
 | [limitations.md](docs/limitations.md) | Deliberate v1 boundaries, stated plainly |
 | [portfolio.md](docs/portfolio.md) | The project write-up |
+
+### Enabling the AI fallback
+
+```bash
+printf 'GROQ_API_KEY=%s\n' 'your-key' >> .env
+```
+
+`.env` is gitignored. Without a key DevLaunch plans deterministically — that is the
+shipped default, not a degraded mode.
 
 ## Design notes worth knowing
 
