@@ -2,10 +2,15 @@
   "name": "devlaunch",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "pnpm -r test",
     "test:unit": "pnpm --filter @devlaunch/backend test:unit",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm --filter @devlaunch/frontend build",
+    "dev": "pnpm --filter @devlaunch/frontend dev",
+    "serve": "pnpm --filter @devlaunch/backend start"
   }
 }

@@ -1,0 +1,120 @@
+import { useCallback, useState } from 'react';
+import { api } from './api';
+import { useSession } from './useSession';
+import { RepoLauncher } from './components/RepoLauncher';
+import { PipelineStrip } from './components/PipelineStrip';
+import { PlanPanel } from './components/PlanPanel';
+import { InputGate } from './components/InputGate';
+import { FailurePanel } from './components/FailurePanel';
+import { LogTerminal } from './components/LogTerminal';
+
+const RUNNING = ['QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING', 'AWAITING_INPUT', 'BUILDING', 'STARTING', 'WAITING_FOR_READY', 'READY'];
+
+export default function App() {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { state, lines, session, connected, refresh } = useSession(sessionId);
+
+  const launch = useCallback(async (body: { repoUrl?: string; fixture?: string }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await api.launch(body);
+      setSessionId(created.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const stop = useCallback(async () => {
+    if (!sessionId) return;
+    setBusy(true);
+    try {
+      await api.cancel(sessionId);
+      refresh();
+    } finally {
+      setBusy(false);
+    }
+  }, [sessionId, refresh]);
+
+  const resolve = useCallback(
+    async (body: { env?: Record<string, string>; workspaceDir?: string }) => {
+      if (!sessionId) return;
+      setBusy(true);
+      try {
+        await api.resolve(sessionId, body);
+        refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sessionId, refresh],
+  );
+
+  const running = RUNNING.includes(state);
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="border-b border-edge bg-panel">
+        <div className="flex items-baseline gap-4 px-4 pt-3">
+          <h1 className="text-[13px] font-semibold uppercase tracking-[0.2em]">DevLaunch</h1>
+          <p className="text-[13px] text-muted">Run any supported GitHub project locally.</p>
+          <span className="ml-auto text-[11px] text-muted">
+            {state === 'IDLE' ? 'idle' : state.toLowerCase().replace(/_/g, ' ')}
+          </span>
+        </div>
+        <RepoLauncher busy={busy} onLaunch={launch} onStop={stop} canStop={running} />
+      </header>
+
+      {error && (
+        <p className="border-b border-bad/50 bg-panel px-4 py-2 text-[13px] text-bad">{error}</p>
+      )}
+
+      <PipelineStrip
+        state={state}
+        planSource={session?.plan?.planSource}
+        detected={session?.detected}
+      />
+
+      {session?.state === 'AWAITING_INPUT' && session.pending && (
+        <InputGate
+          pending={session.pending}
+          busy={busy}
+          onSubmitEnv={(env) => resolve({ env })}
+          onChoose={(workspaceDir) => resolve({ workspaceDir })}
+        />
+      )}
+
+      {session?.url && state === 'READY' && (
+        <section className="flex items-center gap-4 border-b border-ok/40 bg-panel px-4 py-3">
+          <span className="text-[13px] text-muted">Application</span>
+          <a
+            href={session.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[13px] text-link underline-offset-4 hover:underline"
+          >
+            {session.url}
+          </a>
+          <a
+            href={session.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-auto rounded-md border border-ok/60 px-3 py-1.5 text-[13px] text-ok hover:bg-ok/10"
+          >
+            Open Application
+          </a>
+        </section>
+      )}
+
+      <FailurePanel failure={session?.failure} />
+      <PlanPanel plan={session?.plan} warnings={session?.planWarnings} />
+      <LogTerminal lines={lines} connected={connected} />
+    </div>
+  );
+}

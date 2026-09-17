@@ -4,6 +4,31 @@ import type Dockerode from 'dockerode';
 import { isSentinel } from '@devlaunch/shared';
 import { LogBuffer, type LogEntry, type LogStream } from './LogBuffer.js';
 
+/**
+ * ANSI escape sequences: colours, cursor movement, and the OSC sequences some tools
+ * emit to set a terminal title.
+ *
+ * Stripped at ingestion rather than at render time, because the failure classifier
+ * matches against this text. A line arriving as ESC[31mERROR would silently fail a
+ * signature anchored on "ERROR", and the diagnosis would be lost.
+ */
+const ANSI = new RegExp(
+  [
+    '[\\u001B\\u009B][[\\]()#;?]*',
+    '(?:',
+    '(?:(?:(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]+)*',
+    '|[a-zA-Z\\d]+(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)',
+    '|',
+    '(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~])',
+    ')',
+  ].join(''),
+  'g',
+);
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI, '');
+}
+
 /** Splits a byte stream into lines, carrying partial lines across chunk boundaries. */
 class LineSplitter {
   private carry = '';
@@ -73,7 +98,8 @@ export class LogManager extends EventEmitter {
     });
   }
 
-  private ingest(stream: LogStream, line: string): void {
+  private ingest(stream: LogStream, raw: string): void {
+    const line = stripAnsi(raw);
     if (line.length === 0) return;
     const ts = Date.now();
     if (isSentinel(line)) {

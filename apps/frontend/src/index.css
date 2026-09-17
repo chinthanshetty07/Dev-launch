@@ -1,0 +1,24 @@
+@import 'tailwindcss';
+
+/* Dark, developer-focused, and deliberately plain: the plan calls for engineering
+   depth over dashboard polish, so there is no animation beyond a single pulse on the
+   stage that is currently running. */
+@theme {
+  --color-ink: #0d1117;
+  --color-panel: #161b22;
+  --color-edge: #30363d;
+  --color-fg: #c9d1d9;
+  --color-muted: #8b949e;
+  --color-ok: #3fb950;
+  --color-bad: #f85149;
+  --color-warn: #d29922;
+  --color-link: #58a6ff;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

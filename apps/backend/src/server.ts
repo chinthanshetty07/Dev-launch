@@ -41,7 +41,10 @@ export async function startServer(port = 0): Promise<StartedServer> {
   const app = createApp({
     sessions,
     fixturesDir: resolve(HERE, '../../../fixtures'),
-    publicDir: resolve(HERE, '../public'),
+    staticDirs: [
+      resolve(HERE, '../../frontend/dist'),
+      resolve(HERE, '../public'),
+    ],
   });
 
   const http = createServer(app);

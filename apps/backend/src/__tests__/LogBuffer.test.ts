@@ -55,3 +55,29 @@ describe('LogBuffer', () => {
     expect(b.since(0).entries).toEqual([]);
   });
 });
+
+describe('stripAnsi', () => {
+  const ESC = '\u001b';
+  const BEL = '\u0007';
+
+  it('removes colour codes so classifier signatures still match', async () => {
+    // Flask and pip both emit coloured output. A signature anchored on "WARNING"
+    // would silently miss it if the escape prefix survived.
+    const { stripAnsi } = await import('../services/logs/LogManager.js');
+    expect(stripAnsi(`${ESC}[31m${ESC}[1mWARNING: dev server${ESC}[0m`)).toBe(
+      'WARNING: dev server',
+    );
+    expect(stripAnsi(`${ESC}[32mok${ESC}[39m`)).toBe('ok');
+  });
+
+  it('leaves ordinary text untouched', async () => {
+    const { stripAnsi } = await import('../services/logs/LogManager.js');
+    expect(stripAnsi('plain output [not ansi] 100%')).toBe('plain output [not ansi] 100%');
+  });
+
+  it('removes cursor movement and terminal title sequences', async () => {
+    const { stripAnsi } = await import('../services/logs/LogManager.js');
+    expect(stripAnsi(`${ESC}[2K${ESC}[1Gprogress`)).toBe('progress');
+    expect(stripAnsi(`${ESC}]0;title${BEL}done`)).toBe('done');
+  });
+});

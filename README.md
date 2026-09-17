@@ -15,7 +15,7 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 7 complete — failure classifier.**
+**Phase 9 complete — frontend.**
 
 | | Phase | State |
 |---|---|---|
@@ -27,8 +27,25 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 6 | Rule-based plan generator | ✅ Complete |
 | 7 | Failure classifier | ✅ Complete |
 | 8 | AI fallback planner + repair | Stretch |
-| 9 | Frontend | Not started |
+| 9 | Frontend | ✅ Complete |
 | 10 | Documentation + portfolio | Not started |
+
+### What Phase 9 delivers
+
+A React + TypeScript + Vite + Tailwind interface in `apps/frontend`:
+
+- **Execution pipeline strip** with a live status per stage and a **plan-source badge**,
+  which is the cheapest way to make the hybrid architecture legible at a glance
+- **Run Plan panel** showing the resolved commands before and during execution. Showing
+  exactly what will run turns the allowlist boundary into informed consent
+- **Configuration gate** for variables `.env.example` declares without a default, and a
+  package picker for monorepos
+- **Failure panel** carrying the evidence line and remedy, and flagging low-confidence
+  verdicts as uncertain
+- **Live log terminal** that sticks to the bottom only while the reader is already there
+
+The backend serves the built UI, falling back to a plain harness page when it has not
+been built, so it is never left serving nothing.
 
 ### Pipeline integration
 
@@ -148,14 +165,19 @@ clone → analyse → plan → validate → [ask the user] → run → verify
 pnpm --filter @devlaunch/backend start
 ```
 
-Then open <http://localhost:3939>, pick a fixture and press Launch. Logs stream live;
+Then open <http://localhost:3939>, paste a public GitHub URL (or pick a fixture) and
+press Launch Repository. DevLaunch works out the commands itself; logs stream live, and
 a READY session shows a clickable URL to the running application.
+
+For frontend development with hot reload, run the backend and `pnpm dev` in parallel —
+Vite proxies `/api` and `/ws` to port 3939, so the browser stays on one origin.
 
 ## Getting started
 
 ```bash
 pnpm install
-./scripts/build-runner-images.sh      # build the allowlisted runner image
+pnpm build                            # build the frontend
+./scripts/build-runner-images.sh      # build the allowlisted runner images
 ./scripts/setup-network-policy.sh     # install the egress policy in the Colima VM
 pnpm typecheck
 pnpm test          # includes integration tests that drive real containers

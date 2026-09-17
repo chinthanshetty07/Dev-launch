@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import express, { type Express } from 'express';
@@ -8,7 +9,8 @@ import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 export interface AppOptions {
   sessions: SessionManager;
   fixturesDir: string;
-  publicDir: string;
+  /** Directories tried in order for static assets; the first that exists wins. */
+  staticDirs: string[];
 }
 
 function positiveInt(raw: unknown, fallback: number): number {
@@ -38,7 +40,11 @@ function present(session: Session) {
 export function createApp(opts: AppOptions): Express {
   const app = express();
   app.use(express.json({ limit: '64kb' }));
-  app.use(express.static(opts.publicDir));
+
+  // Prefer the built frontend; fall back to the plain harness page when it has not
+  // been built, so the backend is never left serving nothing.
+  const served = opts.staticDirs.find((dir) => existsSync(dir));
+  if (served) app.use(express.static(served));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, sessions: opts.sessions.list().length });
@@ -140,6 +146,14 @@ export function createApp(opts: AppOptions): Express {
     await opts.sessions.cancel(session.id);
     res.json({ id: session.id, state: session.state });
   });
+
+  // Single-page app fallback: anything not an API route serves index.html, so a page
+  // refresh does not 404.
+  if (served) {
+    app.get(/^\/(?!api\/|ws\/).*/, (_req, res) => {
+      res.sendFile(resolve(served, 'index.html'));
+    });
+  }
 
   return app;
 }
