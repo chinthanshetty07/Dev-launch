@@ -15,7 +15,7 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 4 complete — log streaming.**
+**Phase 5 complete — repository analyzer.**
 
 | | Phase | State |
 |---|---|---|
@@ -23,12 +23,24 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 2 | Security hardening | ✅ Complete |
 | 3 | Port + readiness | ✅ Complete |
 | 4 | Log streaming (WebSocket) | ✅ Complete |
-| 5 | Repository analyzer | Not started |
+| 5 | Repository analyzer | ✅ Complete |
 | 6 | Rule-based plan generator | Not started |
 | 7 | Failure classifier | Not started |
 | 8 | AI fallback planner + repair | Stretch |
 | 9 | Frontend | Not started |
 | 10 | Documentation + portfolio | Not started |
+
+### What Phase 5 delivers
+
+- `GitManager` — shallow, single-branch, submodule-free, LFS-skipping clones of public
+  `github.com` HTTPS URLs only. Size and file-count limits are enforced **during** the
+  clone, because a repository with gigabytes of assets would fill the disk long before
+  any timeout fired
+- `GIT_TERMINAL_PROMPT=0`, so a private or missing repository fails in under a second
+  instead of blocking forever on a credential prompt and reporting a bogus timeout
+- `RepositoryAnalyzer` — reads manifests, lockfiles, framework configs, `.env.example`,
+  and plausible Python entry points, and finds the runnable packages in a monorepo.
+  It describes; it never decides. Turning a description into a Run Plan is Phase 6
 
 ### What Phase 4 delivers
 

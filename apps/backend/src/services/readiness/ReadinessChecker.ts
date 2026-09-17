@@ -71,13 +71,19 @@ export class ReadinessChecker {
         };
       }
 
+      const remaining = opts.timeoutMs - (now() - started);
+      if (remaining <= 0) {
+        return { ready: false, attempts, elapsedMs: now() - started, lastError };
+      }
+
       attempts++;
       try {
-        const remaining = opts.timeoutMs - (now() - started);
         const res = await fetch(url, {
           method: opts.healthCheck.method,
           redirect: 'manual', // A 302 is an answer, not something to follow.
-          signal: AbortSignal.timeout(Math.max(1_000, Math.min(10_000, remaining))),
+          // Never outlive the budget: a request started near the deadline must not
+          // extend the total wait past what the caller asked for.
+          signal: AbortSignal.timeout(Math.min(10_000, remaining)),
         });
 
         return {

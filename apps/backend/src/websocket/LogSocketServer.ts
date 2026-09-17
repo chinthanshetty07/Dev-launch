@@ -85,12 +85,15 @@ export class LogSocketServer {
         state: changed.state,
         url: changed.url,
         failure: changed.failure,
+        reason: changed.endedReason,
       });
       if (TERMINAL_STATES.includes(changed.state)) {
         send(socket, { type: 'end', reason: 'session-finished' });
       }
     };
 
+    // One pair of listeners per client; the default cap of 10 would warn spuriously.
+    session.logs.setMaxListeners(64);
     session.logs.on('entry', onEntry);
     this.sessions.on('state', onState);
 

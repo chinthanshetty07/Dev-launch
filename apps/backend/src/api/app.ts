@@ -21,6 +21,11 @@ export interface AppOptions {
  * for now a run is started from a vendored fixture by name — never a caller-supplied
  * path, which would be an arbitrary-directory read.
  */
+function positiveInt(raw: unknown, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
 export function createApp(opts: AppOptions): Express {
   const app = express();
   app.use(express.json({ limit: '64kb' }));
@@ -67,7 +72,8 @@ export function createApp(opts: AppOptions): Express {
         plan,
         sourceDir: resolve(opts.fixturesDir, fixture),
         image: opts.image ?? 'devlaunch/node:20',
-        readinessTimeoutMs: Number(body.readinessTimeoutMs ?? 30_000),
+        // A malformed value would become NaN, and setTimeout(NaN) fires immediately.
+        readinessTimeoutMs: positiveInt(body.readinessTimeoutMs, 30_000),
       });
 
       res.status(201).json({ id: session.id, state: session.state });

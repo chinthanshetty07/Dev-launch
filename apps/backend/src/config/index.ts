@@ -76,6 +76,13 @@ export const config = {
   concurrency: {
     /** Colima is provisioned at 4 GB on an 8 GB host; a second container risks OOM. */
     maxSessions: intEnv('DEVLAUNCH_MAX_CONCURRENT_SESSIONS', 1),
+    /**
+     * How many finished sessions to keep for inspection.
+     *
+     * Each retains its log buffer — up to 5 MB — so keeping them all would grow the
+     * backend's memory without bound over a long-running process.
+     */
+    retainFinished: intEnv('DEVLAUNCH_RETAIN_FINISHED_SESSIONS', 10),
   },
 
   /**
@@ -94,6 +101,21 @@ export const config = {
     sessionHardCapMs: intEnv('DEVLAUNCH_TIMEOUT_SESSION_HARD_CAP_MS', 3_600_000),
     /** Grace period for SIGTERM before SIGKILL on stop. */
     stopGraceSec: intEnv('DEVLAUNCH_STOP_GRACE_SEC', 5),
+  },
+
+  /**
+   * Repository intake limits. See docs/planning-strategy.md — "Repository intake".
+   * A repository with gigabytes of LFS assets would exhaust the VM's disk long before
+   * the clone timeout fired, so size is enforced during the clone, not after.
+   */
+  intake: {
+    allowedHost: process.env.DEVLAUNCH_ALLOWED_GIT_HOST ?? 'github.com',
+    maxBytes: intEnv('DEVLAUNCH_REPO_MAX_BYTES', 500 * 1024 * 1024),
+    maxFiles: intEnv('DEVLAUNCH_REPO_MAX_FILES', 20_000),
+    /** How often the growing clone is measured. */
+    sizePollMs: intEnv('DEVLAUNCH_REPO_SIZE_POLL_MS', 750),
+    /** Largest individual file the analyzer will read into memory. */
+    maxReadBytes: intEnv('DEVLAUNCH_REPO_MAX_READ_BYTES', 512 * 1024),
   },
 
   /** Capped by bytes first, lines second — 10k lines of webpack output can exceed 50 MB. */

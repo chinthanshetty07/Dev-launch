@@ -21,6 +21,8 @@ export interface Session {
   readyAt?: number;
   url?: string;
   failure?: FailureDetail;
+  /** Why the session ended — an idle timeout reads very differently from a manual stop. */
+  endedReason?: string;
   handle?: LaunchHandle;
 }
 
@@ -50,6 +52,9 @@ export class SessionManager extends EventEmitter {
 
   constructor(private readonly exec: ExecutionManager) {
     super();
+    // One listener per connected WebSocket client. The default cap of 10 would emit a
+    // spurious leak warning well before any real problem.
+    this.setMaxListeners(64);
   }
 
   get(id: string): Session | undefined {
@@ -81,6 +86,7 @@ export class SessionManager extends EventEmitter {
       createdAt: Date.now(),
     };
     this.sessions.set(session.id, session);
+    this.evictFinished();
 
     // Deliberately not awaited: the caller gets an id straight away and follows
     // progress over the log stream.
@@ -149,7 +155,6 @@ export class SessionManager extends EventEmitter {
   async stop(id: string, reason = 'stopped'): Promise<void> {
     const session = this.sessions.get(id);
     if (!session || TERMINAL_STATES.includes(session.state)) return;
-    session.failure = undefined;
     this.setState(session, ExecutionState.CLEANING_UP);
     await this.teardown(session);
     this.setState(session, ExecutionState.COMPLETED, reason);
@@ -160,7 +165,7 @@ export class SessionManager extends EventEmitter {
     if (!session || TERMINAL_STATES.includes(session.state)) return;
     this.setState(session, ExecutionState.CLEANING_UP);
     await this.teardown(session);
-    this.setState(session, ExecutionState.CANCELLED);
+    this.setState(session, ExecutionState.CANCELLED, 'cancelled by request');
   }
 
   private async teardown(session: Session): Promise<void> {
@@ -179,7 +184,31 @@ export class SessionManager extends EventEmitter {
 
   private setState(session: Session, state: ExecutionState, reason?: string): void {
     session.state = state;
+    if (reason !== undefined) session.endedReason = reason;
     this.emit('state', session, reason);
+    if (TERMINAL_STATES.includes(state)) this.evictFinished();
+  }
+
+  /**
+   * Drop the oldest finished sessions beyond the retention cap.
+   *
+   * Sessions are kept after they end so their logs can still be read, but each holds a
+   * buffer of up to several megabytes. Without this the registry grows for as long as
+   * the process lives. Active sessions are never evicted.
+   */
+  private evictFinished(): void {
+    const finished = this.list()
+      .filter((s) => TERMINAL_STATES.includes(s.state))
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    const excess = finished.length - config.concurrency.retainFinished;
+    for (let i = 0; i < excess; i++) {
+      const stale = finished[i]!;
+      this.clearTimers(stale.id);
+      stale.logs.removeAllListeners();
+      stale.logs.buffer.clear();
+      this.sessions.delete(stale.id);
+    }
   }
 
   /** Release every session. Used on shutdown and between tests. */

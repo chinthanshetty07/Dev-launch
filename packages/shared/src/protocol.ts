@@ -24,7 +24,7 @@ export type ServerMessage =
   | { type: 'logs'; entries: WireLogEntry[] }
   /** Entries between the client's resume point and `oldestSeq` are gone for good. */
   | { type: 'gap'; droppedTotal: number; oldestSeq: number }
-  | { type: 'state'; state: ExecutionState; url?: string; failure?: FailureDetail }
+  | { type: 'state'; state: ExecutionState; url?: string; failure?: FailureDetail; reason?: string }
   | { type: 'end'; reason: 'session-finished' | 'session-gone' | 'server-closing' };
 
 /** The only message a client sends; resuming is otherwise done via the query string. */

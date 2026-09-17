@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/util",
+  "private": true,
+  "scripts": { "build": "tsc" }
+}
