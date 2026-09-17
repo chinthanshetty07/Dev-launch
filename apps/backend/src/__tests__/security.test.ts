@@ -6,7 +6,11 @@ import {
   isImageApproved,
   SecurityRejection,
 } from '../services/security/ImageAllowlist.js';
-import { validateCommand } from '../services/security/CommandValidator.js';
+import {
+  validateCommand,
+  validateEnvVarKey,
+  validateEnvVarValue,
+} from '../services/security/CommandValidator.js';
 import { assertSafeRelativePath, joinWorkspace } from '../services/security/PathValidator.js';
 
 describe('image allowlist (§27: unapproved runtime images are rejected)', () => {
@@ -124,5 +128,33 @@ describe('path validation (§27: path traversal is rejected)', () => {
     expect(joinWorkspace('/workspace', '.')).toBe('/workspace');
     expect(joinWorkspace('/workspace', 'apps/backend')).toBe('/workspace/apps/backend');
     expect(() => joinWorkspace('/workspace', '../etc')).toThrow(SecurityRejection);
+  });
+});
+
+describe('environment variable names (§27: malicious plan input is rejected)', () => {
+  it.each(['PORT', 'API_URL', 'NODE_ENV', '_UNDERSCORE', 'A1'])('accepts %s', (k) => {
+    expect(() => validateEnvVarKey(k)).not.toThrow();
+  });
+
+  it.each(['DL_START_CMD', 'DL_INSTALL_CMD', 'DL_WORKDIR', 'DL_BUILD_CMD', 'DL_'])(
+    'rejects the reserved control variable %s',
+    (k) => {
+      // These carry the wrapper's validated commands; letting a plan claim one would
+      // replace an allowlisted command with arbitrary text.
+      expect(() => validateEnvVarKey(k)).toThrow(SecurityRejection);
+    },
+  );
+
+  it.each(['1LEADING_DIGIT', 'HAS-DASH', 'HAS SPACE', 'HAS=EQUALS', '', 'HAS\nNEWLINE'])(
+    'rejects malformed name %j',
+    (k) => {
+      expect(() => validateEnvVarKey(k)).toThrow(SecurityRejection);
+    },
+  );
+
+  it('rejects control characters in a value, which could forge extra entries', () => {
+    expect(() => validateEnvVarValue('A', 'ok')).not.toThrow();
+    expect(() => validateEnvVarValue('A', 'x\nDL_START_CMD=curl evil')).toThrow(SecurityRejection);
+    expect(() => validateEnvVarValue('A', 'x\0y')).toThrow(SecurityRejection);
   });
 });

@@ -200,6 +200,14 @@ describe('Phase 2 — security hardening (§27)', () => {
     expect((await docker.listManaged()).length).toBe(before);
   });
 
+  it('an unbuilt runner image reports the remedy instead of a registry error', async () => {
+    // Runner images are built locally and never published, so a pull would fail with
+    // an opaque "manifest unknown" rather than telling the user what to run.
+    await expect(docker.ensureImage('devlaunch/node:99')).rejects.toThrow(
+      /build-runner-images\.sh/,
+    );
+  });
+
   it('a path traversal is rejected before any container is created', async () => {
     const before = (await docker.listManaged()).length;
     await expect(

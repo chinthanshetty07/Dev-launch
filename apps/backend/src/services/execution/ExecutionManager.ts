@@ -15,7 +15,12 @@ import { CleanupManager } from '../cleanup/CleanupManager.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { LogEntry } from '../logs/LogBuffer.js';
 import { assertImageApproved } from '../security/ImageAllowlist.js';
-import { validateCommand, validateOptionalCommand } from '../security/CommandValidator.js';
+import {
+  validateCommand,
+  validateEnvVarKey,
+  validateEnvVarValue,
+  validateOptionalCommand,
+} from '../security/CommandValidator.js';
 import { assertSafeRelativePath, joinWorkspace } from '../security/PathValidator.js';
 
 export type Phase = 'none' | 'install' | 'build' | 'start';
@@ -91,42 +96,48 @@ export function classifyExit(
     return { state: ExecutionState.COMPLETED, phase };
   }
 
-  if (exit.exitCode === WrapperExit.INSTALL_FAILED || sentinels.has(Sentinel.INSTALL_FAIL)) {
-    return {
-      state: ExecutionState.FAILED,
-      phase: 'install',
-      failure: {
-        code: FailureCode.DEPENDENCY_INSTALL_FAILED,
-        message: 'Dependency installation failed.',
-        exitCode: exit.exitCode,
+  // Wrapper exit codes are authoritative only while the wrapper still owns the
+  // process. Once the start command is exec'd the wrapper is gone, and the exit code
+  // belongs to the application — an app exiting 110 of its own accord must not be
+  // reported as a dependency install failure.
+  if (!sentinels.has(Sentinel.START_BEGIN)) {
+    if (exit.exitCode === WrapperExit.INSTALL_FAILED || sentinels.has(Sentinel.INSTALL_FAIL)) {
+      return {
+        state: ExecutionState.FAILED,
         phase: 'install',
-      },
-    };
-  }
+        failure: {
+          code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+          message: 'Dependency installation failed.',
+          exitCode: exit.exitCode,
+          phase: 'install',
+        },
+      };
+    }
 
-  if (exit.exitCode === WrapperExit.BUILD_FAILED || sentinels.has(Sentinel.BUILD_FAIL)) {
-    return {
-      state: ExecutionState.FAILED,
-      phase: 'build',
-      failure: {
-        code: FailureCode.BUILD_FAILED,
-        message: 'Build step failed.',
-        exitCode: exit.exitCode,
+    if (exit.exitCode === WrapperExit.BUILD_FAILED || sentinels.has(Sentinel.BUILD_FAIL)) {
+      return {
+        state: ExecutionState.FAILED,
         phase: 'build',
-      },
-    };
-  }
+        failure: {
+          code: FailureCode.BUILD_FAILED,
+          message: 'Build step failed.',
+          exitCode: exit.exitCode,
+          phase: 'build',
+        },
+      };
+    }
 
-  if (exit.exitCode === WrapperExit.WORKDIR_MISSING || sentinels.has(Sentinel.FATAL)) {
-    return {
-      state: ExecutionState.FAILED,
-      phase,
-      failure: {
-        code: FailureCode.CONTAINER_CREATE_FAILED,
-        message: 'Working directory was not present inside the container.',
-        exitCode: exit.exitCode,
-      },
-    };
+    if (exit.exitCode === WrapperExit.WORKDIR_MISSING || sentinels.has(Sentinel.FATAL)) {
+      return {
+        state: ExecutionState.FAILED,
+        phase,
+        failure: {
+          code: FailureCode.CONTAINER_CREATE_FAILED,
+          message: 'Working directory was not present inside the container.',
+          exitCode: exit.exitCode,
+        },
+      };
+    }
   }
 
   if (phase === 'start') {
@@ -174,6 +185,10 @@ export class ExecutionManager {
     validateOptionalCommand(opts.plan.installCommand, 'installCommand');
     validateOptionalCommand(opts.plan.buildCommand, 'buildCommand');
     assertSafeRelativePath(opts.plan.workingDirectory);
+    for (const v of opts.plan.environmentVariables) {
+      validateEnvVarKey(v.key);
+      if (v.value !== null && v.value !== undefined) validateEnvVarValue(v.key, v.value);
+    }
 
     await this.docker.ensureImage(opts.image);
     if (opts.packageCacheVolume) await this.docker.ensureVolume(opts.packageCacheVolume);

@@ -128,3 +128,42 @@ export function validateOptionalCommand(
 ): ValidatedCommand | null {
   return command === null ? null : validateCommand(command, field);
 }
+
+/**
+ * Prefix reserved for the wrapper's control variables.
+ *
+ * The wrapper reads its validated commands from $DL_START_CMD and friends. If a
+ * plan-supplied variable could claim one of those names it would replace an
+ * allowlisted command with arbitrary text, bypassing validation completely.
+ */
+export const RESERVED_ENV_PREFIX = 'DL_';
+
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function validateEnvVarKey(key: string): string {
+  if (!ENV_KEY_PATTERN.test(key)) {
+    throw new SecurityRejection(
+      FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,
+      `Environment variable name ${JSON.stringify(key)} is not a valid identifier.`,
+    );
+  }
+  if (key.startsWith(RESERVED_ENV_PREFIX)) {
+    throw new SecurityRejection(
+      FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,
+      `Environment variable ${JSON.stringify(key)} uses the reserved "${RESERVED_ENV_PREFIX}" ` +
+        'prefix, which carries the wrapper\'s validated commands.',
+    );
+  }
+  return key;
+}
+
+export function validateEnvVarValue(key: string, value: string): string {
+  // Control characters would let one entry masquerade as several.
+  if (/[\0\n\r]/.test(value)) {
+    throw new SecurityRejection(
+      FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,
+      `Environment variable ${JSON.stringify(key)} contains a control character.`,
+    );
+  }
+  return value;
+}

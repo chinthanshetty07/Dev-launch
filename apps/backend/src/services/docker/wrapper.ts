@@ -64,13 +64,9 @@ export function buildWrapperScript(): string {
  * must be defined, so absent commands are passed as empty strings rather than omitted.
  */
 export function buildWrapperEnv(plan: RunPlan, workdir: string): string[] {
-  const env: Record<string, string> = {
-    DL_WORKDIR: workdir,
-    DL_INSTALL_CMD: plan.installCommand ?? '',
-    DL_BUILD_CMD: plan.buildCommand ?? '',
-    DL_START_CMD: plan.startCommand,
-  };
+  const env: Record<string, string> = {};
 
+  // Application variables first.
   for (const v of plan.environmentVariables) {
     if (v.value !== null && v.value !== undefined) env[v.key] = v.value;
   }
@@ -80,6 +76,18 @@ export function buildWrapperEnv(plan: RunPlan, workdir: string): string[] {
     env.PORT ??= String(plan.expectedPort);
     env.HOST ??= '0.0.0.0';
   }
+
+  // Control variables LAST, and unconditionally.
+  //
+  // Assignment order is the security boundary here: the wrapper takes its commands
+  // from these names, so a plan variable called DL_START_CMD would otherwise replace
+  // an allowlisted command with arbitrary text. ExecutionManager also rejects the
+  // DL_ prefix outright — this ordering is the second layer, so a future caller that
+  // skips validation still cannot be exploited.
+  env.DL_WORKDIR = workdir;
+  env.DL_INSTALL_CMD = plan.installCommand ?? '';
+  env.DL_BUILD_CMD = plan.buildCommand ?? '';
+  env.DL_START_CMD = plan.startCommand;
 
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
 }

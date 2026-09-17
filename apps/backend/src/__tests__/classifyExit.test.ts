@@ -41,6 +41,26 @@ describe('classifyExit', () => {
     expect(r.phase).toBe('start');
   });
 
+  it('does not read wrapper exit codes once the application owns the process', () => {
+    // The wrapper execs the start command and is then gone. An application that exits
+    // 110 on its own must not be reported as a dependency install failure just because
+    // 110 happens to be the wrapper's install-failure code.
+    const r = classifyExit(
+      { exitCode: WrapperExit.INSTALL_FAILED, timedOut: false },
+      seen(Sentinel.INSTALL_BEGIN, Sentinel.INSTALL_OK, Sentinel.START_BEGIN),
+    );
+    expect(r.failure?.code).toBe(FailureCode.START_COMMAND_FAILED);
+    expect(r.phase).toBe('start');
+  });
+
+  it('likewise does not mistake an app exit code for a build failure', () => {
+    const r = classifyExit(
+      { exitCode: WrapperExit.BUILD_FAILED, timedOut: false },
+      seen(Sentinel.INSTALL_BEGIN, Sentinel.INSTALL_OK, Sentinel.START_BEGIN),
+    );
+    expect(r.failure?.code).toBe(FailureCode.START_COMMAND_FAILED);
+  });
+
   it('does not mistake an app exit code for an install failure', () => {
     // An app exiting 110 after starting must not be read as a wrapper install failure.
     const r = classifyExit({ exitCode: 1, timedOut: false }, seen(Sentinel.START_BEGIN));

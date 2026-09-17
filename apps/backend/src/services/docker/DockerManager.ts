@@ -51,6 +51,15 @@ export class DockerManager {
   /** Pull only when absent — pulls are slow and the image set is allowlisted. */
   async ensureImage(image: string): Promise<void> {
     if (await this.imageExists(image)) return;
+
+    // DevLaunch's runner images are built locally and never published, so attempting a
+    // pull would fail with an opaque registry error instead of the actual remedy.
+    if (image.startsWith('devlaunch/')) {
+      throw new Error(
+        `Runner image "${image}" is not built. Run ./scripts/build-runner-images.sh`,
+      );
+    }
+
     const stream = await this.docker.pull(image);
     await new Promise<void>((resolve, reject) => {
       this.docker.modem.followProgress(stream, (err) => (err ? reject(err) : resolve()));
@@ -206,8 +215,13 @@ export class DockerManager {
       }, timeoutMs);
     });
 
+    // Kept in a variable so the rejection can be absorbed: if the timeout wins the
+    // race, an unobserved rejection here would surface as an unhandled rejection.
+    const waiting = container.wait();
+    waiting.catch(() => undefined);
+
     try {
-      const result = await Promise.race([container.wait(), timeout]);
+      const result = await Promise.race([waiting, timeout]);
       if (result === 'timeout') {
         await this.stop(container);
         return { exitCode: -1, timedOut: true };
@@ -257,7 +271,16 @@ export class DockerManager {
 /** Parse the configured "uid:gid" into numbers. */
 function containerUidGid(): [number, number] {
   const [u, g] = config.container.user.split(':');
-  return [Number.parseInt(u ?? '1000', 10), Number.parseInt(g ?? u ?? '1000', 10)];
+  const uid = Number.parseInt(u ?? '', 10);
+  const gid = Number.parseInt(g ?? u ?? '', 10);
+  // A name like "node" cannot be resolved here — the host has no view of the image's
+  // passwd file — and NaN would silently corrupt every tar header.
+  if (!Number.isInteger(uid) || !Number.isInteger(gid)) {
+    throw new Error(
+      `container.user must be numeric "uid:gid", got ${JSON.stringify(config.container.user)}.`,
+    );
+  }
+  return [uid, gid];
 }
 
 /**
