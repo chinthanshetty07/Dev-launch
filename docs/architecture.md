@@ -155,6 +155,19 @@ Services share `devlaunch-net` rather than getting a network of their own, becau
 egress policy is keyed to that network's subnet: a per-session network would come up
 unfiltered. Aliases give name resolution without touching isolation.
 
+## Databases are provisioned, not assumed
+
+A repository that declares `mongoose` needs MongoDB running before its backend starts —
+applications connect at boot and get one chance. When discovery finds such a dependency,
+the database is started first, waited on with the image's own health command, and its
+connection string injected under the variable *that service* reads.
+
+They are stock upstream images run as the unprivileged user the image already defines
+(uid 999 for all four), which is what lets them keep the same hardening as the runner
+images: their entrypoints only need to chown and switch user when started as root.
+
+Data is in anonymous volumes and lasts exactly as long as the session.
+
 ## Two clocks, deliberately
 
 - **Time to ready** (~10 min): clone, install, build, start, readiness.

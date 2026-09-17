@@ -431,6 +431,8 @@ export class SessionManager extends EventEmitter {
       project,
       sourceDir,
       logs: session.logs,
+      backing: session.metadata?.backing,
+      repoName: session.metadata?.packageJson?.name ?? repoNameFromUrl(session.repoUrl),
     });
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
@@ -818,6 +820,12 @@ export class SessionManager extends EventEmitter {
     this.sessions.clear();
     this.watchGeneration.clear();
   }
+}
+
+/** The repository's own name, for naming its database after it rather than after nothing. */
+function repoNameFromUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  return url.replace(/\.git$/, '').split('/').pop() || undefined;
 }
 
 /** The last line the application wrote, which is where a post-ready death explains itself. */

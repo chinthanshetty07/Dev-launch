@@ -136,6 +136,41 @@ describe('service discovery', () => {
     expect(backing.map((b) => b.kind).sort()).toEqual(['mongodb', 'redis']);
     expect(backing.find((b) => b.kind === 'mongodb')?.neededBy).toEqual(['api']);
   });
+
+  it('reads the connection variable from the service that will use it', async () => {
+    // The bug this closes: a provisioned, healthy MongoDB still produced
+    // `connect ECONNREFUSED 127.0.0.1:27017`, because the URL was injected as MONGO_URI
+    // and the service reads MONGODB_URI. An unread variable is no database at all.
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '4', mongoose: '8' }),
+      'backend/.env.example': 'PORT=5000\nMONGODB_URI=mongodb://localhost:27017/app\n',
+    });
+    const { backing } = await discoverServices(root);
+    expect(backing.find((b) => b.kind === 'mongodb')?.urlEnvKey).toBe('MONGODB_URI');
+  });
+
+  it('finds the connection variable in source when no example file is shipped', async () => {
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '4', mongoose: '8' }),
+      'backend/src/db.js': "mongoose.connect(process.env.MONGO_URL || 'mongodb://localhost');",
+    });
+    const { backing } = await discoverServices(root);
+    expect(backing.find((b) => b.kind === 'mongodb')?.urlEnvKey).toBe('MONGO_URL');
+  });
+
+  it('offers every alias when a service names none of them', async () => {
+    // With no evidence, one guess is a coin flip and an unread variable costs nothing.
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '4', mongoose: '8' }),
+    });
+    const { backing } = await discoverServices(root);
+    const mongo = backing.find((b) => b.kind === 'mongodb')!;
+    expect(mongo.urlEnvKeys).toContain('MONGODB_URI');
+    expect(mongo.urlEnvKeys!.length).toBeGreaterThan(1);
+  });
 });
 
 describe('the analyzer reports services and backing needs', () => {
@@ -149,6 +184,9 @@ describe('the analyzer reports services and backing needs', () => {
     // The mismatch real repositories ship: the page calls 5001, the server binds 5000.
     expect(meta.services?.find((s) => s.role === 'api')?.declaredPort).toBe(5000);
     expect(meta.backing?.map((b) => b.kind)).toEqual(['mongodb']);
+    // The variable the service declares for itself, not the rule's first guess: the
+    // backend's .env.example lives in backend/, which the root-level analyzer never reads.
+    expect(meta.backing?.[0]?.urlEnvKey).toBe('MONGODB_URI');
   });
 
   it('leaves a single-service repository description unchanged', async () => {

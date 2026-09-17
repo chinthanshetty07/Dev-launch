@@ -134,6 +134,14 @@ export interface BackingService {
   evidence: string;
   /** Environment variable the application reads its connection string from. */
   urlEnvKey?: string;
+  /**
+   * Every variable worth supplying the connection string as.
+   *
+   * One entry when the service declares which it reads. With nothing to go on, all the
+   * known aliases for that kind: an unread variable costs nothing, and guessing a single
+   * wrong name costs the entire run.
+   */
+  urlEnvKeys?: string[];
   /** Which services need it. */
   neededBy: string[];
 }

@@ -134,6 +134,60 @@ export class DockerManager {
   }
 
   /**
+   * Create a stock upstream image as a backing service.
+   *
+   * Separate from `createContainer` because that one is built for DevLaunch's runner
+   * images: it forces the wrapper as entrypoint, a fixed non-root uid, and a /workspace
+   * volume. A database brings its own entrypoint and its own user, and imposing any of
+   * that on it produces a container that cannot start.
+   *
+   * The hardening is the same in every respect that matters — capabilities dropped,
+   * rootfs read-only, no-new-privileges, memory and pid ceilings, no Docker socket —
+   * because it runs as the image's own unprivileged user and so never needs to chown or
+   * switch user on the way up.
+   */
+  async createBackingContainer(opts: {
+    image: string;
+    alias: string;
+    user: string;
+    env: string[];
+    labels: Record<string, string>;
+    /** Paths that must be writable under the read-only rootfs. */
+    dataPaths: string[];
+    networkName?: string;
+  }): Promise<Dockerode.Container> {
+    const volumes: Record<string, Record<string, never>> = {};
+    for (const path of opts.dataPaths) volumes[path] = {};
+
+    return this.docker.createContainer({
+      Image: opts.image,
+      Env: opts.env,
+      Labels: opts.labels,
+      User: opts.user,
+      Volumes: volumes,
+      NetworkingConfig: opts.networkName
+        ? { EndpointsConfig: { [opts.networkName]: { Aliases: [opts.alias] } } }
+        : undefined,
+      HostConfig: {
+        Memory: config.container.memoryMb * 1024 * 1024,
+        MemorySwap: config.container.memoryMb * 1024 * 1024,
+        NanoCpus: config.container.cpus * 1_000_000_000,
+        PidsLimit: config.container.pidsLimit,
+        ReadonlyRootfs: true,
+        Tmpfs: { '/tmp': `rw,noexec,nosuid,size=${config.container.tmpSizeMb}m` },
+        CapDrop: ['ALL'],
+        SecurityOpt: ['no-new-privileges'],
+        Privileged: false,
+        Init: true,
+        NetworkMode: opts.networkName,
+        AutoRemove: false,
+      },
+      Tty: false,
+      OpenStdin: false,
+    });
+  }
+
+  /**
    * Copy a host directory's contents to `destPath` inside the container.
    *
    * Three constraints shape this, all found by testing rather than documentation:

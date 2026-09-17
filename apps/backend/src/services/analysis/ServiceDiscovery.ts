@@ -164,7 +164,10 @@ async function inspectDir(
       const origins = await findCalledOrigins(base);
       if (origins.length) candidate.callsOrigins = origins;
     }
-    return { candidate, backing: backingFor(Object.keys(manifest.dependencies)) };
+    return {
+      candidate,
+      backing: backingFor(Object.keys(manifest.dependencies), await serviceEnvKeys(base)),
+    };
   }
 
   const python = await readPythonDeps(base);
@@ -182,7 +185,7 @@ async function inspectDir(
       evidence: python.hasManagePy ? 'has manage.py' : `requires ${python.deps.find((d) => PYTHON_API_DEPS.includes(d))}`,
       declaredPort: python.hasManagePy ? 8000 : undefined,
     },
-    backing: backingFor(python.deps),
+    backing: backingFor(python.deps, await serviceEnvKeys(base)),
   };
 }
 
@@ -207,21 +210,78 @@ function classifyNode(dir: string, manifest: Manifest): { role: ServiceRole; evi
   return { role: 'worker', evidence: 'no web or server framework found' };
 }
 
-function backingFor(deps: string[]): Omit<BackingService, 'neededBy'>[] {
+/**
+ * Which databases a service needs, and the variable *it* reads the connection from.
+ *
+ * The variable name is the whole game. A service that reads `MONGODB_URI` finds nothing
+ * in `MONGO_URI`, and an injected variable nobody reads is indistinguishable from no
+ * database at all — which is exactly how a provisioned, healthy MongoDB still produced
+ * `connect ECONNREFUSED 127.0.0.1:27017`.
+ *
+ * So the key the service itself declares always wins. With no declaration to go on,
+ * every known alias for that kind is offered rather than one guess: an unread variable
+ * costs nothing, and guessing wrong costs the whole run.
+ */
+function backingFor(deps: string[], declaredKeys: string[]): Omit<BackingService, 'neededBy'>[] {
   const out: Omit<BackingService, 'neededBy'>[] = [];
   for (const rule of BACKING_RULES) {
     const dep = rule.deps.find((d) => deps.includes(d));
-    if (dep) out.push({ kind: rule.kind, evidence: `depends on ${dep}`, urlEnvKey: rule.envKeys[0] });
+    if (!dep) continue;
+    const declared = rule.envKeys.filter((k) => declaredKeys.includes(k));
+    out.push({
+      kind: rule.kind,
+      evidence: `depends on ${dep}`,
+      urlEnvKey: declared[0],
+      urlEnvKeys: declared.length ? declared : [...rule.envKeys],
+    });
   }
   return out;
+}
+
+/**
+ * Environment variables a service names for itself.
+ *
+ * Two sources, because repositories use either: `.env.example` in the service's own
+ * directory — which the root-level analyzer never sees — and `process.env.X` in its
+ * source, which is the only evidence when no example file is shipped.
+ */
+async function serviceEnvKeys(base: string): Promise<string[]> {
+  const keys = new Set<string>();
+
+  for (const name of ['.env.example', '.env.sample', '.env.template']) {
+    const raw = await readCapped(join(base, name));
+    if (raw === null) continue;
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq > 0) keys.add(trimmed.slice(0, eq).replace(/^export\s+/, '').trim());
+    }
+  }
+
+  for (const file of await collectSourceFiles(base, 40)) {
+    const raw = await readCapped(file);
+    if (raw === null) continue;
+    for (const m of raw.matchAll(/process\.env\.([A-Z][A-Z0-9_]{2,})/g)) keys.add(m[1]!);
+    for (const m of raw.matchAll(/os\.environ(?:\.get)?[[(]['"]([A-Z][A-Z0-9_]{2,})['"]/g)) keys.add(m[1]!);
+  }
+
+  return [...keys];
 }
 
 /** Match a backing service to the variable a repository actually reads it from. */
 export function backingFromEnvKeys(keys: string[]): Omit<BackingService, 'neededBy'>[] {
   const out: Omit<BackingService, 'neededBy'>[] = [];
   for (const rule of BACKING_RULES) {
-    const key = rule.envKeys.find((k) => keys.includes(k));
-    if (key) out.push({ kind: rule.kind, evidence: `declares ${key}`, urlEnvKey: key });
+    const declared = rule.envKeys.filter((k) => keys.includes(k));
+    if (declared.length) {
+      out.push({
+        kind: rule.kind,
+        evidence: `declares ${declared[0]}`,
+        urlEnvKey: declared[0],
+        urlEnvKeys: declared,
+      });
+    }
   }
   return out;
 }

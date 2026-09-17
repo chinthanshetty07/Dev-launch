@@ -57,6 +57,41 @@ describe('a repository made of several services', () => {
     await CleanupManager.sweepOrphans(docker);
   }, 180_000);
 
+  it('provisions the database the repository expects, and injects what it reads', async () => {
+    // The last thing standing between a real repository and running: MongoDB was never
+    // started, so its backend exited at boot with `connect ECONNREFUSED 127.0.0.1:27017`
+    // however well the rest of the project was orchestrated.
+    const sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    expect(await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED])).toBe(
+      ExecutionState.READY,
+    );
+
+    expect(s.run?.backing.map((b) => `${b.kind}:${b.ready}`)).toEqual(['mongodb:true']);
+
+    // The backend refuses to serve unless it actually reached the database, so a 200 is
+    // proof of the whole chain: provisioned, healthy, named, injected, and connected.
+    const api = s.run!.services.find((sv) => sv.role === 'api')!;
+    expect(api.state).toBe(ExecutionState.READY);
+    const body = await (await fetch(api.url!)).json();
+    expect(body).toMatchObject({ ok: true, service: 'backend' });
+    expect(body.database).toContain('mongodb:27017');
+
+    await sessions.stop(s.id);
+  }, 420_000);
+
+  it('removes the database container with the session', async () => {
+    const sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
+    const dbId = s.run!.backing[0]!.container.id;
+
+    await sessions.stop(s.id);
+
+    const alive = await docker.listManaged();
+    expect(alive.map((c) => c.Id), 'a database must not outlive its session').not.toContain(dbId);
+  }, 420_000);
+
   it('runs both halves of a frontend/backend repository', async () => {
     // The shape that made a real repository look broken: running only the frontend
     // produced a page that loaded and then failed every request it made.

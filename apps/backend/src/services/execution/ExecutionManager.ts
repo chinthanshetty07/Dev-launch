@@ -314,7 +314,7 @@ export class ExecutionManager {
   /** Why the last inspect failed, so an unattributable failure can say what went wrong. */
   private lastInspectError: string | undefined;
 
-  constructor(private readonly docker: DockerManager) {
+  constructor(readonly docker: DockerManager) {
     this.ports = new PortManager(docker);
   }
 

@@ -126,6 +126,14 @@ export const config = {
      * and hands out a URL that answers nothing, until the idle clock expires.
      */
     livenessMs: intEnv('DEVLAUNCH_TIMEOUT_LIVENESS_MS', 5_000),
+    /**
+     * How long a database gets to start accepting connections.
+     *
+     * Applications connect at boot and get one chance, so this is waited on before any
+     * of them start. Mongo takes a few seconds cold; MySQL can take considerably longer
+     * the first time it initialises its data directory.
+     */
+    backingReadyMs: intEnv('DEVLAUNCH_TIMEOUT_BACKING_READY_MS', 90_000),
     /** Grace period for SIGTERM before SIGKILL on stop. */
     stopGraceSec: intEnv('DEVLAUNCH_STOP_GRACE_SEC', 5),
   },

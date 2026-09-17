@@ -1,5 +1,85 @@
 # Changelog
 
+## 2026-09-17 — Multi-service, phase C: the databases a project expects
+
+Phase B ran every service. One of them still would not start:
+
+```
+[backend] ❌ MongoDB connection error: connect ECONNREFUSED 127.0.0.1:27017
+[backend] Failed running 'server.js'
+```
+
+An application that connects to its database at boot gets exactly one chance, and there
+was nothing to connect to.
+
+### What this phase adds
+
+MongoDB, Postgres, MySQL and Redis are provisioned per session when a repository's
+dependencies or environment declare them, started *before* any application service, and
+waited on with the image's own health command — `mongosh ping`, `pg_isready`,
+`redis-cli ping`, `mysqladmin ping`. "Running" is not "accepting connections", and the
+difference is a race the application loses.
+
+Data lives in anonymous volumes, so it lasts exactly as long as the session. A
+dev-launch tool that quietly accumulated database state across runs would be surprising
+in a worse way than one that starts clean.
+
+### Stock images, without giving up the hardening
+
+Databases are upstream images, not DevLaunch's own, and the obvious way to run them is
+to relax the profile. Measured instead: under `--cap-drop ALL` with `no-new-privileges`,
+mongo's entrypoint dies with
+
+```
+chown: changing ownership of '/proc/1/fd/1': Operation not permitted
+error: failed switching to 'mongodb': operation not permitted
+```
+
+because it wants to chown its data directory and then drop privileges. Running the
+container **as the image's own unprivileged user** (uid 999, which all four define, and
+which already owns their data directories) skips that path entirely. Every control the
+runner images get is kept: capabilities dropped, rootfs read-only, no-new-privileges,
+memory, CPU and pid ceilings, no Docker socket.
+
+### The variable name is the whole game
+
+A provisioned, healthy MongoDB still produced `connect ECONNREFUSED 127.0.0.1:27017`.
+The URL had been injected as `MONGO_URI`; the application reads `MONGODB_URI`. An
+injected variable nobody reads is indistinguishable from no database at all.
+
+The name was discoverable and was not being looked for. Two sources now are: the
+service's **own** `.env.example` — which the root-level analyzer never sees, because in
+this repository it lives in `backend/` — and `process.env.X` in the service's source.
+With neither to go on, every known alias for that kind is supplied rather than one
+guess: an unread variable costs nothing, and guessing wrong costs the entire run.
+
+### Verified
+
+- **The real repository now runs.** `Prompt-Engine` reaches `READY` with three
+  containers — `mongo:7`, its backend on 5000, its frontend on 5173 — and its own output
+  says so:
+
+  ```
+  [backend] ✅ MongoDB connected successfully
+  [backend] ║ Database: Connected   Status: Ready ✅
+  ```
+
+- The `node-fullstack` fixture's backend now refuses to serve unless it actually reached
+  its database, so a 200 from it proves the whole chain: provisioned, healthy, named,
+  injected, connected.
+- **Proven able to fail:** reverting to the rule's first environment key turns 4 unit
+  tests red and takes the integration test from READY to FAILED; not waiting for the
+  database does the same.
+- 446 tests across three packages (443 passing, 3 skipped), zero residue — databases
+  included, which is its own test.
+
+### What is still missing
+
+The browser. The page calls `http://localhost:5001`, the API is published on a random
+host port, and a container alias is invisible to a browser — so the stack is healthy and
+the UI still shows `Failed to fetch`. That is phase D, and it is now the only thing
+between this repository and working.
+
 ## 2026-09-17 — Multi-service, phase B: run every service, together
 
 Phase A described a repository as the set of things that have to run. This phase runs

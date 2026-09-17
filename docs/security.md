@@ -27,6 +27,7 @@ no host access, no network access to your LAN, no persistence, no privilege.
 |---|---|---|
 | Non-root | uid/gid 1000 | `id` inside the container |
 | Capabilities | `capDrop ALL` | `CapBnd` is all zeros in `/proc/self/status` |
+| Database containers | Same profile, run as the image's own uid 999 | Measured: the entrypoints only chown and switch user when started as root |
 | Privilege escalation | `no-new-privileges` | `NoNewPrivs: 1` in `/proc/self/status` |
 | Root filesystem | read-only | a write to `/` is refused |
 | Writable area | volume at `/workspace` only | a write there succeeds |

@@ -1,11 +1,16 @@
+import type Dockerode from 'dockerode';
 import {
   ExecutionState,
   FailureCode,
+  type BackingService,
   type FailureDetail,
   type ProjectPlan,
   type ServiceRole,
   type ServiceRunPlan,
 } from '@devlaunch/shared';
+import { config } from '../../config/index.js';
+import { buildLabels } from '../docker/ContainerSecurity.js';
+import { BACKING_SPECS, connectionEnv, databaseName } from './BackingServices.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { ExecutionManager, LaunchHandle, ReadyOutcome } from './ExecutionManager.js';
@@ -22,8 +27,17 @@ export interface ServiceRun {
   failure?: FailureDetail;
 }
 
+export interface BackingRun {
+  kind: BackingService['kind'];
+  alias: string;
+  container: Dockerode.Container;
+  ready: boolean;
+}
+
 export interface ProjectRun {
   services: ServiceRun[];
+  /** Databases provisioned for this project, in the order they were started. */
+  backing: BackingRun[];
   /** The service a person is given the URL of: the web front door, or the only one. */
   entry(): ServiceRun | undefined;
   cleanup(): Promise<{ errors: Error[] }>;
@@ -32,6 +46,10 @@ export interface ProjectRun {
 export interface ProjectLaunchOptions {
   sessionId: string;
   project: ProjectPlan;
+  /** Databases the repository expects. Provisioned and injected before anything starts. */
+  backing?: BackingService[];
+  /** Used to name the database, so it reads as the project's rather than as a default. */
+  repoName?: string;
   /** The repository root; each service runs from its own subdirectory of it. */
   sourceDir: string;
   /** Aggregated, user-visible output. Each line arrives tagged with its service. */
@@ -62,13 +80,15 @@ export class ProjectExecutor {
       (a, b) => startRank(a.role) - startRank(b.role),
     );
     const services: ServiceRun[] = [];
+    const backing: BackingRun[] = [];
 
     const run: ProjectRun = {
       services,
+      backing,
       entry: () => services.find((s) => s.role === 'web') ?? services[0],
       cleanup: async () => {
         const errors: Error[] = [];
-        // Every service is released even if an earlier one refuses: a half-cleaned
+        // Every container is released even if an earlier one refuses: a half-cleaned
         // project leaves containers running with nothing tracking them.
         for (const service of services) {
           try {
@@ -78,11 +98,54 @@ export class ProjectExecutor {
             errors.push(err instanceof Error ? err : new Error(String(err)));
           }
         }
+        // Databases last, so an application still shutting down does not lose its
+        // connection mid-write and log an alarming error on the way out.
+        for (const db of backing) {
+          try {
+            await this.exec.docker.stop(db.container);
+            await this.exec.docker.remove(db.container);
+          } catch (err) {
+            errors.push(err instanceof Error ? err : new Error(String(err)));
+          }
+        }
         return { errors };
       },
     };
 
-    for (const plan of ordered) {
+    // Databases first, and waited for. Applications connect at boot — the real
+    // repository that prompted this exits with "MongoDB connection error" rather than
+    // retrying — so starting them in parallel would be a race the application loses.
+    const database = databaseName(opts.repoName);
+    try {
+      for (const need of opts.backing ?? []) {
+        const db = await this.startBacking(opts, need, database);
+        if (db) backing.push(db);
+      }
+    } catch (err) {
+      await run.cleanup();
+      throw err;
+    }
+
+    const injected = connectionEnv(opts.backing ?? [], database);
+    if (injected.length) {
+      opts.logs.write(
+        'stdout',
+        `Provisioned ${backing.map((b) => b.kind).join(', ')}; ` +
+          `injected ${injected.map((v) => v.key).join(', ')}.`,
+      );
+    }
+
+    for (const base of ordered) {
+      // A variable the repository already supplies wins: the user's own value for
+      // MONGO_URI is a decision, and overwriting it would be DevLaunch overruling it.
+      const declared = new Set(base.environmentVariables.filter((v) => v.value !== null).map((v) => v.key));
+      const plan: ServiceRunPlan = {
+        ...base,
+        environmentVariables: [
+          ...base.environmentVariables,
+          ...injected.filter((v) => !declared.has(v.key)),
+        ],
+      };
       const logs = new LogManager();
       // Tagged as it arrives, so one stream stays readable with several services in it.
       logs.on('entry', (entry: { stream: 'stdout' | 'stderr'; text: string; ts: number }) => {
@@ -111,6 +174,72 @@ export class ProjectExecutor {
     }
 
     return run;
+  }
+
+  /**
+   * Start one database and wait until it actually answers.
+   *
+   * "Running" is not "accepting connections" — the same distinction readiness draws for
+   * applications, and it matters more here because an application that connects at boot
+   * gets exactly one chance.
+   */
+  private async startBacking(
+    opts: ProjectLaunchOptions,
+    need: BackingService,
+    database: string,
+  ): Promise<BackingRun | null> {
+    const spec = BACKING_SPECS[need.kind];
+    if (!spec) return null;
+
+    const docker = this.exec.docker;
+    opts.logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${spec.alias}...`);
+    await docker.ensureImage(spec.image);
+
+    const networkName = (await docker.networkExists(config.docker.networkName))
+      ? config.docker.networkName
+      : undefined;
+
+    const container = await docker.createBackingContainer({
+      image: spec.image,
+      alias: spec.alias,
+      user: spec.user,
+      env: spec.env,
+      labels: buildLabels(opts.sessionId),
+      dataPaths: spec.dataPaths,
+      networkName,
+    });
+
+    await docker.start(container);
+    const ready = await this.waitForBacking(docker, container, spec.readyCheck);
+
+    if (!ready) {
+      opts.logs.write('stderr', `${need.kind} did not become ready; the project will fail.`);
+    } else {
+      opts.logs.write('stdout', `${need.kind} is accepting connections at ${spec.url(database)}`);
+    }
+    return { kind: need.kind, alias: spec.alias, container, ready };
+  }
+
+  /** Poll the image's own health command until it succeeds, or the budget runs out. */
+  private async waitForBacking(
+    docker: ExecutionManager['docker'],
+    container: Dockerode.Container,
+    check: string[],
+    timeoutMs = config.timeouts.backingReadyMs,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const out = await docker.execCapture(container, check);
+        // Every one of these commands prints something recognisable on success and
+        // fails or stays silent otherwise.
+        if (/\b(1|PONG|accepting connections|mysqld is alive)\b/i.test(out)) return true;
+      } catch {
+        /* not up yet; the loop is the retry */
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return false;
   }
 
   /**
