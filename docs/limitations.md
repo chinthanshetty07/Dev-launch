@@ -71,6 +71,14 @@ Capped at roughly 5 MB or 10,000 lines per session, whichever comes first. Verbo
 builds will have their earliest output evicted; a truncation marker makes this visible
 rather than silent.
 
+## One session at a time
+
+DevLaunch runs one session at a time, because the Colima VM cannot safely host more. A
+launch refused for that reason names the session in the way and carries its id, the
+dashboard offers to stop it, and `GET /api/sessions` lists everything this process knows
+about. A session that never becomes ready releases the slot on its own after twice the
+time-to-ready budget.
+
 ## One project at a time, per machine
 
 Concurrency is one session per DevLaunch process, which says nothing about two processes.

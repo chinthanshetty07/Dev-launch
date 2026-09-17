@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-09-18 — "A session is already running", and no way to get to it
+
+The message was accurate and useless. It named a constraint, did not say which session
+held the slot, and there was no endpoint to list sessions — so a client that had lost the
+id could neither see the running session nor stop it. A page reload was enough to lose
+it, because the id lived only in the dashboard's component state.
+
+Encountered for real: the backend reported two sessions and Docker reported **zero**
+containers, and the only way past it was restarting the process.
+
+### Three things were wrong
+
+- **Nothing bounded a session that never reached READY.** The lifetime clock starts at
+  READY and the time-to-ready budget belongs to a *container*, so a session whose
+  containers disappeared before readiness had nothing to end it. It kept the only slot
+  indefinitely. A backstop at twice the time-to-ready budget now releases it, with a
+  failure that says how far it got — deliberately generous, since this is for a session
+  making no progress at all, not a second opinion on a slow install. `READY` hands over
+  to the lifetime clock and `AWAITING_INPUT` has its own bound, so neither is cut short.
+- **Sessions could not be listed.** `GET /api/sessions` now returns every session this
+  process knows about, newest first, with whether it is still active.
+- **The conflict did not say what to do.** The 409 now names the blocking session and its
+  state, and carries its id, so the dashboard can offer to stop it.
+
+### And the dashboard forgets less
+
+On load it adopts whatever session is already running, so a reload reconnects to it —
+pipeline, services, URL and live logs — instead of stranding it. A launch refused by the
+concurrency limit shows a `stop it` button beside the error.
+
+### Verified
+
+```
+POST /api/sessions -> 409
+{
+  "error": "A session is already running (started from a fixture, currently ready).
+            DevLaunch runs 1 at a time … Stop it and try again.",
+  "activeSessionId": "0287a54a-c7c0-4c6d-8bfe-e4aeb25d49ac"
+}
+```
+
+Reloading the dashboard with that session running reconnected to it and streamed its logs.
+
+- 4 tests. **Proven able to fail:** removing the backstop leaves the slot held forever;
+  letting the backstop ignore `READY` kills a working session; dropping the id from the
+  conflict makes it unactionable again.
+- 480 tests across three packages (477 passing, 3 skipped), zero residue.
+
 ## 2026-09-18 — The configuration gate reads every service, not just the root
 
 A repository keeps its configuration beside the service that reads it. `GROQ_API_KEY`

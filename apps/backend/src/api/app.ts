@@ -5,7 +5,7 @@ import express, { type Express } from 'express';
 import { SessionConflict, type Session, type SessionManager } from '../services/session/SessionManager.js';
 import { assertSafeRelativePath } from '../services/security/PathValidator.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
-import type { BackingView, ServiceView } from '@devlaunch/shared';
+import { TERMINAL_STATES, type BackingView, type ServiceView } from '@devlaunch/shared';
 
 export interface AppOptions {
   sessions: SessionManager;
@@ -68,6 +68,30 @@ export function createApp(opts: AppOptions): Express {
     res.json({ ok: true, sessions: opts.sessions.list().length });
   });
 
+  /**
+   * Every session this process knows about, newest first.
+   *
+   * Exists so a session can always be found again. Without it a client that lost the id
+   * — a page reload is enough — could neither see the running session nor stop it, and
+   * the only way past "a session is already running" was to restart the backend.
+   */
+  app.get('/api/sessions', (_req, res) => {
+    res.json(
+      opts.sessions
+        .list()
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((session) => ({
+          id: session.id,
+          state: session.state,
+          repoUrl: session.repoUrl,
+          url: session.url,
+          createdAt: session.createdAt,
+          readyAt: session.readyAt,
+          active: !TERMINAL_STATES.includes(session.state),
+        })),
+    );
+  });
+
   app.get('/api/fixtures', async (_req, res) => {
     const entries = await readdir(opts.fixturesDir, { withFileTypes: true });
     res.json(entries.filter((e) => e.isDirectory()).map((e) => e.name));
@@ -111,7 +135,9 @@ export function createApp(opts: AppOptions): Express {
       res.status(201).json({ id: session.id, state: session.state });
     } catch (err) {
       if (err instanceof SessionConflict) {
-        res.status(409).json({ error: err.message });
+        // The id is what makes the message actionable: a client can offer to stop the
+        // session that is in the way instead of only reporting that one exists.
+        res.status(409).json({ error: err.message, activeSessionId: err.activeSessionId });
         return;
       }
       if (err instanceof SecurityRejection) {

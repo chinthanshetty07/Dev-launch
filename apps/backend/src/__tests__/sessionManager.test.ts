@@ -480,3 +480,87 @@ describe('repair and the reported diagnosis', () => {
     await mgr.shutdown();
   });
 });
+
+describe('a session that never becomes ready', () => {
+  it('releases the only run slot instead of holding it forever', async () => {
+    // What the error "a session is already running" was really reporting: a session
+    // whose containers were gone sat non-terminal with nothing to end it. The lifetime
+    // clock starts at READY and the time-to-ready budget belongs to a container, so
+    // nothing bounded the session itself — and with no way to list sessions, the only
+    // cure was restarting the backend.
+    const mgr = new SessionManager(
+      fakeExec(() => new Promise<ReadyOutcome>(() => {}) as unknown as ReadyOutcome),
+      { startupBoundMs: 80 },
+    );
+    const s = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await settle();
+    expect(s.state).not.toBe(ExecutionState.FAILED);
+
+    await until(() => s.state === ExecutionState.FAILED, 3000);
+    expect(s.failure?.code).toBe(FailureCode.PROCESS_TIMEOUT);
+    expect(s.failure?.message).toMatch(/never became ready/i);
+
+    // The point of the backstop: another launch can now proceed.
+    const next = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    expect(next.id).not.toBe(s.id);
+    await mgr.shutdown();
+  });
+
+  it('does not cut short a session that is ready', async () => {
+    const mgr = new SessionManager(fakeExec(ready, { liveness: async () => ({ kind: 'running' }) }), {
+      startupBoundMs: 60,
+      livenessIntervalMs: 20,
+    });
+    const s = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await settle();
+    expect(s.state).toBe(ExecutionState.READY);
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(s.state, 'READY hands over to the lifetime clock').toBe(ExecutionState.READY);
+    await mgr.shutdown();
+  });
+
+  it('does not cut short a session waiting on a person', async () => {
+    // AWAITING_INPUT has its own bound and is blocked on an answer, not stuck.
+    const analyzer = {
+      analyze: async () => ({ envExample: [{ key: 'X', hasDefault: false }], warnings: [] }),
+    };
+    const planner = {
+      planRepository: async () => ({
+        plan: { ...plan(), environmentVariables: [] },
+        detected: 'node',
+        warnings: [],
+      }),
+    };
+    const mgr = new SessionManager(fakeExec(failed), {
+      analyzer: analyzer as never,
+      planner: planner as never,
+      startupBoundMs: 60,
+      awaitingInputMs: 60_000,
+    });
+    const s = await mgr.launch({ sourceDir: '/tmp' });
+    await settle();
+    expect(s.state).toBe(ExecutionState.AWAITING_INPUT);
+
+    await new Promise((r) => setTimeout(r, 200));
+    expect(s.state).toBe(ExecutionState.AWAITING_INPUT);
+    await mgr.shutdown();
+  });
+
+  it('names the session standing in the way of a launch', async () => {
+    // A message that states a constraint and offers no way to act on it is what made
+    // this unrecoverable from the UI.
+    const mgr = new SessionManager(
+      fakeExec(() => new Promise<ReadyOutcome>(() => {}) as unknown as ReadyOutcome),
+    );
+    const first = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await settle();
+
+    await expect(
+      mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' }),
+    ).rejects.toMatchObject({ activeSessionId: first.id });
+
+    expect(mgr.active().map((x) => x.id)).toEqual([first.id]);
+    await mgr.shutdown();
+  });
+});

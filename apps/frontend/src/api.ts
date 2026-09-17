@@ -32,14 +32,42 @@ export interface SessionView {
   backing?: BackingView[];
 }
 
+/** An error that also says which session is in the way, so a client can offer to stop it. */
+export class ConflictError extends Error {
+  constructor(
+    message: string,
+    readonly activeSessionId?: string,
+  ) {
+    super(message);
+    this.name = 'ConflictError';
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
-  const body = (await res.json().catch(() => ({}))) as T & { error?: string };
+  const body = (await res.json().catch(() => ({}))) as T & {
+    error?: string;
+    activeSessionId?: string;
+  };
+  if (res.status === 409) {
+    throw new ConflictError(body.error ?? 'A session is already running.', body.activeSessionId);
+  }
   if (!res.ok) throw new Error(body.error ?? `Request failed (${res.status})`);
   return body;
 }
 
+export interface SessionSummary {
+  id: string;
+  state: ExecutionState;
+  repoUrl?: string;
+  url?: string;
+  createdAt: number;
+  active: boolean;
+}
+
 export const api = {
   fixtures: () => fetch('/api/fixtures').then((r) => json<string[]>(r)),
+
+  sessions: () => fetch('/api/sessions').then((r) => json<SessionSummary[]>(r)),
 
   launch: (body: { repoUrl?: string; fixture?: string }) =>
     fetch('/api/sessions', {

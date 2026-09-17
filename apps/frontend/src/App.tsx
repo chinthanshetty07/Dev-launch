@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from './api';
+import { api, ConflictError } from './api';
 import { useSession } from './useSession';
 import { RepoLauncher } from './components/RepoLauncher';
 import { PipelineStrip } from './components/PipelineStrip';
@@ -16,16 +16,41 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<Record<string, import('@devlaunch/shared').ServiceStats>>({});
+  /** A session blocking a launch, so it can be stopped from here rather than hunted for. */
+  const [blockedBy, setBlockedBy] = useState<string | null>(null);
+
+  /*
+   * Reconnect to whatever is already running.
+   *
+   * The session id lived only in this component's state, so a page reload stranded a
+   * running session: it kept its containers and the only slot, and nothing in the UI
+   * could see it or stop it. Adopting it on load is what makes "a session is already
+   * running" a thing a person can act on.
+   */
+  useEffect(() => {
+    if (sessionId) return;
+    api
+      .sessions()
+      .then((all) => {
+        const running = all.find((s) => s.active);
+        if (running) setSessionId(running.id);
+      })
+      .catch(() => undefined);
+    // Only on mount: afterwards this component owns the session it started.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const { state, furthest, lines, session, connected, refresh } = useSession(sessionId);
 
   const launch = useCallback(async (body: { repoUrl?: string; fixture?: string }) => {
     setBusy(true);
     setError(null);
+    setBlockedBy(null);
     try {
       const created = await api.launch(body);
       setSessionId(created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      if (err instanceof ConflictError && err.activeSessionId) setBlockedBy(err.activeSessionId);
     } finally {
       setBusy(false);
     }
@@ -111,7 +136,31 @@ export default function App() {
       </header>
 
       {error && (
-        <p className="border-b border-bad/50 bg-panel px-4 py-2 text-[13px] text-bad">{error}</p>
+        <div className="flex items-center gap-3 border-b border-bad/50 bg-panel px-4 py-2 text-[13px] text-bad">
+          <span>{error}</span>
+          {blockedBy && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await api.cancel(blockedBy);
+                  setBlockedBy(null);
+                  setError(null);
+                  setSessionId(null);
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              className="rounded-md border border-bad px-2 py-0.5 text-[11px] hover:bg-bad/10 disabled:opacity-40"
+            >
+              stop it
+            </button>
+          )}
+        </div>
       )}
 
       <PipelineStrip

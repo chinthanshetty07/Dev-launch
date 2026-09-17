@@ -113,7 +113,22 @@ export interface ResolveInput {
   workspaceDir?: string;
 }
 
-export class SessionConflict extends Error {}
+/**
+ * A launch refused because another session holds the only slot.
+ *
+ * Carries the blocking session's id. Without it the message states a constraint and
+ * offers no way to act on it — and a client that has lost track of that session, after
+ * a page reload say, has no route back to it at all.
+ */
+export class SessionConflict extends Error {
+  constructor(
+    message: string,
+    readonly activeSessionId?: string,
+  ) {
+    super(message);
+    this.name = 'SessionConflict';
+  }
+}
 
 export interface SessionManagerDeps {
   git?: GitManager;
@@ -129,6 +144,8 @@ export interface SessionManagerDeps {
   awaitingInputMs?: number;
   /** Overridable so the liveness watch can be tested without waiting seconds. */
   livenessIntervalMs?: number;
+  /** Overridable so the never-became-ready backstop can be tested without waiting. */
+  startupBoundMs?: number;
 }
 
 /**
@@ -148,6 +165,8 @@ export class SessionManager extends EventEmitter {
   private readonly timers = new Map<string, NodeJS.Timeout[]>();
   /** Current liveness watch per session, so a re-armed lifetime supersedes the old one. */
   private readonly watchGeneration = new Map<string, number>();
+  /** Backstop per session for one that never reaches READY. Cleared when it finishes. */
+  private readonly startupBounds = new Map<string, NodeJS.Timeout>();
   private readonly validator = new RunPlanValidator();
 
   constructor(
@@ -171,11 +190,22 @@ export class SessionManager extends EventEmitter {
     return this.list().filter((s) => !TERMINAL_STATES.includes(s.state)).length;
   }
 
+  /** Sessions that still hold resources, newest first. */
+  active(): Session[] {
+    return this.list()
+      .filter((s) => !TERMINAL_STATES.includes(s.state))
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   async launch(req: LaunchRequest): Promise<Session> {
     if (this.activeCount() >= config.concurrency.maxSessions) {
+      const blocking = this.active()[0];
       throw new SessionConflict(
-        `A session is already running. DevLaunch runs ${config.concurrency.maxSessions} ` +
-          'at a time, because the Colima VM cannot safely host more.',
+        `A session is already running (${blocking?.repoUrl ?? 'started from a fixture'}, ` +
+          `currently ${blocking?.state.toLowerCase().replace(/_/g, ' ')}). DevLaunch runs ` +
+          `${config.concurrency.maxSessions} at a time, because the Colima VM cannot ` +
+          'safely host more. Stop it and try again.',
+        blocking?.id,
       );
     }
 
@@ -190,6 +220,7 @@ export class SessionManager extends EventEmitter {
     };
     this.sessions.set(session.id, session);
     this.evictFinished();
+    this.armStartupBound(session);
 
     // Not awaited: the caller gets an id at once and follows progress over the stream.
     void this.run(session, req);
@@ -651,6 +682,56 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Bound a session that never becomes ready.
+   *
+   * The lifetime clock starts at READY and the time-to-ready budget belongs to a
+   * container, so a session that loses its containers before reaching READY — they were
+   * removed from underneath it, or a step wedged — had nothing to end it. It kept the
+   * only slot, and with no way to list sessions there was no way to find it: every
+   * later launch failed with "a session is already running" and the only cure was
+   * restarting the backend.
+   *
+   * Deliberately generous. This is a backstop for a session that is not progressing at
+   * all, not a second opinion on how long a slow install may take.
+   */
+  private armStartupBound(session: Session): void {
+    const budget = this.deps.startupBoundMs ?? config.timeouts.timeToReadyMs * 2;
+    const timer = setTimeout(() => {
+      // READY hands over to the lifetime clock; AWAITING_INPUT has its own bound and is
+      // waiting on a person rather than stuck.
+      if (
+        TERMINAL_STATES.includes(session.state) ||
+        session.state === ExecutionState.READY ||
+        session.state === ExecutionState.AWAITING_INPUT
+      ) {
+        return;
+      }
+      void this.abandon(session.id, budget);
+    }, budget);
+    timer.unref?.();
+    this.startupBounds.set(session.id, timer);
+  }
+
+  private async abandon(id: string, budget: number): Promise<void> {
+    const session = this.sessions.get(id);
+    if (!session || TERMINAL_STATES.includes(session.state)) return;
+
+    session.failure = {
+      code: FailureCode.PROCESS_TIMEOUT,
+      message:
+        `The session never became ready within ${Math.round(budget / 60_000)} minutes and ` +
+        `was released, so it no longer holds the only run slot. It was ${session.state
+          .toLowerCase()
+          .replace(/_/g, ' ')} when it stopped making progress.`,
+      remedy: 'Start it again; the logs above show how far it got.',
+      confidence: 'medium',
+    };
+    this.setState(session, ExecutionState.CLEANING_UP);
+    await this.teardown(session);
+    this.setState(session, ExecutionState.FAILED, 'never became ready');
+  }
+
+  /**
    * Start the session lifetime clock, which begins only once the app is READY.
    *
    * The hard cap bounds the session; the idle timer bounds neglect. Together they stop
@@ -917,11 +998,21 @@ export class SessionManager extends EventEmitter {
     this.timers.delete(id);
   }
 
+  /** Release the startup backstop; a finished session cannot be stuck starting. */
+  private clearStartupBound(id: string): void {
+    const timer = this.startupBounds.get(id);
+    if (timer) clearTimeout(timer);
+    this.startupBounds.delete(id);
+  }
+
   private setState(session: Session, state: ExecutionState, reason?: string): void {
     session.state = state;
     if (reason !== undefined) session.endedReason = reason;
     this.emit('state', session, reason);
-    if (TERMINAL_STATES.includes(state)) this.evictFinished();
+    if (TERMINAL_STATES.includes(state)) {
+      this.clearStartupBound(session.id);
+      this.evictFinished();
+    }
   }
 
   /**
@@ -940,6 +1031,7 @@ export class SessionManager extends EventEmitter {
     for (let i = 0; i < excess; i++) {
       const stale = finished[i]!;
       this.clearTimers(stale.id);
+      this.clearStartupBound(stale.id);
       this.watchGeneration.delete(stale.id);
       stale.logs.removeAllListeners();
       stale.logs.buffer.clear();
@@ -949,6 +1041,7 @@ export class SessionManager extends EventEmitter {
 
   async shutdown(): Promise<void> {
     await Promise.all(this.list().map((s) => this.cancel(s.id)));
+    for (const id of [...this.startupBounds.keys()]) this.clearStartupBound(id);
     this.sessions.clear();
     this.watchGeneration.clear();
   }
