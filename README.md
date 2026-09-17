@@ -15,7 +15,7 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 
 ## Status
 
-**Phase 9 complete — frontend.**
+**v1.0 complete — Phases 1–7, 9 and 10. Zero AI dependency.**
 
 | | Phase | State |
 |---|---|---|
@@ -26,9 +26,9 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 5 | Repository analyzer | ✅ Complete |
 | 6 | Rule-based plan generator | ✅ Complete |
 | 7 | Failure classifier | ✅ Complete |
-| 8 | AI fallback planner + repair | Stretch |
+| 8 | AI fallback planner + repair | Stretch — not started |
 | 9 | Frontend | ✅ Complete |
-| 10 | Documentation + portfolio | Not started |
+| 10 | Documentation + portfolio | ✅ Complete |
 
 ### What Phase 9 delivers
 
@@ -46,6 +46,16 @@ A React + TypeScript + Vite + Tailwind interface in `apps/frontend`:
 
 The backend serves the built UI, falling back to a plain harness page when it has not
 been built, so it is never left serving nothing.
+
+### What Phase 10 delivers
+
+Eight documents covering architecture, security, the failure model, planning strategy,
+setup, fixtures, limitations, and the portfolio write-up.
+
+Each is written against what was actually built rather than what was planned — including
+the bugs found along the way and why the design changed. Writing them turned up an
+inaccuracy in this README (13 failure signatures, not 14), which is a decent argument for
+documenting from the source rather than from memory.
 
 ### Pipeline integration
 
@@ -68,7 +78,7 @@ clone → analyse → plan → validate → [ask the user] → run → verify
 
 ### What Phase 7 delivers
 
-- `FailureClassifier` — 14 ordered signatures turning raw output into a specific cause:
+- `FailureClassifier` — 13 ordered signatures turning raw output into a specific cause:
   out of memory, architecture mismatch, missing database, missing configuration, wrong
   runtime version, peer-dependency conflict, native build failure, DNS/TLS failure,
   missing module, and more
@@ -190,9 +200,16 @@ than passing with weaker isolation.
 
 ## Documentation
 
-- [docs/planning-strategy.md](docs/planning-strategy.md) — every settled design
-  decision, and the reasoning behind it. Ground truth for the build.
-- [docs/limitations.md](docs/limitations.md) — deliberate v1 boundaries, stated plainly.
+| Document | What it covers |
+|---|---|
+| [architecture.md](docs/architecture.md) | Pipeline, module map, and the decisions that shaped them |
+| [security.md](docs/security.md) | Threat model, what is enforced, and what deliberately is not |
+| [failure-model.md](docs/failure-model.md) | The 20 failure categories and how a cause is decided |
+| [planning-strategy.md](docs/planning-strategy.md) | Every settled design decision. Ground truth for the build |
+| [setup.md](docs/setup.md) | Getting it running, configuration, troubleshooting |
+| [fixtures.md](docs/fixtures.md) | What each fixture exercises, and why they are vendored |
+| [limitations.md](docs/limitations.md) | Deliberate v1 boundaries, stated plainly |
+| [portfolio.md](docs/portfolio.md) | The project write-up |
 
 ## Design notes worth knowing
 
