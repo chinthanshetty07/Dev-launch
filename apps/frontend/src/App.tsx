@@ -1,8 +1,9 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { useSession } from './useSession';
 import { RepoLauncher } from './components/RepoLauncher';
 import { PipelineStrip } from './components/PipelineStrip';
+import { ServicePanel } from './components/ServicePanel';
 import { PlanPanel } from './components/PlanPanel';
 import { InputGate } from './components/InputGate';
 import { FailurePanel } from './components/FailurePanel';
@@ -14,6 +15,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<Record<string, import('@devlaunch/shared').ServiceStats>>({});
   const { state, furthest, lines, session, connected, refresh } = useSession(sessionId);
 
   const launch = useCallback(async (body: { repoUrl?: string; fixture?: string }) => {
@@ -40,6 +42,23 @@ export default function App() {
     }
   }, [sessionId, refresh]);
 
+  const restart = useCallback(
+    async (service?: string) => {
+      if (!sessionId) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await api.restart(sessionId, service);
+        refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sessionId, refresh],
+  );
+
   const resolve = useCallback(
     async (body: { env?: Record<string, string>; workspaceDir?: string }) => {
       if (!sessionId) return;
@@ -57,6 +76,26 @@ export default function App() {
   );
 
   const running = RUNNING.includes(state);
+
+  // Polled only while something is running, and only when the project has services to
+  // report on: sampling a finished session tells nobody anything.
+  const hasServices = (session?.services?.length ?? 0) > 0;
+  useEffect(() => {
+    if (!sessionId || !running || !hasServices) return;
+    let cancelled = false;
+    const tick = () => {
+      api
+        .stats(sessionId)
+        .then((s) => !cancelled && setStats(s))
+        .catch(() => undefined);
+    };
+    tick();
+    const timer = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [sessionId, running, hasServices]);
 
   return (
     <div className="flex h-full flex-col">
@@ -81,6 +120,16 @@ export default function App() {
         planSource={session?.plan?.planSource}
         detected={session?.detected}
       />
+
+      {session?.services && session.services.length > 0 && (
+        <ServicePanel
+          services={session.services}
+          backing={session.backing}
+          stats={stats}
+          onRestart={restart}
+          busy={busy}
+        />
+      )}
 
       {session?.state === 'AWAITING_INPUT' && session.pending && (
         <InputGate

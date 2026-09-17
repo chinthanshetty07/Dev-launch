@@ -4,7 +4,15 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import Dockerode from 'dockerode';
 import tarFs from 'tar-fs';
+import type { ServiceStats } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
+
+/** The fields of Docker's stats payload this uses; dockerode types it as `unknown`. */
+interface DockerStats {
+  cpu_stats: { cpu_usage: { total_usage: number }; system_cpu_usage: number; online_cpus: number };
+  precpu_stats: { cpu_usage: { total_usage: number }; system_cpu_usage: number };
+  memory_stats: { usage?: number; limit?: number };
+}
 
 export interface CreateContainerOptions {
   image: string;
@@ -365,6 +373,34 @@ export class DockerManager {
    * Used for container introspection only (reading /proc), never for executing
    * repository commands — those always go through the wrapper's single lifecycle.
    */
+  /**
+   * One sample of a container's resource use.
+   *
+   * `stream: false` still returns the previous CPU reading alongside the current one,
+   * so a percentage can be computed from a single request — no second sample, and no
+   * open stream per container for a dashboard that polls every few seconds.
+   *
+   * Returns null rather than throwing: a container that has just exited cannot be
+   * sampled, and a missing number is not worth failing a page render over.
+   */
+  async sampleStats(container: Dockerode.Container): Promise<ServiceStats | null> {
+    try {
+      const raw = (await container.stats({ stream: false })) as unknown as DockerStats;
+      const cpuDelta = raw.cpu_stats.cpu_usage.total_usage - raw.precpu_stats.cpu_usage.total_usage;
+      const systemDelta = raw.cpu_stats.system_cpu_usage - raw.precpu_stats.system_cpu_usage;
+      const cores = raw.cpu_stats.online_cpus || 1;
+
+      return {
+        cpuPercent: systemDelta > 0 ? Math.max(0, (cpuDelta / systemDelta) * cores * 100) : 0,
+        memoryBytes: raw.memory_stats.usage ?? 0,
+        memoryLimitBytes: raw.memory_stats.limit ?? 0,
+        sampledAt: Date.now(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async execCapture(container: Dockerode.Container, cmd: string[]): Promise<string> {
     const exec = await container.exec({
       Cmd: cmd,

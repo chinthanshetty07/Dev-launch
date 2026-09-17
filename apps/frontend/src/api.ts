@@ -1,8 +1,11 @@
 import type {
+  BackingView,
   EnvExampleVar,
   ExecutionState,
   FailureDetail,
   RunPlan,
+  ServiceStats,
+  ServiceView,
   WorkspacePackage,
 } from '@devlaunch/shared';
 
@@ -24,6 +27,9 @@ export interface SessionView {
   endedReason?: string;
   createdAt: number;
   readyAt?: number;
+  /** Present only for a multi-service project. */
+  services?: ServiceView[];
+  backing?: BackingView[];
 }
 
 async function json<T>(res: Response): Promise<T> {
@@ -50,6 +56,16 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => json<{ id: string; state: ExecutionState }>(r)),
+
+  restart: (id: string, service?: string) =>
+    fetch(`/api/sessions/${id}/restart`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(service ? { service } : {}),
+    }).then((r) => json<{ id: string; state: ExecutionState }>(r)),
+
+  stats: (id: string) =>
+    fetch(`/api/sessions/${id}/stats`).then((r) => json<Record<string, ServiceStats>>(r)),
 
   cancel: (id: string) =>
     fetch(`/api/sessions/${id}/cancel`, { method: 'POST' }).then((r) =>

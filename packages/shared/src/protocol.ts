@@ -3,6 +3,52 @@ import type { FailureDetail } from './failures.js';
 
 export type LogStream = 'stdout' | 'stderr';
 
+/**
+ * One service of a running project, as a client sees it.
+ *
+ * A project has several of everything a single-service session had one of — state, URL,
+ * failure — and collapsing them into the session's own is what made a dashboard show
+ * "READY" beside a page that did not work.
+ */
+export interface ServiceView {
+  name: string;
+  role: 'web' | 'api' | 'worker';
+  state: ExecutionState;
+  /** Where a person can open it. Absent until it is ready, and cleared when it dies. */
+  url?: string;
+  /** Port inside the container, and the host port it is published on. */
+  containerPort: number | null;
+  hostPort?: number;
+  failure?: FailureDetail;
+  /** Live resource use, when it has been sampled. */
+  stats?: ServiceStats;
+}
+
+/** A database or cache DevLaunch started for the project. */
+export interface BackingView {
+  kind: 'mongodb' | 'postgres' | 'mysql' | 'redis';
+  /** Hostname the services reach it on. */
+  alias: string;
+  ready: boolean;
+  stats?: ServiceStats;
+}
+
+/**
+ * What a container is currently consuming.
+ *
+ * Sampled on request rather than streamed: a dashboard polling every few seconds is the
+ * whole requirement, and a continuous stats stream per container is a cost paid whether
+ * or not anyone is looking.
+ */
+export interface ServiceStats {
+  /** Percentage of one CPU, so 150 means one and a half cores. */
+  cpuPercent: number;
+  memoryBytes: number;
+  memoryLimitBytes: number;
+  /** Sampled at this moment, so a stale reading is recognisable as one. */
+  sampledAt: number;
+}
+
 export interface WireLogEntry {
   seq: number;
   ts: number;

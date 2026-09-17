@@ -9,6 +9,7 @@ import {
   type RepositoryMetadata,
   type ProjectPlan,
   type RunPlan,
+  type ServiceStats,
   type WorkspacePackage,
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
@@ -736,6 +737,101 @@ export class SessionManager extends EventEmitter {
     if (!session || session.state !== ExecutionState.READY) return;
     this.clearTimers(id);
     this.armLifetime(session);
+  }
+
+  /**
+   * Start a service again — or the whole project — without losing the session.
+   *
+   * Restarting is the control a person reaches for when an application has wedged or
+   * they have changed something it reads at boot, and re-cloning to get it is a heavy
+   * answer to a light question. Ports and injected configuration are preserved, so
+   * siblings that refer to the restarted service still reach it.
+   *
+   * A single-service session restarts its one container by the same route.
+   */
+  async restart(id: string, serviceName?: string): Promise<Session | undefined> {
+    const session = this.sessions.get(id);
+    if (!session || TERMINAL_STATES.includes(session.state)) return session;
+    if (!session.run) {
+      session.logs.buffer.push('stderr', 'Restart is only available for multi-service projects.');
+      return session;
+    }
+
+    const targets = serviceName
+      ? session.run.services.filter((sv) => sv.name === serviceName)
+      : session.run.services;
+    if (targets.length === 0) return session;
+
+    // The lifetime clock and liveness watch both key off READY; leaving them armed while
+    // containers are being replaced would have the watch declare the session dead.
+    this.clearTimers(id);
+    this.setState(session, ExecutionState.STARTING, `restarting ${serviceName ?? 'all services'}`);
+    session.url = undefined;
+    session.failure = undefined;
+
+    try {
+      for (const target of targets) await target.restart();
+    } catch (err) {
+      this.fail(session, {
+        code: FailureCode.UNKNOWN_RUNTIME_ERROR,
+        message: `Restart failed: ${err instanceof Error ? err.message : String(err)}`,
+        remedy: 'Start a new session if the application cannot be brought back.',
+      });
+      await this.teardown(session);
+      return session;
+    }
+
+    this.setState(session, ExecutionState.WAITING_FOR_READY);
+    const executor = new ProjectExecutor(this.exec);
+    const outcome = await executor.waitForReady(session.run);
+
+    if (outcome.state === ExecutionState.READY) {
+      session.readyAt = Date.now();
+      session.url = outcome.url;
+      for (const sv of session.run.services) sv.handle.clearStartupBudget?.();
+      this.setState(session, ExecutionState.READY, 'restarted');
+      this.armLifetime(session);
+      return session;
+    }
+
+    session.failure = outcome.failure;
+    this.setState(session, ExecutionState.FAILED);
+    await this.teardown(session);
+    return session;
+  }
+
+  /**
+   * Sample what every container in this session is consuming.
+   *
+   * On request rather than on a stream: a dashboard polling every few seconds is the
+   * whole requirement, and a stats stream per container costs the same whether or not
+   * anyone is looking.
+   */
+  async stats(id: string): Promise<Record<string, ServiceStats>> {
+    const session = this.sessions.get(id);
+    if (!session) return {};
+
+    const containers: [string, Parameters<ExecutionManager['docker']['sampleStats']>[0]][] = [];
+    if (session.run) {
+      for (const sv of session.run.services) containers.push([sv.name, sv.handle.container]);
+      for (const db of session.run.backing) containers.push([db.kind, db.container]);
+    } else if (session.handle?.container) {
+      containers.push(['app', session.handle.container]);
+    }
+
+    const sampled = await Promise.all(
+      containers.map(async ([name, container]) => {
+        // Sampling is a read for a dashboard, so nothing about it is worth failing a
+        // request over: a container that has just exited, or a Docker client that is
+        // not there at all, simply has no numbers to report.
+        const stats = await this.exec.docker?.sampleStats(container).catch(() => null);
+        return [name, stats ?? null] as const;
+      }),
+    );
+
+    const out: Record<string, ServiceStats> = {};
+    for (const [name, stats] of sampled) if (stats) out[name] = stats;
+    return out;
   }
 
   async stop(id: string, reason = 'stopped'): Promise<void> {

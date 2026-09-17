@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-09-18 — Multi-service, phase E: a dashboard for a project, and controls
+
+Phases B–D made a project *run*. The dashboard still described it as though it were one
+application: one pipeline, one state, one URL — which is the right gate and the wrong
+amount of detail when one of four services is the problem.
+
+### What this phase adds
+
+- **A services panel.** Every service with its own state, its host → container port
+  mapping, its URL, and what it is consuming. Provisioned databases appear too, labelled
+  as provisioned rather than found, because they are not something a person can go
+  looking for in their own repository.
+- **Restart, per service or for the whole project.** The control a person reaches for
+  when an application wedges or they have changed something it reads at boot; re-cloning
+  is a heavy answer to a light question.
+- **Resource monitoring.** CPU and memory per container, polled while a session runs.
+
+### Restart keeps the address, which is what makes it safe to offer
+
+A restarted service comes back on the same host port with the same resolved plan — the
+injected `MONGODB_URI` and `CORS_ORIGIN` included. Both matter: the port was chosen by
+DevLaunch and written into its siblings' configuration, so a restart that moved it would
+break everything that had been told where to find it, and re-deriving the plan would
+throw the injected values away.
+
+The lifetime clock and liveness watch are disarmed for the duration — both key off
+`READY`, and leaving them armed while containers are being replaced would have the watch
+announce the application had died.
+
+### Statistics are sampled, not streamed
+
+`stats({ stream: false })` returns the previous CPU reading alongside the current one, so
+a percentage comes from a single request. A dashboard polling every few seconds is the
+whole requirement; a stats stream per container costs the same whether or not anyone is
+looking. Sampling never throws — a container that has just exited has no numbers, and
+that is not worth failing a page render over.
+
+### A test that tested the wrong thing
+
+The restart test asserted the port survived by reading DevLaunch's own record of it —
+which stays unchanged whether or not the new container was published anywhere near it.
+Restarting on a fresh port passed. It now reads the mapping back from Docker, and the
+same mutation fails with `expected 35211 to be 5001`.
+
+### Verified
+
+Against the real repository, in a browser:
+
+```
+SERVICES                                      restart all
+backend    called by the page   ready  5001 → 5000    http://localhost:5001/    10% cpu · 129/1024 MB  [restart]
+frontend   browser              ready  62322 → 5173   http://localhost:62322/    0% cpu · 239/1024 MB  [restart]
+mongodb    provisioned mongodb  ready  internal       reachable as mongodb       1% cpu ·  73/1024 MB
+```
+
+Clicking `restart` on the backend left the frontend and database untouched — 24 seconds
+old against a minute — and the backend came back on 5001, still connected to MongoDB.
+
+- 4 HTTP tests and 2 integration tests. **Proven able to fail:** restarting on a fresh
+  port and restarting everything when one service was asked for each turn the
+  integration test red.
+- 465 tests across three packages (462 passing, 3 skipped), zero residue.
+
+### What is still missing
+
+`.env.example` is read only at the repository root, so a per-service secret is never
+asked for — `GROQ_API_KEY` lives in `backend/.env.example` here, and this repository
+ships a working default so it runs regardless. One that did not would fail with a
+configuration error rather than a prompt. That is the next thing worth doing.
+
 ## 2026-09-18 — Multi-service, phase D: the browser can finally reach the API
 
 Phase C left a healthy stack that still looked broken. Every service ran, the database

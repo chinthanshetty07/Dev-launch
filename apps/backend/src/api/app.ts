@@ -5,6 +5,7 @@ import express, { type Express } from 'express';
 import { SessionConflict, type Session, type SessionManager } from '../services/session/SessionManager.js';
 import { assertSafeRelativePath } from '../services/security/PathValidator.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
+import type { BackingView, ServiceView } from '@devlaunch/shared';
 
 export interface AppOptions {
   sessions: SessionManager;
@@ -34,6 +35,23 @@ function present(session: Session) {
     createdAt: session.createdAt,
     readyAt: session.readyAt,
     logs: session.logs.buffer.stats,
+    // A project has several of everything a single session had one of. Collapsing them
+    // into the session's own state is what let a dashboard show READY beside a page
+    // that did not work.
+    services: session.run?.services.map(
+      (sv): ServiceView => ({
+        name: sv.name,
+        role: sv.role,
+        state: sv.state,
+        url: sv.url,
+        containerPort: sv.plan.expectedPort,
+        hostPort: sv.hostPort,
+        failure: sv.failure,
+      }),
+    ),
+    backing: session.run?.backing.map(
+      (db): BackingView => ({ kind: db.kind, alias: db.alias, ready: db.ready }),
+    ),
   };
 }
 
@@ -135,6 +153,41 @@ export function createApp(opts: AppOptions): Express {
 
     await opts.sessions.resolve(session.id, { env, workspaceDir: body.workspaceDir });
     res.json({ id: session.id, state: session.state });
+  });
+
+  /**
+   * Restart the whole project, or one service of it.
+   *
+   * Ports and injected configuration survive, so siblings that refer to the restarted
+   * service still reach it — which is what makes this cheaper than starting again.
+   */
+  app.post('/api/sessions/:id/restart', async (req, res) => {
+    const session = opts.sessions.get(req.params.id);
+    if (!session) {
+      res.status(404).json({ error: 'No such session.' });
+      return;
+    }
+
+    const service = typeof req.body?.service === 'string' ? req.body.service : undefined;
+    if (service && !session.run?.services.some((sv) => sv.name === service)) {
+      res.status(400).json({ error: `No service named "${service}" in this session.` });
+      return;
+    }
+
+    // Not awaited: a restart takes as long as a start, and the client follows it over
+    // the same stream it follows a launch on.
+    void opts.sessions.restart(session.id, service);
+    res.status(202).json({ id: session.id, state: session.state });
+  });
+
+  /** Live resource use per container. Sampled on request; see SessionManager.stats. */
+  app.get('/api/sessions/:id/stats', async (req, res) => {
+    const session = opts.sessions.get(req.params.id);
+    if (!session) {
+      res.status(404).json({ error: 'No such session.' });
+      return;
+    }
+    res.json(await opts.sessions.stats(session.id));
   });
 
   app.post('/api/sessions/:id/cancel', async (req, res) => {

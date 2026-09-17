@@ -183,6 +183,18 @@ Both loopback stacks are checked when testing whether a port is free. `localhost
 resolves to `::1` first, so a port free on IPv4 and held on IPv6 will publish
 successfully and send the browser to whatever already owns the address.
 
+## Controls, and what a restart preserves
+
+A service can be restarted on its own, or the whole project at once. It comes back on the
+same host port with the same resolved plan — injected database URL and API base included
+— because the port was written into its siblings' configuration and re-deriving the plan
+would discard what was injected into it. The lifetime clock and liveness watch are
+disarmed while containers are replaced, since both key off READY.
+
+Resource use is sampled per container on request rather than streamed: a dashboard
+polling every few seconds is the requirement, and Docker returns the previous CPU reading
+alongside the current one, so one request is enough to compute a percentage.
+
 ## Two clocks, deliberately
 
 - **Time to ready** (~10 min): clone, install, build, start, readiness.

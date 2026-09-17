@@ -200,6 +200,57 @@ describe('a repository made of several services', () => {
     }
   }, 300_000);
 
+  it('restarts one service without disturbing the others or its address', async () => {
+    // The control a person reaches for when an application wedges. Re-cloning to get it
+    // is a heavy answer, and a restart that moved the port would break every sibling
+    // that had been told where to find it.
+    const sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
+    expect(s.state).toBe(ExecutionState.READY);
+
+    const before = s.run!.services.find((sv) => sv.role === 'api')!;
+    const beforeId = before.handle.container.id;
+    const beforePort = before.hostPort;
+    const webId = s.run!.services.find((sv) => sv.role === 'web')!.handle.container.id;
+
+    await sessions.restart(s.id, 'backend');
+    expect(s.state).toBe(ExecutionState.READY);
+
+    const after = s.run!.services.find((sv) => sv.role === 'api')!;
+    expect(after.handle.container.id, 'a restart must be a new container').not.toBe(beforeId);
+    // Read back from Docker, not from our own bookkeeping: the recorded port would look
+    // unchanged even if the new container had been published somewhere else entirely.
+    expect(
+      Number(await after.handle.hostPort()),
+      'the address siblings were told about must survive',
+    ).toBe(beforePort);
+    expect(after.plan.environmentVariables.find((v) => v.key === 'MONGODB_URI')?.value).toMatch(
+      /^mongodb:\/\/mongodb:27017\//,
+    );
+    // The untouched service is genuinely untouched.
+    expect(s.run!.services.find((sv) => sv.role === 'web')!.handle.container.id).toBe(webId);
+    expect((await fetch(after.url!)).status).toBe(200);
+
+    await sessions.stop(s.id);
+  }, 420_000);
+
+  it('reports what each container is consuming', async () => {
+    const sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-fullstack` });
+    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
+
+    const stats = await sessions.stats(s.id);
+    expect(Object.keys(stats).sort()).toEqual(['backend', 'frontend', 'mongodb']);
+    for (const [name, sample] of Object.entries(stats)) {
+      expect(sample.memoryBytes, `${name} should be using memory`).toBeGreaterThan(0);
+      expect(sample.memoryLimitBytes, `${name} should have a ceiling`).toBeGreaterThan(0);
+      expect(sample.cpuPercent).toBeGreaterThanOrEqual(0);
+    }
+
+    await sessions.stop(s.id);
+  }, 420_000);
+
   it('leaves a single-service repository on the path that already works', async () => {
     const sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-http-basic` });

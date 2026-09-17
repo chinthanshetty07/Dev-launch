@@ -29,6 +29,15 @@ export interface ServiceRun {
   hostPort?: number;
   state: ExecutionState;
   failure?: FailureDetail;
+  /**
+   * Start this service again on the same port, with the same resolved plan.
+   *
+   * The port is what makes a restart safe to offer: it was chosen by DevLaunch and
+   * written into the siblings' configuration, so a service can come back at the same
+   * address and everything that referred to it still works. Re-deriving the plan would
+   * throw away the injected database URL and API base along with it.
+   */
+  restart(): Promise<void>;
 }
 
 export interface BackingRun {
@@ -211,7 +220,7 @@ export class ProjectExecutor {
           networkAliases: [plan.name, `${plan.name}-${opts.sessionId.slice(0, 8)}`],
           hostPort: hostPorts[plan.name],
         });
-        services.push({
+        const entry: ServiceRun = {
           name: plan.name,
           role: plan.role,
           plan,
@@ -219,7 +228,28 @@ export class ProjectExecutor {
           logs,
           hostPort: hostPorts[plan.name],
           state: ExecutionState.STARTING,
-        });
+          restart: async () => {
+            opts.logs.write('stdout', `Restarting ${plan.name}...`);
+            try {
+              await entry.handle.cleanup();
+            } catch {
+              /* a container that will not release must not block the replacement */
+            }
+            entry.url = undefined;
+            entry.failure = undefined;
+            entry.state = ExecutionState.STARTING;
+            entry.handle = await this.exec.launch({
+              sessionId: opts.sessionId,
+              plan,
+              sourceDir: opts.sourceDir,
+              image: imageForRuntime(plan.runtime.language, plan.runtime.version),
+              logs,
+              networkAliases: [plan.name, `${plan.name}-${opts.sessionId.slice(0, 8)}`],
+              hostPort: hostPorts[plan.name],
+            });
+          },
+        };
+        services.push(entry);
       } catch (err) {
         // A service that cannot even be created sinks the project: releasing what is
         // already running is better than leaving a half-started one behind.

@@ -199,3 +199,77 @@ describe('HTTP API', () => {
     expect((await fetch(`${base}/api/health`)).status).toBe(200);
   });
 });
+
+describe('project controls over HTTP', () => {
+  let server: Server;
+  let base: string;
+  let sessions: SessionManager;
+
+  beforeAll(async () => {
+    sessions = new SessionManager(stubExec(failed), {
+      analyzer: stubAnalyzer,
+      planner: stubPlanner,
+    });
+    const app = createApp({ sessions, fixturesDir: FIXTURES, staticDirs: [] });
+    server = createServer(app);
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const address = server.address();
+    base = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+  });
+
+  afterAll(async () => {
+    await sessions.shutdown();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it('refuses to restart a session that does not exist', async () => {
+    const res = await fetch(`${base}/api/sessions/nope/restart`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses to restart a service the session does not have', async () => {
+    // Naming a service that is not there is a client bug, and reporting it as one beats
+    // accepting the request and quietly restarting nothing.
+    const created = await fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fixture: 'node-http-basic' }),
+    });
+    const { id } = (await created.json()) as { id: string };
+
+    const res = await fetch(`${base}/api/sessions/${id}/restart`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ service: 'not-a-service' }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/no service named/i);
+
+    await sessions.cancel(id);
+  });
+
+  it('reports no statistics for a session with nothing running', async () => {
+    const created = await fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fixture: 'node-http-basic' }),
+    });
+    const { id } = (await created.json()) as { id: string };
+
+    const res = await fetch(`${base}/api/sessions/${id}/stats`);
+    expect(res.status).toBe(200);
+    // A stubbed executor has no real containers, so an empty object is the honest
+    // answer — not a fabricated zero that reads like a measurement.
+    expect(await res.json()).toEqual({});
+
+    await sessions.cancel(id);
+  });
+
+  it('has no statistics for a session that does not exist', async () => {
+    expect((await fetch(`${base}/api/sessions/nope/stats`)).status).toBe(404);
+  });
+});
