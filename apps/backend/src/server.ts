@@ -5,6 +5,9 @@ import { createApp } from './api/app.js';
 import { DockerManager } from './services/docker/DockerManager.js';
 import { ExecutionManager } from './services/execution/ExecutionManager.js';
 import { SessionManager } from './services/session/SessionManager.js';
+import { GitManager } from './services/git/GitManager.js';
+import { RepositoryAnalyzer } from './services/analysis/RepositoryAnalyzer.js';
+import { RuleBasedPlanner } from './services/planning/RuleBasedPlanner.js';
 import { LogSocketServer } from './websocket/LogSocketServer.js';
 import { CleanupManager } from './services/cleanup/CleanupManager.js';
 
@@ -19,7 +22,12 @@ export interface StartedServer {
 export async function startServer(port = 0): Promise<StartedServer> {
   const docker = new DockerManager();
   const exec = new ExecutionManager(docker);
-  const sessions = new SessionManager(exec);
+  const analyzer = new RepositoryAnalyzer();
+  const sessions = new SessionManager(exec, {
+    git: new GitManager(),
+    analyzer,
+    planner: new RuleBasedPlanner(analyzer),
+  });
 
   // Sweep before accepting traffic.
   //

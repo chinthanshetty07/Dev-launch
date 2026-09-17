@@ -98,6 +98,13 @@ export const config = {
     timeToReadyMs: intEnv('DEVLAUNCH_TIMEOUT_TIME_TO_READY_MS', 600_000),
     /** Starts once READY. */
     sessionIdleMs: intEnv('DEVLAUNCH_TIMEOUT_SESSION_IDLE_MS', 1_800_000),
+    /**
+     * How long a session may sit in AWAITING_INPUT.
+     *
+     * Concurrency is 1, so a session nobody answers blocks the whole tool. Bounding it
+     * means walking away never leaves DevLaunch permanently wedged.
+     */
+    awaitingInputMs: intEnv('DEVLAUNCH_TIMEOUT_AWAITING_INPUT_MS', 600_000),
     sessionHardCapMs: intEnv('DEVLAUNCH_TIMEOUT_SESSION_HARD_CAP_MS', 3_600_000),
     /** Grace period for SIGTERM before SIGKILL on stop. */
     stopGraceSec: intEnv('DEVLAUNCH_STOP_GRACE_SEC', 5),

@@ -114,6 +114,38 @@ describe('SessionManager', () => {
     expect(s.endedReason).toBe('idle timeout');
   });
 
+  it('releases a session nobody answers, so concurrency 1 cannot wedge the tool', async () => {
+    // A session parked in AWAITING_INPUT holds the only slot. Without a bound, walking
+    // away leaves DevLaunch unusable until the process restarts.
+    const analyzer = {
+      analyze: async () => ({ envExample: [{ key: 'X', hasDefault: false }], warnings: [] }),
+    };
+    const planner = {
+      planRepository: async () => ({
+        plan: { environmentVariables: [], runtime: { language: 'node', version: '20' } },
+        detected: 'node',
+        warnings: [],
+      }),
+    };
+    const mgr = new SessionManager(fakeExec(failed), {
+      analyzer: analyzer as never,
+      planner: planner as never,
+      awaitingInputMs: 60,
+    });
+
+    // Let the real pipeline open the gate, rather than forcing it and racing the
+    // background run that is still in flight.
+    const s = await mgr.launch({ sourceDir: '/tmp' });
+    await settle();
+    expect(s.state).toBe(ExecutionState.AWAITING_INPUT);
+    expect(s.pending?.requiredEnv.map((v) => v.key)).toEqual(['X']);
+
+    await new Promise((r) => setTimeout(r, 250));
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    expect(s.endedReason).toBe('awaiting input timed out');
+    await mgr.shutdown();
+  });
+
   it('keeps an active session even when finished ones pile up', async () => {
     const stalled = new SessionManager(
       fakeExec(() => new Promise<ReadyOutcome>(() => {}) as unknown as ReadyOutcome),

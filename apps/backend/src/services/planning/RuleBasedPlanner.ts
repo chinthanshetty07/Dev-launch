@@ -45,15 +45,29 @@ function installFor(pm: 'npm' | 'yarn' | 'pnpm'): string {
   return 'yarn install';
 }
 
-/** Warn when a repository's declared Node range plainly excludes the image we have. */
+/**
+ * Warn when a repository's declared Node range plainly excludes the image we have.
+ *
+ * A heuristic, deliberately: implementing semver range logic for one warning is not
+ * worth a dependency. It errs toward silence, except where a bound is unambiguous.
+ */
 function nodeVersionWarning(engineNode: string | undefined): string | undefined {
   if (!engineNode) return undefined;
-  const majors = [...engineNode.matchAll(/(\d+)/g)].map((m) => Number(m[1]));
-  if (majors.length === 0) return undefined;
-  const satisfied =
-    /^[>^~]?=?\s*\d+/.test(engineNode.trim()) && majors.some((m) => m <= Number(NODE_IMAGE_VERSION));
-  if (satisfied) return undefined;
-  return `Repository requests Node "${engineNode}" but only ${NODE_IMAGE_VERSION} is available.`;
+  const ours = Number(NODE_IMAGE_VERSION);
+  const warn = `Repository requests Node "${engineNode}" but only ${NODE_IMAGE_VERSION} is available.`;
+
+  // An upper bound below our version excludes us outright. Checked first, because a
+  // range like ">=14 <=16" also contains a lower bound we would otherwise accept.
+  const upper = [...engineNode.matchAll(/<=?\s*(\d+)/g)].map((m) => Number(m[1]));
+  if (upper.some((v) => v < ours)) return warn;
+
+  const lower = [...engineNode.matchAll(/(?:>=?|\^|~)?\s*(\d+)/g)].map((m) => Number(m[1]));
+  if (lower.length === 0) return undefined;
+
+  // Caret and tilde pin a major: "^18" means 18.x, never 20.
+  if (/^\s*[\^~]\s*\d+/.test(engineNode) && lower[0] !== ours) return warn;
+
+  return lower.some((v) => v <= ours) ? undefined : warn;
 }
 
 function pickScript(pkg: PackageJsonSummary, candidates: string[]): string | undefined {

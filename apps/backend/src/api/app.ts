@@ -1,8 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import express, { type Express } from 'express';
-import { RunPlanSchema } from '@devlaunch/shared';
-import { SessionConflict, type SessionManager } from '../services/session/SessionManager.js';
+import { SessionConflict, type Session, type SessionManager } from '../services/session/SessionManager.js';
 import { assertSafeRelativePath } from '../services/security/PathValidator.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 
@@ -10,20 +9,30 @@ export interface AppOptions {
   sessions: SessionManager;
   fixturesDir: string;
   publicDir: string;
-  image?: string;
 }
 
-/**
- * HTTP surface for Phase 4.
- *
- * Only what log streaming needs: a way to start something worth streaming, a way to
- * read session status, and a way to stop. Repository cloning arrives in Phase 5, so
- * for now a run is started from a vendored fixture by name — never a caller-supplied
- * path, which would be an arbitrary-directory read.
- */
 function positiveInt(raw: unknown, fallback: number): number {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/** Shape a session for the wire. The handle and cleanup closures never leave the server. */
+function present(session: Session) {
+  return {
+    id: session.id,
+    state: session.state,
+    repoUrl: session.repoUrl,
+    detected: session.detected,
+    plan: session.plan,
+    planWarnings: session.planWarnings,
+    pending: session.pending,
+    url: session.url,
+    failure: session.failure,
+    endedReason: session.endedReason,
+    createdAt: session.createdAt,
+    readyAt: session.readyAt,
+    logs: session.logs.buffer.stats,
+  };
 }
 
 export function createApp(opts: AppOptions): Express {
@@ -40,13 +49,28 @@ export function createApp(opts: AppOptions): Express {
     res.json(entries.filter((e) => e.isDirectory()).map((e) => e.name));
   });
 
+  /**
+   * Start a session from a GitHub URL, or from a vendored fixture by name.
+   *
+   * A fixture is named, never given as a path: accepting a caller-supplied directory
+   * would be an arbitrary-filesystem read. Either way the pipeline is identical —
+   * analyse, plan deterministically, validate, run.
+   */
   app.post('/api/sessions', async (req, res) => {
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
-      const fixture = String(body.fixture ?? '');
+      const readinessTimeoutMs = positiveInt(body.readinessTimeoutMs, 60_000);
 
-      // The name must be a single safe path segment, and must actually exist as a
-      // vendored fixture — membership in a known set, not merely a well-formed string.
+      if (typeof body.repoUrl === 'string' && body.repoUrl.trim() !== '') {
+        const session = await opts.sessions.launch({
+          repoUrl: body.repoUrl.trim(),
+          readinessTimeoutMs,
+        });
+        res.status(201).json({ id: session.id, state: session.state });
+        return;
+      }
+
+      const fixture = String(body.fixture ?? '');
       assertSafeRelativePath(fixture, 'fixture');
       const available = (await readdir(opts.fixturesDir, { withFileTypes: true }))
         .filter((e) => e.isDirectory())
@@ -56,26 +80,10 @@ export function createApp(opts: AppOptions): Express {
         return;
       }
 
-      const plan = RunPlanSchema.parse({
-        runtime: { language: 'node', version: '20' },
-        packageManager: 'npm',
-        installCommand: body.installCommand ?? null,
-        buildCommand: null,
-        startCommand: body.startCommand ?? 'node server.js',
-        workingDirectory: '.',
-        expectedPort: body.expectedPort ?? 3000,
-        hostBinding: 'forced',
-        planSource: 'rule-based',
-      });
-
       const session = await opts.sessions.launch({
-        plan,
         sourceDir: resolve(opts.fixturesDir, fixture),
-        image: opts.image ?? 'devlaunch/node:20',
-        // A malformed value would become NaN, and setTimeout(NaN) fires immediately.
-        readinessTimeoutMs: positiveInt(body.readinessTimeoutMs, 30_000),
+        readinessTimeoutMs,
       });
-
       res.status(201).json({ id: session.id, state: session.state });
     } catch (err) {
       if (err instanceof SessionConflict) {
@@ -97,15 +105,30 @@ export function createApp(opts: AppOptions): Express {
       return;
     }
     opts.sessions.touch(session.id);
-    res.json({
-      id: session.id,
-      state: session.state,
-      url: session.url,
-      failure: session.failure,
-      createdAt: session.createdAt,
-      readyAt: session.readyAt,
-      logs: session.logs.buffer.stats,
-    });
+    res.json(present(session));
+  });
+
+  /** Supply what a session in AWAITING_INPUT is blocked on: env values, or a package. */
+  app.post('/api/sessions/:id/resolve', async (req, res) => {
+    const session = opts.sessions.get(req.params.id);
+    if (!session) {
+      res.status(404).json({ error: 'No such session.' });
+      return;
+    }
+    if (session.state !== 'AWAITING_INPUT') {
+      res.status(409).json({ error: `Session is ${session.state}, not awaiting input.` });
+      return;
+    }
+
+    const body = (req.body ?? {}) as { env?: Record<string, string>; workspaceDir?: string };
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body.env ?? {})) {
+      // Values are kept in memory only and never written to disk.
+      if (typeof v === 'string') env[k] = v;
+    }
+
+    await opts.sessions.resolve(session.id, { env, workspaceDir: body.workspaceDir });
+    res.json({ id: session.id, state: session.state });
   });
 
   app.post('/api/sessions/:id/cancel', async (req, res) => {

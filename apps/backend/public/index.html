@@ -13,8 +13,14 @@
   header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex;
            gap:10px; align-items:center; flex-wrap:wrap; background:var(--panel); }
   h1 { font-size:14px; margin:0 12px 0 0; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
-  select,button { background:#21262d; color:var(--fg); border:1px solid var(--line);
-                  border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  select,button,input { background:#21262d; color:var(--fg); border:1px solid var(--line);
+                  border-radius:6px; padding:6px 10px; font:inherit; }
+  button,select { cursor:pointer; }
+  input { cursor:text; }
+  #gate { margin:8px 16px; padding:12px; border:1px solid var(--warn); border-radius:8px; }
+  #gate h3 { margin:0 0 8px; font-size:13px; color:var(--warn); }
+  #gate label { display:block; margin:6px 0; }
+  #gate input { width:280px; margin-left:8px; }
   button:hover:not(:disabled) { border-color:var(--accent); }
   button:disabled { opacity:.5; cursor:not-allowed; }
   #state { margin-left:auto; display:flex; gap:8px; align-items:center; }
@@ -35,11 +41,14 @@
 <body>
 <header>
   <h1>DevLaunch</h1>
+  <input id="repo" placeholder="https://github.com/owner/repo" size="34" />
+  <span class="sys">or</span>
   <select id="fixture"></select>
   <button id="run">Launch</button>
   <button id="stop" disabled>Stop</button>
   <span id="state"><span class="badge" id="badge">idle</span><span id="url"></span></span>
 </header>
+<div id="gate" hidden></div>
 <div id="term"></div>
 
 <script>
@@ -83,6 +92,9 @@ function connect(id, afterSeq) {
     if (msg.type === 'hello') {
       line(`— connected to ${msg.sessionId} (state ${msg.state}) —`, 'sys');
       setState(msg.state);
+      // A client can connect to a session that is *already* blocked, in which case no
+      // state change will ever arrive to open the gate.
+      if (msg.state === 'AWAITING_INPUT') showGate();
     } else if (msg.type === 'logs') {
       for (const e of msg.entries) { logLine(e); lastSeq = Math.max(lastSeq, e.seq); }
     } else if (msg.type === 'gap') {
@@ -90,6 +102,8 @@ function connect(id, afterSeq) {
       line(`— ${msg.droppedTotal} earlier line(s) dropped; resuming at ${msg.oldestSeq} —`, 'meta');
     } else if (msg.type === 'state') {
       setState(msg.state, msg.url);
+      if (msg.state === 'AWAITING_INPUT') showGate();
+      else $('gate').hidden = true;
       if (msg.failure) {
         const f = msg.failure;
         const hedge = f.confidence === 'low' ? ' (uncertain)' : '';
@@ -106,15 +120,63 @@ function connect(id, afterSeq) {
   socket.onclose = () => { if (sessionId) line('— disconnected —', 'sys'); };
 }
 
+// A session pauses in AWAITING_INPUT for configuration it needs, or for a choice of
+// package. Both are questions for a person; guessing either would be worse than asking.
+async function showGate() {
+  const s = await (await fetch(`/api/sessions/${sessionId}`)).json();
+  const gate = $('gate');
+  const pending = s.pending || {};
+  let html = '';
+
+  if (pending.choices && pending.choices.length) {
+    html += '<h3>Which package should run?</h3>';
+    html += pending.choices
+      .map((c) => `<button class="pick" data-dir="${c.dir}">${c.name} — ${c.dir}</button> `)
+      .join('');
+  } else if (pending.requiredEnv && pending.requiredEnv.length) {
+    html += '<h3>This project needs configuration before it can start</h3>';
+    html += pending.requiredEnv
+      .map((v) => `<label>${v.key}<input data-env="${v.key}" /></label>`)
+      .join('');
+    html += '<button id="submitEnv">Continue</button>';
+  }
+
+  gate.innerHTML = html;
+  gate.hidden = false;
+
+  gate.querySelectorAll('.pick').forEach((b) => {
+    b.onclick = () => resolveSession({ workspaceDir: b.dataset.dir });
+  });
+  const submit = $('submitEnv');
+  if (submit) {
+    submit.onclick = () => {
+      const env = {};
+      gate.querySelectorAll('[data-env]').forEach((i) => { env[i.dataset.env] = i.value; });
+      resolveSession({ env });
+    };
+  }
+}
+
+async function resolveSession(payload) {
+  $('gate').hidden = true;
+  await fetch(`/api/sessions/${sessionId}/resolve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 $('run').onclick = async () => {
   term.textContent = '';
+  $('gate').hidden = true;
   lastSeq = -1;
   $('run').disabled = true;
   try {
+    const repoUrl = $('repo').value.trim();
     const res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ fixture: $('fixture').value }),
+      body: JSON.stringify(repoUrl ? { repoUrl } : { fixture: $('fixture').value }),
     });
     const body = await res.json();
     if (!res.ok) { line(`error: ${body.error}`, 'stderr'); return; }

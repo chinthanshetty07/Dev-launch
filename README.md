@@ -30,6 +30,25 @@ unstructured failure logs. The sandbox executes; the verifier decides. Never the
 | 9 | Frontend | Not started |
 | 10 | Documentation + portfolio | Not started |
 
+### Pipeline integration
+
+Phases 5 and 6 built components the running system could not reach — the API still
+hardcoded `node server.js`. The whole chain is now wired end to end:
+
+```
+clone → analyse → plan → validate → [ask the user] → run → verify
+```
+
+- `POST /api/sessions` accepts a **GitHub URL** or a vendored fixture name, and derives
+  the commands itself. Nothing is supplied by the caller
+- **`AWAITING_INPUT`** is finally real: a project whose `.env.example` declares variables
+  without defaults pauses *before* a container is built, rather than crashing inside one.
+  A monorepo with several runnable packages asks which to run instead of guessing
+- An unanswered gate is released after 10 minutes. Concurrency is 1, so a session nobody
+  answers would otherwise wedge the tool until a restart
+- `AIProvider` is defined with a refusing default implementation, so Phase 8 is additive
+  rather than a rewrite
+
 ### What Phase 7 delivers
 
 - `FailureClassifier` — 14 ordered signatures turning raw output into a specific cause:

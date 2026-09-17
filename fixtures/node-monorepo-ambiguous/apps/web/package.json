@@ -1,0 +1,6 @@
+{
+  "name": "@ambiguous/web",
+  "private": true,
+  "scripts": { "dev": "node server.js" },
+  "dependencies": { "express": "^4.19.2" }
+}
