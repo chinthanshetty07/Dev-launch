@@ -57,6 +57,14 @@ export function InputGate({
         written to disk. Anything DevLaunch supplies itself, such as the database URL and
         the services' own addresses, is not asked for.
       </p>
+      {/* A file cannot always say which of its variables the application truly needs, so
+          the gate asks and does not insist. Leaving one blank and continuing is a
+          legitimate answer, and saying so beats a person hunting for a key the project
+          may not use. */}
+      <p className="mb-3 text-[13px] text-muted">
+        Leave anything blank that this project does not need — the run continues without
+        it, and fails with the application's own error if it turns out to be required.
+      </p>
 
       <form
         onSubmit={(e) => {
@@ -86,7 +94,7 @@ export function InputGate({
           disabled={busy}
           className="mt-2 rounded-md border border-edge px-3 py-1.5 text-[13px] hover:border-link hover:text-link disabled:opacity-50"
         >
-          Continue
+          {Object.values(values).some((v) => v.trim() !== '') ? 'Continue' : 'Continue without these'}
         </button>
       </form>
     </section>

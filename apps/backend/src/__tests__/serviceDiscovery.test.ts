@@ -84,6 +84,43 @@ describe('service discovery', () => {
     expect(services[0]!.evidence).toMatch(/directory named/);
   });
 
+  it('does not run a workspace root as a service', async () => {
+    // Found running DevLaunch through itself: the root was reported as a third service
+    // and classified browser-facing, because the placeholder name given to '.' happened
+    // to be "app". Its `dev` script delegates to a package already in the list, so
+    // running it would start a second copy of that service competing for the same port.
+    const root = await repo({
+      'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+      'package.json': pkg('monorepo', { dev: 'pnpm --filter web dev', test: 'pnpm -r test' }),
+      'apps/web/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+      'apps/api/package.json': pkg('api', { start: 'node s.js' }, { express: '4' }),
+    });
+
+    const { services } = await discoverServices(root);
+    expect(services.map((s) => s.dir)).toEqual(['apps/web', 'apps/api']);
+  });
+
+  it('does not run an npm workspace root either', async () => {
+    const root = await repo({
+      'package.json': { name: 'monorepo', workspaces: ['packages/*'], scripts: { dev: 'npm -w web run dev' } },
+      'packages/web/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+      'packages/api/package.json': pkg('api', { start: 'node s.js' }, { express: '4' }),
+    });
+    const { services } = await discoverServices(root);
+    expect(services.map((s) => s.dir)).toEqual(['packages/web', 'packages/api']);
+  });
+
+  it('does not let a placeholder name decide the root is browser-facing', async () => {
+    // Without workspaces the root is a real candidate, but its role must come from what
+    // it contains — not from the name discovery invented for it.
+    const root = await repo({
+      'package.json': pkg('thing', { start: 'node worker.js' }),
+      'api/package.json': pkg('api', { start: 'node s.js' }, { express: '4' }),
+    });
+    const { services } = await discoverServices(root);
+    expect(services.find((s) => s.dir === '.')?.role).toBe('worker');
+  });
+
   it('looks inside apps/ and packages/ as well as the root', async () => {
     const root = await repo({
       'apps/web/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),

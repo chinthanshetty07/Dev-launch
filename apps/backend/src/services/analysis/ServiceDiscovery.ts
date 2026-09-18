@@ -97,10 +97,16 @@ export interface DiscoveryResult {
  */
 export async function discoverServices(root: string): Promise<DiscoveryResult> {
   const dirs = await candidateDirs(root);
+  const orchestrator = await isWorkspaceRoot(root);
   const services: ServiceCandidate[] = [];
   const backing = new Map<BackingService['kind'], BackingService>();
 
   for (const dir of dirs) {
+    // A workspace root is an orchestrator, not a service. Its `dev` script delegates to
+    // one of its own packages, so running it starts a second copy of a service that is
+    // already in this list — competing for the same port, against itself.
+    if (dir === '.' && orchestrator) continue;
+
     const service = await inspectDir(root, dir);
     if (!service) continue;
     services.push(service.candidate);
@@ -117,6 +123,31 @@ export async function discoverServices(root: string): Promise<DiscoveryResult> {
   if (services.length < 2) return { services: [], backing: [...backing.values()] };
 
   return { services: sortByRole(services), backing: [...backing.values()] };
+}
+
+/**
+ * Does this repository declare workspaces?
+ *
+ * Either declaration is enough: both mean the root exists to coordinate packages that
+ * live elsewhere, and its scripts are shortcuts into them rather than a service of its
+ * own.
+ */
+async function isWorkspaceRoot(root: string): Promise<boolean> {
+  if ((await readCapped(join(root, 'pnpm-workspace.yaml'))) !== null) return true;
+  const raw = await readCapped(join(root, 'package.json'));
+  if (raw === null) return false;
+  try {
+    const parsed = JSON.parse(raw) as { workspaces?: unknown };
+    const workspaces = parsed.workspaces;
+    return (
+      (Array.isArray(workspaces) && workspaces.length > 0) ||
+      (typeof workspaces === 'object' &&
+        workspaces !== null &&
+        Array.isArray((workspaces as { packages?: unknown }).packages))
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Immediate subdirectories, plus one level inside apps/ packages/ services/. */
@@ -196,7 +227,10 @@ async function inspectDir(
 
 function classifyNode(dir: string, manifest: Manifest): { role: ServiceRole; evidence: string } {
   const deps = Object.keys(manifest.dependencies);
-  const name = baseName(dir).toLowerCase();
+  // Only a real directory name is evidence. The root has none, and the placeholder it
+  // was given happened to be "app" — which is in the list below, so every repository
+  // root was classified as browser-facing by accident.
+  const name = dir === '.' ? '' : baseName(dir).toLowerCase();
 
   // Dependencies beat directory names: a folder called `server` that imports React is a
   // server-rendered frontend, and the name is the less reliable signal.
@@ -420,7 +454,7 @@ function asRecord(value: unknown): Record<string, string> {
   return out;
 }
 
-const baseName = (dir: string): string => (dir === '.' ? 'app' : dir.split('/').pop()!);
+const baseName = (dir: string): string => (dir === '.' ? 'root' : dir.split('/').pop()!);
 
 /** Web first: it is the session's entry point, and the URL a person is given. */
 function sortByRole(services: ServiceCandidate[]): ServiceCandidate[] {

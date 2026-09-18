@@ -191,3 +191,34 @@ describe('RepositoryAnalyzer', () => {
     expect(meta.envExample).toEqual([]);
   });
 });
+
+describe('variables a file documents as optional', () => {
+  it('does not require one the file says is optional', () => {
+    // DevLaunch's own file: GROQ_API_KEY= under a line explaining the key is optional.
+    // Treating the empty value as a demand contradicts the sentence above it, and
+    // blocked a session on a key the project explicitly does not need.
+    const vars = parseEnvExample(
+      ['# Optional. Without a key DevLaunch plans deterministically.', 'GROQ_API_KEY=', 'REAL_SECRET='].join('\n'),
+    );
+    expect(vars.find((v) => v.key === 'GROQ_API_KEY')?.hasDefault).toBe(true);
+    // The one with no such note is still required, or the gate would stop asking for
+    // anything at all.
+    expect(vars.find((v) => v.key === 'REAL_SECRET')?.hasDefault).toBe(false);
+  });
+
+  it('does not let one variable note leak onto the next', () => {
+    const vars = parseEnvExample(['# Optional.', 'MAYBE=', '', 'MUST_HAVE='].join('\n'));
+    expect(vars.find((v) => v.key === 'MAYBE')?.hasDefault).toBe(true);
+    expect(vars.find((v) => v.key === 'MUST_HAVE')?.hasDefault).toBe(false);
+  });
+
+  it('recognises the other ways a file says the same thing', () => {
+    for (const note of ['# not required', '# leave blank if unused', '# if you have one']) {
+      expect(parseEnvExample([note, 'KEY='].join('\n'))[0]?.hasDefault, note).toBe(true);
+    }
+  });
+
+  it('still treats an undocumented empty value as required', () => {
+    expect(parseEnvExample(['# The database password.', 'DB_PASSWORD='].join('\n'))[0]?.hasDefault).toBe(false);
+  });
+});
