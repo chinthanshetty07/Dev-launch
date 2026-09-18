@@ -7,6 +7,7 @@ import type {
 import { ProjectPlanSchema } from '@devlaunch/shared';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from './RuleBasedPlanner.js';
+import { workspaceInstall } from '../analysis/ServiceDiscovery.js';
 
 export interface ProjectPlanningOutcome {
   plan: ProjectPlan | null;
@@ -47,6 +48,16 @@ export class ProjectPlanner {
     const warnings: string[] = [];
     const used = new Set<string>();
 
+    // A workspace installs once, at its root, with the tool that wrote its lockfile.
+    // Installing a single package in isolation cannot work: its siblings are referenced
+    // as `workspace:*`, which npm rejects outright with EUNSUPPORTEDPROTOCOL.
+    const workspace = await workspaceInstall(root);
+    if (workspace) {
+      warnings.push(
+        `Workspace detected; installing once at the repository root with ${workspace.manager}.`,
+      );
+    }
+
     for (const candidate of candidates) {
       const subMeta = await this.analyzer.analyze(root, candidate.dir);
       const outcome = this.planner.plan(subMeta, candidate.dir);
@@ -62,6 +73,11 @@ export class ProjectPlanner {
       const port = candidate.declaredPort ?? outcome.plan.expectedPort;
       services.push({
         ...outcome.plan,
+        // The per-package install is replaced, not supplemented: running both would
+        // install the same tree twice and the second would fail the same way.
+        ...(workspace
+          ? { installCommand: workspace.command, installDirectory: '.' }
+          : {}),
         // The port the service's own code declares wins over the planner's default.
         //
         // Alone, a service can be told to listen anywhere — DevLaunch injects PORT and

@@ -32,6 +32,14 @@ export const RunPlanSchema = z.object({
   buildCommand: z.string().nullable(),
   startCommand: z.string().min(1),
   workingDirectory: z.string().default('.'),
+  /**
+   * Where the install step runs, when that is not the working directory.
+   *
+   * A workspace installs once at its root: its packages depend on each other through
+   * `workspace:*`, and no package manager can resolve that for a single package in
+   * isolation — npm refuses it outright with `EUNSUPPORTEDPROTOCOL`.
+   */
+  installDirectory: z.string().nullable().default(null),
   expectedPort: z.number().int().positive().nullable(),
   hostBinding: HostBindingSchema.default('unknown'),
   environmentVariables: z.array(EnvVarSchema).default([]),

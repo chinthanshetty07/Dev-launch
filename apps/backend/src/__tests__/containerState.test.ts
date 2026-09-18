@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ExecutionState, FailureCode, RunPlanSchema, type RunPlan } from '@devlaunch/shared';
 import { ExecutionManager } from '../services/execution/ExecutionManager.js';
 import type { DockerManager } from '../services/docker/DockerManager.js';
+import { LogManager } from '../services/logs/LogManager.js';
 
 const plan: RunPlan = RunPlanSchema.parse({
   runtime: { language: 'node', version: '20' },
@@ -132,5 +133,41 @@ describe('readiness abort', () => {
     // null?.running === false is false, so polling continues — which is the point.
     const aborted = (await internals(exec).containerState({}))?.running === false;
     expect(aborted).toBe(false);
+  });
+});
+
+describe('a running process that never bound its port', () => {
+  const readiness = { ready: false, attempts: 3, elapsedMs: 5000 };
+  const container = {} as never;
+
+  it('carries the application\'s own error into the verdict', async () => {
+    // `tsx watch` and every other watcher survive a crash in the code they watch, so the
+    // container stays up and nothing binds. "Nothing is listening" was the entire
+    // verdict, while the reason sat in the log two lines above it.
+    const logs = new LogManager();
+    logs.buffer.push('stdout', '> tsx watch src/server.ts');
+    logs.buffer.push('stderr', 'Error: No Docker socket found. Tried:');
+    logs.buffer.push('stderr', '    at resolveDockerSocket (/workspace/src/config.ts:23:11)');
+    // A crashing Node process signs off with its own version, which is true and useless.
+    logs.buffer.push('stderr', 'Node.js v20.20.2');
+
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: true, ExitCode: 0 } })),
+    );
+    const out = await explain(exec, [container, plan, new Set(), readiness, logs]);
+
+    expect(out.failure.code).toBe(FailureCode.PORT_NOT_LISTENING);
+    expect(out.failure.evidence).toBe('Error: No Docker socket found. Tried:');
+  });
+
+  it('offers no evidence rather than a meaningless line', async () => {
+    const logs = new LogManager();
+    logs.buffer.push('stdout', 'listening soon, honest');
+
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: true, ExitCode: 0 } })),
+    );
+    const out = await explain(exec, [container, plan, new Set(), readiness, logs]);
+    expect(out.failure.evidence).toBeUndefined();
   });
 });

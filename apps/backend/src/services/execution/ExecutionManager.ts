@@ -348,7 +348,13 @@ export class ExecutionManager {
     try {
       container = await this.docker.createContainer({
         image: opts.image,
-        env: buildWrapperEnv(opts.plan, workdir),
+        env: buildWrapperEnv(
+          opts.plan,
+          workdir,
+          opts.plan.installDirectory
+            ? joinWorkspace(config.container.workspacePath, opts.plan.installDirectory)
+            : undefined,
+        ),
         labels: buildLabels(opts.sessionId),
         hostConfig: buildHostConfig({
           sessionId: opts.sessionId,
@@ -598,10 +604,17 @@ export class ExecutionManager {
 
     const diagnosis = await this.ports.diagnose(container, plan.expectedPort);
 
+    // A process that is running but silent has usually said why. `tsx watch` and every
+    // other watcher survive a crash in the code they are watching, so the container
+    // stays up, nothing binds, and "nothing is listening" is the whole verdict unless
+    // the application's own last words are carried with it.
+    const lastError = lastErrorLine(logs);
+
     if (diagnosis.kind === 'loopback-only') {
       return {
         diagnosis,
         failure: {
+          evidence: lastError,
           code: FailureCode.PORT_BOUND_TO_LOCALHOST,
           message:
             `The application is listening on ${diagnosis.socket.address}:${diagnosis.socket.port}, ` +
@@ -622,6 +635,10 @@ export class ExecutionManager {
             `Nothing is listening on port ${plan.expectedPort}.` +
             (seen ? ` Sockets observed: ${seen}.` : ' No listening sockets at all.'),
           phase: 'start',
+          evidence: lastError,
+          remedy: lastError
+            ? 'The application is running but never bound the port. Its last error is above.'
+            : undefined,
         },
       };
     }
@@ -710,6 +727,28 @@ export class ExecutionManager {
     this.lastInspectError = lastError instanceof Error ? lastError.message : String(lastError);
     return null;
   }
+}
+
+/**
+ * The application's last error line, for a failure that otherwise has none.
+ *
+ * Deliberately narrow: an arbitrary tail of a build log is noise, and a stack frame is
+ * not the message. The first line of the most recent error is what a person reads.
+ */
+function lastErrorLine(logs: LogManager | undefined): string | undefined {
+  // "Written to stderr" is not the same as "says something". A crashing Node process
+  // ends with its own version banner, and taking the last stderr line returns
+  // `Node.js v20.20.2` — true, and no help at all. The line has to look like a message.
+  const MESSAGE = /(^|\s)(\w*Error\b|error\b|exception\b)|\b(cannot|could not|failed|unable to|refused|not found|missing)\b|\bE[A-Z]{3,}\b/i;
+  const NOISE = /^(node\.js v|npm (error )?a complete log|at\s)/i;
+
+  const entries = logs?.buffer.all() ?? [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const text = entries[i]!.text.trim();
+    if (!text || NOISE.test(text) || /^\s*at /.test(text)) continue;
+    if (MESSAGE.test(text)) return text.slice(0, 300);
+  }
+  return undefined;
 }
 
 function waitForLog(

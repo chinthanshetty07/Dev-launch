@@ -35,7 +35,12 @@ export function buildWrapperScript(): string {
     '',
     'if [ -n "$DL_INSTALL_CMD" ]; then',
     `  printf '%s\\n' "${Sentinel.INSTALL_BEGIN}"`,
-    '  if sh -c "$DL_INSTALL_CMD"; then',
+    // A workspace installs once at its root, not once per package: its packages depend
+    // on each other through `workspace:*`, which no package manager can resolve for a
+    // single package in isolation. So the install may run somewhere other than the
+    // directory the service starts from. A subshell keeps that move local — the build
+    // and start steps must still run in DL_WORKDIR.
+    '  if (cd "$DL_INSTALL_DIR" && sh -c "$DL_INSTALL_CMD"); then',
     `    printf '%s\\n' "${Sentinel.INSTALL_OK}"`,
     '  else',
     `    printf '%s\\n' "${Sentinel.INSTALL_FAIL}"`,
@@ -63,7 +68,7 @@ export function buildWrapperScript(): string {
  * Environment handed to the wrapper. `set -u` in the script means every DL_* variable
  * must be defined, so absent commands are passed as empty strings rather than omitted.
  */
-export function buildWrapperEnv(plan: RunPlan, workdir: string): string[] {
+export function buildWrapperEnv(plan: RunPlan, workdir: string, installDir?: string): string[] {
   const env: Record<string, string> = {};
 
   // Application variables first.
@@ -85,6 +90,9 @@ export function buildWrapperEnv(plan: RunPlan, workdir: string): string[] {
   // DL_ prefix outright — this ordering is the second layer, so a future caller that
   // skips validation still cannot be exploited.
   env.DL_WORKDIR = workdir;
+  // Defaults to the working directory, so a single-service plan behaves exactly as it
+  // did before this existed.
+  env.DL_INSTALL_DIR = installDir ?? workdir;
   env.DL_INSTALL_CMD = plan.installCommand ?? '';
   env.DL_BUILD_CMD = plan.buildCommand ?? '';
   env.DL_START_CMD = plan.startCommand;

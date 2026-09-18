@@ -43,6 +43,13 @@ are not emulated — qemu under Colima is slow enough to blow the execution time
 
 Repositories depending on x86-only native modules fail with `ARCH_INCOMPATIBLE`.
 
+## Workspaces install twice
+
+A workspace installs once at its root — but each service is its own container, so that
+root install happens once *per service*. Correct, and slower than it needs to be: two
+services mean the whole dependency tree is built twice. Sharing it would mean sharing a
+volume between containers, which is a larger change than the duplication costs.
+
 ## One session at a time
 
 Concurrency is 1. The Colima VM is provisioned at 4 GB on an 8 GB host; a second

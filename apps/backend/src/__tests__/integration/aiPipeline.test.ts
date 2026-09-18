@@ -90,6 +90,7 @@ describe('Phase 8 — AI fallback and bounded repair', () => {
         runtime: NODE_RUNTIME,
         packageManager: 'npm',
         installCommand: null,
+        installDirectory: null,
         buildCommand: null,
         // `npm run boot` is not an approved script name, so a direct command is the
         // only workable answer — which is exactly what the fallback is for.
@@ -219,6 +220,7 @@ describe('Phase 8 — AI fallback and bounded repair', () => {
         runtime: NODE_RUNTIME,
         packageManager: 'npm',
         installCommand: null,
+        installDirectory: null,
         buildCommand: null,
         startCommand: 'node server.js',
         workingDirectory: '.',

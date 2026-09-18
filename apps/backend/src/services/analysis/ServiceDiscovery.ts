@@ -95,6 +95,33 @@ export interface DiscoveryResult {
  * single-service path is correct for those, and inventing a second service would be
  * worse than finding none.
  */
+/**
+ * Which package manager can install this workspace, and with what command.
+ *
+ * The lockfile decides, because the workspace protocol is only resolvable by the tool
+ * that wrote it. npm understands `workspaces` in package.json but refuses `workspace:*`
+ * outright — `EUNSUPPORTEDPROTOCOL` — so a pnpm repository installed with npm fails
+ * before it starts.
+ */
+export async function workspaceInstall(
+  root: string,
+): Promise<{ manager: 'pnpm' | 'yarn' | 'npm'; command: string } | null> {
+  if (!(await isWorkspaceRoot(root))) return null;
+
+  if ((await readCapped(join(root, 'pnpm-lock.yaml'))) !== null) {
+    // --no-frozen-lockfile: a lockfile written by a different pnpm version would
+    // otherwise abort, and a repository that installs locally should install here.
+    return { manager: 'pnpm', command: 'pnpm install --no-frozen-lockfile' };
+  }
+  if ((await readCapped(join(root, 'yarn.lock'))) !== null) {
+    return { manager: 'yarn', command: 'yarn install' };
+  }
+  if ((await readCapped(join(root, 'pnpm-workspace.yaml'))) !== null) {
+    return { manager: 'pnpm', command: 'pnpm install --no-frozen-lockfile' };
+  }
+  return { manager: 'npm', command: 'npm install --no-audit --no-fund' };
+}
+
 export async function discoverServices(root: string): Promise<DiscoveryResult> {
   const dirs = await candidateDirs(root);
   const orchestrator = await isWorkspaceRoot(root);
@@ -132,7 +159,7 @@ export async function discoverServices(root: string): Promise<DiscoveryResult> {
  * live elsewhere, and its scripts are shortcuts into them rather than a service of its
  * own.
  */
-async function isWorkspaceRoot(root: string): Promise<boolean> {
+export async function isWorkspaceRoot(root: string): Promise<boolean> {
   if ((await readCapped(join(root, 'pnpm-workspace.yaml'))) !== null) return true;
   const raw = await readCapped(join(root, 'package.json'));
   if (raw === null) return false;

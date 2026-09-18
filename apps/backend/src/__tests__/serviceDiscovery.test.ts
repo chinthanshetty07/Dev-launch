@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discoverServices } from '../services/analysis/ServiceDiscovery.js';
+import { discoverServices, workspaceInstall } from '../services/analysis/ServiceDiscovery.js';
 import { RepositoryAnalyzer } from '../services/analysis/RepositoryAnalyzer.js';
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../fixtures');
@@ -119,6 +119,37 @@ describe('service discovery', () => {
     });
     const { services } = await discoverServices(root);
     expect(services.find((s) => s.dir === '.')?.role).toBe('worker');
+  });
+
+  it('installs a workspace once at its root, with the tool that wrote its lockfile', async () => {
+    // Running DevLaunch through itself failed here: each package was installed on its
+    // own, and its siblings are referenced as `workspace:*`, which npm rejects outright
+    // with EUNSUPPORTEDPROTOCOL. Only a workspace-aware install at the root can resolve
+    // it, and only the manager that wrote the lockfile understands the protocol.
+    const pnpmRepo = await repo({
+      'pnpm-workspace.yaml': "packages:\n  - 'apps/*'\n",
+      'pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
+      'package.json': pkg('mono', { dev: 'x' }),
+      'apps/web/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+    });
+    expect(await workspaceInstall(pnpmRepo)).toMatchObject({ manager: 'pnpm' });
+
+    const yarnRepo = await repo({
+      'package.json': { name: 'mono', workspaces: ['apps/*'] },
+      'yarn.lock': '# yarn lockfile v1\n',
+      'apps/web/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+    });
+    expect(await workspaceInstall(yarnRepo)).toMatchObject({ manager: 'yarn' });
+  });
+
+  it('has no root install for a repository that is not a workspace', async () => {
+    // Two sibling directories are not a workspace. Installing at the root would find no
+    // manifest to install from.
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '18' }),
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '4' }),
+    });
+    expect(await workspaceInstall(root)).toBeNull();
   });
 
   it('looks inside apps/ and packages/ as well as the root', async () => {

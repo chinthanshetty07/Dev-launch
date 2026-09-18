@@ -20,6 +20,13 @@ RUN apt-get update \
       ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# pnpm, because a pnpm workspace can only be installed by pnpm: its packages reference
+# each other as `workspace:*`, a protocol npm refuses outright. Pinned and installed at
+# build time rather than fetched by corepack at run time, so a run needs no network to
+# obtain its own tooling and every container gets the same version.
+RUN npm install -g pnpm@9.12.3 \
+ && npm cache clean --force
+
 # /workspace   writable volume mount point; the repository is copied here at start
 # /devlaunch   read-only staging area for the wrapper and the pristine repo copy
 RUN mkdir -p /workspace /devlaunch/src \

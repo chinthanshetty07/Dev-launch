@@ -40,6 +40,22 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     describe: () => 'The process was killed for exceeding the container memory limit.',
   },
   {
+    id: 'workspace-protocol-unsupported',
+    code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+    patterns: [
+      /EUNSUPPORTEDPROTOCOL/,
+      /Unsupported URL Type "workspace:"/i,
+      /workspace:\*/,
+    ],
+    remedy:
+      'The repository is a workspace whose packages reference each other as ' +
+      '`workspace:*`. It has to be installed once at its root by the tool that wrote ' +
+      'its lockfile — pnpm or yarn — rather than one package at a time.',
+    describe: () =>
+      'A package was installed on its own, but it depends on a sibling through the ' +
+      'workspace protocol, which only a workspace-aware install can resolve.',
+  },
+  {
     id: 'disk-full',
     code: FailureCode.DEPENDENCY_INSTALL_FAILED,
     patterns: [/ENOSPC/, /No space left on device/i],

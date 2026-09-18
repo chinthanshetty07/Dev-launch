@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-09-18 — Workspaces install once, at the root
+
+Running DevLaunch through itself failed at install, for both services:
+
+```
+[backend]  npm error code EUNSUPPORTEDPROTOCOL
+[backend]  npm error Unsupported URL Type "workspace:": workspace:*
+[frontend] npm error code EUNSUPPORTEDPROTOCOL
+```
+
+Each service was installed on its own, in its own container, from its own directory. Its
+siblings are referenced as `workspace:*` — a protocol only the tool that wrote the
+lockfile understands, and one npm rejects outright. No amount of retrying a
+single-package install can resolve it.
+
+A workspace now installs **once, at its root**, with the manager its lockfile implies:
+`pnpm-lock.yaml` → pnpm, `yarn.lock` → yarn, otherwise npm. Each service still starts
+from its own directory, so only the install moves.
+
+Three things had to change together:
+
+- **The wrapper can install somewhere other than where it starts.** `DL_INSTALL_DIR`,
+  applied in a subshell so the build and start steps still run in `DL_WORKDIR`. It
+  defaults to the working directory, so a single-service plan behaves exactly as before.
+- **`RunPlan` gained `installDirectory`.** A plan that says where to install is the only
+  way the wrapper can be told without interpolating a path into a command.
+- **The runner image gained pnpm**, pinned at build time rather than fetched by corepack
+  at run time, so a run needs no network to obtain its own tooling.
+
+### The failure also said nothing useful
+
+`DEPENDENCY_INSTALL_FAILED · uncertain` with an empty evidence line, while the npm error
+sat in the log. There is now a signature for the workspace protocol, so the verdict names
+the cause and the remedy.
+
+Worse was the case after install succeeded. `tsx watch` — and every other watcher —
+survives a crash in the code it is watching, so the container stays up, nothing binds,
+and `Nothing is listening on port 3000` was the entire verdict while the reason sat two
+lines above it. A failure with a running container now carries the application's own last
+error. Picking that line needed care: a crashing Node process signs off with
+`Node.js v20.20.2`, so taking the last stderr line returns something true and useless.
+
+### DevLaunch cannot run DevLaunch, and should not
+
+With the install fixed, its frontend reaches `READY` and its backend reports:
+
+```
+Error: No Docker socket found. Tried: /var/run/docker.sock …
+```
+
+Which is correct. DevLaunch containers never mount the Docker socket — that absence is a
+stated security property — and DevLaunch's backend cannot work without one. The sandbox
+is refusing exactly what it is meant to refuse.
+
+- 5 tests. **Proven able to fail:** taking the last stderr line returns the version
+  banner; reverting to per-package installs no longer compiles, since the field it sets
+  is the only way to move the install.
+- 483 tests across three packages (480 passing, 3 skipped), zero residue.
+
 ## 2026-09-18 — "A session is already running", and no way to get to it
 
 The message was accurate and useless. It named a constraint, did not say which session
