@@ -25,7 +25,7 @@ function stubDocker(inspect: () => Promise<unknown>): DockerManager {
 }
 
 interface Explained {
-  failure: { code: string; confidence?: string; message: string; evidence?: string };
+  failure: { code: string; confidence?: string; message: string; evidence?: string; remedy?: string };
 }
 
 /** Reach the private attribution path directly; it is the branch under test. */
@@ -190,7 +190,16 @@ describe('a running process that never bound its port', () => {
     expect(out.failure.code).toBe(FailureCode.PORT_NOT_LISTENING);
   });
 
-  it('offers no evidence rather than a meaningless line', async () => {
+  it('quotes the last line as a last line, never as an error', async () => {
+    // This once offered no evidence at all rather than a line that might not be the
+    // cause. The caution was right and the conclusion was wrong: with nothing quoted,
+    // the report reads `Nothing is listening on port 3000.` and a person has nowhere to
+    // go — which is exactly how it was reported from a real run. A process that never
+    // bound has usually not errored, so demanding an error-shaped line means saying
+    // nothing precisely when there is nothing else to say.
+    //
+    // What the original caution protects is still protected here: the line is offered as
+    // the last thing printed, not as the cause.
     const logs = new LogManager();
     logs.buffer.push('stdout', 'listening soon, honest');
 
@@ -198,6 +207,10 @@ describe('a running process that never bound its port', () => {
       stubDocker(async () => ({ State: { Running: true, ExitCode: 0 } })),
     );
     const out = await explain(exec, [container, plan, new Set(), readiness, logs]);
-    expect(out.failure.evidence).toBeUndefined();
+
+    expect(out.failure.evidence).toBe('listening soon, honest');
+    expect(out.failure.remedy).toMatch(/last thing it printed/i);
+    // And it must not be described as the application's error, because it is not one.
+    expect(out.failure.remedy).not.toMatch(/its last error/i);
   });
 });

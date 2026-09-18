@@ -117,3 +117,49 @@ describe('Phase 7 — classifying real fixture failures', () => {
     );
   }, 180_000);
 });
+
+describe('a server that never finishes starting', () => {
+  beforeAll(async () => {
+    await docker.ping();
+    await docker.ensureImage('devlaunch/python:3.12');
+  }, 300_000);
+
+  afterAll(async () => {
+    await CleanupManager.sweepOrphans(docker);
+  });
+
+  it('says what the application last printed, and that startup never completed', async () => {
+    // Reported by the symptom alone this reads `Nothing is listening on port 8000.
+    // Sockets observed: 127.0.0.11:37497.` — true, and no help to anyone. Uvicorn opens
+    // its socket after the lifespan hook returns, so a hook waiting on something that
+    // never answers produces two INFO lines and silence: no traceback, no exit, nothing
+    // matching an error pattern. The last line it printed is the entire diagnosis, and
+    // an error-shaped filter is exactly what throws it away.
+    const handle = await exec.launch({
+      sessionId: 'fail-stalled',
+      plan: plan({
+        runtime: { language: 'python', version: '3.12' },
+        packageManager: 'pip',
+        installCommand: 'pip install -r requirements.txt',
+        startCommand: 'uvicorn main:app --host 0.0.0.0 --port 8000',
+        expectedPort: 8000,
+      }),
+      sourceDir: `${FIXTURES}/python-stalled-startup`,
+      image: 'devlaunch/python:3.12',
+    });
+
+    try {
+      const outcome = await handle.waitForReady(60_000);
+
+      expect(outcome.state).toBe(ExecutionState.FAILED);
+      expect(outcome.failure?.code).toBe(FailureCode.PORT_NOT_LISTENING);
+      // The application's own words, carried even though they are not an error.
+      expect(outcome.failure?.evidence).toMatch(/Waiting for application startup/i);
+      // And a remedy that points at the cause rather than restating the symptom.
+      expect(outcome.failure?.remedy).toMatch(/never finished starting up/i);
+      expect(outcome.failure?.remedy).toMatch(/startup hook/i);
+    } finally {
+      await handle.cleanup();
+    }
+  }, 300_000);
+});

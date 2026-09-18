@@ -3,7 +3,11 @@ import { ExecutionState, FailureCode, Sentinel, WrapperExit } from '@devlaunch/s
 import {
   classifyExit,
   classifyPostReadyExit,
+  lastErrorLine,
+  lastOutputLine,
+  stalledStartup,
 } from '../services/execution/ExecutionManager.js';
+import { LogManager } from '../services/logs/LogManager.js';
 
 const seen = (...markers: string[]) => new Set(markers);
 
@@ -140,5 +144,47 @@ describe('classifyPostReadyExit', () => {
     // Lower confidence: we know it is gone, not that the application had anything to
     // do with it.
     expect(v?.failure?.confidence).toBe('medium');
+  });
+});
+
+describe('what a failure quotes as its evidence', () => {
+  const logs = (...lines: string[]) => {
+    const mgr = new LogManager();
+    for (const line of lines) mgr.buffer.push(line.startsWith('!') ? 'stderr' : 'stdout', line.replace(/^!/, ''));
+    return mgr;
+  };
+
+  it('does not mistake an ordinary word for an errno code', () => {
+    // `\bE[A-Z]{3,}\b` catches ENOENT and EADDRINUSE, and carried the /i flag, which
+    // makes [A-Z] match lowercase — so it also caught `extensions`, `elapsed` and
+    // `existing`. pip's "Successfully installed typing-extensions..." was then quoted
+    // as the error behind a failure, in preference to the line that said what broke.
+    expect(lastErrorLine(logs('Successfully installed typing-extensions-4.16.0'))).toBeUndefined();
+    expect(lastErrorLine(logs('elapsed 3s', 'existing build reused'))).toBeUndefined();
+  });
+
+  it('still recognises a real errno code', () => {
+    expect(lastErrorLine(logs('connect ECONNREFUSED 127.0.0.1:5432'))).toContain('ECONNREFUSED');
+    expect(lastErrorLine(logs('Error: listen EADDRINUSE'))).toContain('EADDRINUSE');
+  });
+
+  it('falls back to the last thing said when nothing looks like an error', () => {
+    // A process that never bound has usually not errored — it is waiting. Its last line
+    // is the whole diagnosis, and an error-shaped filter throws it away.
+    expect(lastOutputLine(logs('!INFO:     Started server process [1]', '!INFO:     Waiting for application startup.')))
+      .toMatch(/Waiting for application startup/);
+    expect(lastErrorLine(logs('!INFO:     Waiting for application startup.'))).toBeUndefined();
+  });
+
+  it('knows a server that announced starting and never announced started', () => {
+    // Uvicorn opens its socket after the lifespan hook returns, so a hook waiting on
+    // something unreachable leaves exactly this: two INFO lines and silence.
+    expect(stalledStartup(logs('!INFO:     Started server process [1]', '!INFO:     Waiting for application startup.'))).toBe(true);
+    expect(stalledStartup(logs(
+      '!INFO:     Waiting for application startup.',
+      '!INFO:     Application startup complete.',
+      '!INFO:     Uvicorn running on http://0.0.0.0:8000',
+    ))).toBe(false);
+    expect(stalledStartup(logs('some unrelated output'))).toBe(false);
   });
 });

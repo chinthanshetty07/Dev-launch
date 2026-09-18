@@ -164,3 +164,25 @@ clean text.
 READY means an HTTP server accepted a connection and returned a complete response. It
 does **not** mean the application works, that its routes behave, or that its data layer
 is healthy. A configured health-check status is surfaced as a hint and never gates a run.
+
+## Evidence is the last thing the application said
+
+A failure quotes a line from the application's own output, and which line it quotes is
+most of the report's value. Two rules, both learned from failures that reported nothing
+useful:
+
+**An errno pattern must be matched case-sensitively.** `\bE[A-Z]{3,}\b` exists to catch
+`ENOENT` and `EADDRINUSE`. Carried under the `/i` flag it also catches `extensions`,
+`elapsed` and `existing` — so pip's "Successfully installed typing-extensions…" was
+quoted as the error behind a failure, in preference to the line that said what broke.
+
+**When nothing looks like an error, quote the last line anyway.** A process that never
+opened its port has usually not errored; it is waiting. `PORT_NOT_LISTENING` with no
+evidence reads `Nothing is listening on port 8000. Sockets observed: 127.0.0.11:37497.`,
+which is true and tells nobody anything. The last line it printed before going quiet —
+`INFO: Waiting for application startup.` — is the entire diagnosis.
+
+A server that announced it was starting and never announced it had started is called out
+specifically, because its remedy is different from every other way of not listening: the
+port was never opened because startup never *finished*, and the thing to look at is
+whatever the application connects to at boot.

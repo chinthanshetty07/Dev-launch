@@ -655,16 +655,35 @@ export class ExecutionManager {
 
     if (diagnosis.kind === 'not-listening') {
       const seen = diagnosis.observed.map((o) => `${o.address}:${o.port}`).join(', ');
+
+      // An application that never bound has usually not *errored* — it is simply still
+      // doing something, or waiting on something that will never answer. Its last words
+      // are the whole diagnosis, and an error-shaped filter throws them away: a server
+      // stuck in its startup hook says `Waiting for application startup.` and nothing
+      // further, which matches no error pattern and is the single most useful line in
+      // the log. Reported without it, the failure reads `Nothing is listening on port
+      // 8000. Sockets observed: 127.0.0.11:37497.` and tells a person nothing at all.
+      const stalled = stalledStartup(logs);
+      const lastSaid = lastError ?? lastOutputLine(logs);
+
       const portFailure: FailureDetail = {
         code: FailureCode.PORT_NOT_LISTENING,
         message:
           `Nothing is listening on port ${plan.expectedPort}.` +
           (seen ? ` Sockets observed: ${seen}.` : ' No listening sockets at all.'),
         phase: 'start',
-        evidence: lastError,
-        remedy: lastError
-          ? 'The application is running but never bound the port. Its last error is above.'
-          : undefined,
+        evidence: lastSaid,
+        remedy: stalled
+          ? 'The server started but never finished starting up, so it never opened its ' +
+            'port. Something in its startup hook has not returned — most often a ' +
+            'database or external service being waited on that never answers. Check ' +
+            'what the application connects to at boot.'
+          : lastError
+            ? 'The application is running but never bound the port. Its last error is above.'
+            : lastSaid
+              ? 'The application is running but never bound the port. The line above is ' +
+                'the last thing it printed before going quiet.'
+              : undefined,
       };
 
       // "Nothing is listening" describes the symptom; the log often names the cause, and
@@ -820,20 +839,61 @@ export class ExecutionManager {
  * Deliberately narrow: an arbitrary tail of a build log is noise, and a stack frame is
  * not the message. The first line of the most recent error is what a person reads.
  */
-function lastErrorLine(logs: LogManager | undefined): string | undefined {
+export function lastErrorLine(logs: LogManager | undefined): string | undefined {
   // "Written to stderr" is not the same as "says something". A crashing Node process
   // ends with its own version banner, and taking the last stderr line returns
   // `Node.js v20.20.2` — true, and no help at all. The line has to look like a message.
-  const MESSAGE = /(^|\s)(\w*Error\b|error\b|exception\b)|\b(cannot|could not|failed|unable to|refused|not found|missing)\b|\bE[A-Z]{3,}\b/i;
+  const MESSAGE = /(^|\s)(\w*Error\b|error\b|exception\b)|\b(cannot|could not|failed|unable to|refused|not found|missing)\b/i;
+  // Errno codes are matched separately *without* the case-insensitive flag. Folded into
+  // the expression above they were a trap: `/i` makes `[A-Z]` match lowercase, so
+  // `\bE[A-Z]{3,}\b` matched `extensions`, `elapsed`, `existing` — and pip's
+  // "Successfully installed typing-extensions..." was reported as the error behind a
+  // failure, in preference to the line that actually said what went wrong.
+  const ERRNO = /\bE[A-Z]{3,}\b/;
   const NOISE = /^(node\.js v|npm (error )?a complete log|at\s)/i;
 
   const entries = logs?.buffer.all() ?? [];
   for (let i = entries.length - 1; i >= 0; i--) {
     const text = entries[i]!.text.trim();
     if (!text || NOISE.test(text) || /^\s*at /.test(text)) continue;
-    if (MESSAGE.test(text)) return text.slice(0, 300);
+    if (MESSAGE.test(text) || ERRNO.test(text)) return text.slice(0, 300);
   }
   return undefined;
+}
+
+/**
+ * The last thing the application said, error-shaped or not.
+ *
+ * `lastErrorLine` deliberately requires a line to look like a message, which is right
+ * when an error exists and wrong when none does. A process that is alive and silent has
+ * still told us where it stopped, and "the last line before it went quiet" is a fact
+ * rather than a guess.
+ */
+export function lastOutputLine(logs: LogManager | undefined): string | undefined {
+  const NOISE = /^(node\.js v|npm (error )?a complete log|at\s|__DEVLAUNCH:)/i;
+  const entries = logs?.buffer.all() ?? [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const text = entries[i]!.text.trim();
+    if (!text || NOISE.test(text) || /^\s*at /.test(text)) continue;
+    return text.slice(0, 300);
+  }
+  return undefined;
+}
+
+/**
+ * A server that announced it was starting and never announced it had started.
+ *
+ * Worth separating from every other way of not listening, because the remedy is
+ * different and specific: the port was never opened because startup never *finished*,
+ * and the thing to look at is whatever the application connects to at boot. Uvicorn
+ * opens its socket after the lifespan hook completes, so a hook awaiting a database that
+ * is not there leaves exactly this shape — two INFO lines and silence.
+ */
+export function stalledStartup(logs: LogManager | undefined): boolean {
+  const text = (logs?.buffer.all() ?? []).map((e) => e.text).join('\n');
+  const began = /Waiting for application startup|Starting (?:development )?server|Booting worker/i;
+  const finished = /Application startup complete|Uvicorn running on|Running on http|Listening on|listening at/i;
+  return began.test(text) && !finished.test(text);
 }
 
 function waitForLog(

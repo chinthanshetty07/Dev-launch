@@ -40,6 +40,7 @@ They are deliberately not in the automated suite.
 
 | Fixture | Exercises |
 |---|---|
+| `python-stalled-startup` | A server that starts and never finishes starting. Uvicorn opens its socket only after the lifespan hook returns, so a hook waiting on something unreachable leaves a live container listening on nothing — and prints two INFO lines, no traceback, nothing error-shaped. Proves the failure carries the last line the application printed |
 | `python-async-postgres` | One service that needs a Postgres it does not contain, reached through an **async** driver. Proves provisioning happens outside the multi-service path, and that the injected URL names the declared driver — a plain `postgresql://` sends SQLAlchemy to psycopg2 and fails against a healthy database. It answers only after a real `SELECT 1` |
 | `node-fullstack` | `frontend/` + `backend/` with no root manifest, a hardcoded `http://localhost:5001` in the frontend, a backend that binds `5000`, and a MongoDB dependency. The ordinary shape of a web project, and the one a single-service runner gets wrong |
 
