@@ -53,6 +53,48 @@ export function buildHostConfig(opts: SecurityOptions): Dockerode.HostConfig {
   };
 }
 
+/**
+ * The cache volume a repository's package downloads belong in.
+ *
+ * Keyed on what is being installed — a repository, and within it a service — rather than
+ * on the session, because both of the slow cases are repeats: a repair re-running the
+ * same install seconds later, and a person re-running the same project after a fix.
+ *
+ * Not shared any wider than that, for two reasons. A cache is a writable surface every
+ * container mounting it can see, and one repository's install has no business writing
+ * anything another will later read. And a project's services install *at the same time*:
+ * giving them one volume puts two package managers in one cache directory concurrently,
+ * which is a race to rely on rather than a thing to arrange.
+ *
+ * A session with no repository URL gets its own, so it still spans that session's repairs
+ * without joining anything else.
+ */
+export function cacheVolumeFor(key: string, service?: string): string {
+  // Each part is normalised before they are joined. Normalising the joined string
+  // instead lets the separator hide the suffix — `repo.git--api` no longer ends in
+  // `.git`, so the same repository cloned with and without it gets two caches and
+  // neither is ever warm.
+  const clean = (part: string): string =>
+    part
+      .replace(/^https?:\/\//, '')
+      .replace(/\.git$/, '')
+      .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+
+  const safe = [key, service]
+    .filter((p): p is string => Boolean(p))
+    .map(clean)
+    .filter(Boolean)
+    .join('--')
+    // Docker caps a volume name at 255; the prefix and a generous margin fit well inside
+    // this, and the tail is the distinguishing end of a path.
+    .slice(-64)
+    .replace(/^[^a-zA-Z0-9]+/, '');
+
+  return `${config.docker.cacheVolumePrefix}${safe || 'default'}`;
+}
+
 export function buildLabels(sessionId: string): Record<string, string> {
   return {
     [config.docker.managedLabel]: 'true',

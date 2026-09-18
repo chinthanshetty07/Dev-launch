@@ -19,12 +19,23 @@ RUN groupadd --gid 1000 app \
  && mkdir -p /workspace/.tmp /devlaunch \
  && chown -R app:app /workspace /devlaunch
 
+# /cache  package downloads, on a volume that outlives the container.
+#
+# Created here, owned by the runtime user, because a fresh named volume inherits the
+# ownership of the image directory it is mounted over — and a root-owned mount point
+# leaves a non-root process unable to write a single byte to its own cache. Without it
+# the cache directory lived under /workspace, which is discarded with the clone: a repair
+# re-downloading every dependency from scratch is why one failing install becomes three,
+# and why the live log looks like it has stalled.
+RUN mkdir -p /cache/pip \
+ && chown -R app:app /cache
+
 # pip installs console scripts (flask, uvicorn, streamlit, gunicorn) into the user
 # site directory when running non-root. Without it on PATH every Python start command
 # fails with exit 127, which reads as "command not found" rather than anything useful.
 ENV PATH=/workspace/.local/bin:$PATH \
     HOME=/workspace \
-    PIP_CACHE_DIR=/workspace/.pip \
+    PIP_CACHE_DIR=/cache/pip \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONUNBUFFERED=1 \

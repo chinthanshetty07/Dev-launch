@@ -75,7 +75,13 @@ export class GroqProvider implements AIProvider {
 
   async diagnoseFailure(request: RepairRequest): Promise<unknown> {
     return this.complete(
-      repairPrompt(request.plan, request.failure, request.logs, request.previousAttempts),
+      repairPrompt(
+        request.plan,
+        request.failure,
+        request.logs,
+        request.previousAttempts,
+        request.metadata,
+      ),
     );
   }
 

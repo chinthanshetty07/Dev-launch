@@ -40,6 +40,7 @@ They are deliberately not in the automated suite.
 
 | Fixture | Exercises |
 |---|---|
+| `python-async-postgres` | One service that needs a Postgres it does not contain, reached through an **async** driver. Proves provisioning happens outside the multi-service path, and that the injected URL names the declared driver — a plain `postgresql://` sends SQLAlchemy to psycopg2 and fails against a healthy database. It answers only after a real `SELECT 1` |
 | `node-fullstack` | `frontend/` + `backend/` with no root manifest, a hardcoded `http://localhost:5001` in the frontend, a backend that binds `5000`, and a MongoDB dependency. The ordinary shape of a web project, and the one a single-service runner gets wrong |
 
 ## Instrumentation
@@ -63,3 +64,7 @@ would only prove what we asked for; the probe proves what is actually in force.
 - **Failure fixtures reproduce shape, not machinery.** `node-needs-database` opens a
   raw socket to :5432 rather than pulling in a Postgres driver — the log output is what
   the classifier sees, and that is what matters.
+- **A success fixture proves the round trip, not the process.** `python-async-postgres`
+  is the exception to the zero-dependency rule, deliberately: the failure it exists for
+  — a synchronous driver behind an async engine — happens at connect time, so a fixture
+  that merely started would have passed while the defect was still there.

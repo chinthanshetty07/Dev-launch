@@ -168,6 +168,37 @@ images: their entrypoints only need to chown and switch user when started as roo
 
 Data is in anonymous volumes and lasts exactly as long as the session.
 
+This runs for **every** repository, not only multi-service ones. A lone API with a
+database is the commonest shape there is, and while provisioning lived in the project
+path those repositories got nothing: the analyzer detected Postgres, reported it, and the
+run started anyway with no server and no connection string. What filled the gap was the
+repair loop inventing `postgresql://user:pass@db:5432/dbname` and then spending its
+remaining attempts installing drivers to satisfy a URL that could never have connected.
+
+The connection string names the driver the repository declared. SQLAlchemy encodes the
+driver in the URL scheme, so a project depending on `asyncpg` and handed a plain
+`postgresql://` loads psycopg2 and dies with *the asyncio extension requires an async
+driver to be used* — against a database that is running, reachable and correct.
+
+A value DevLaunch injects outranks one the plan carried, and is re-injected after every
+repair. A repair rewrites the plan wholesale, so without that the retry is handed a
+database it cannot find and the loop then diagnoses the absence it just caused.
+
+## Package downloads outlive the container
+
+Each repository gets a named cache volume mounted at `/cache`, which npm, pnpm and pip
+are pointed at. The cache directory previously lived under `/workspace` — discarded with
+the clone — so every repair re-downloaded the entire dependency tree from scratch. On a
+LangChain-sized project that was measured at 13s cold against 5s warm, three times over,
+which is most of what a live log shows while it appears to have stalled.
+
+The volume is keyed on the repository rather than shared, because a cache is a writable
+surface every container mounting it can see, and one repository's install has no business
+writing anything another will later read. The mount point is created in the image owned
+by the runtime user, because a fresh named volume inherits the ownership of the directory
+it is mounted over — and a root-owned one leaves a non-root process unable to write a
+single byte to its own cache.
+
 ## The browser is not on the container network
 
 Services reach each other by name, but a page's `fetch` is resolved by the user's

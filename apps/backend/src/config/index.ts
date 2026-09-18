@@ -42,6 +42,16 @@ export const config = {
     managedLabel: 'com.devlaunch.managed',
     sessionLabel: 'com.devlaunch.session',
     /**
+     * Prefix for the per-repository package cache volumes.
+     *
+     * Deliberately outlives a session: its whole purpose is to be there on the next run.
+     * The prefix is what makes a stale one findable — `docker volume ls` shows them, and
+     * removing one costs nothing but a slower first install.
+     */
+    cacheVolumePrefix: 'devlaunch-cache-',
+    /** Marks a volume as a package cache rather than session state. */
+    cacheLabel: 'com.devlaunch.cache',
+    /**
      * Identifies the process that created a container.
      *
      * Orphan sweeping matched on the managed label alone, which meant any DevLaunch
@@ -95,6 +105,25 @@ export const config = {
      * backend's memory without bound over a long-running process.
      */
     retainFinished: intEnv('DEVLAUNCH_RETAIN_FINISHED_SESSIONS', 10),
+  },
+
+  ai: {
+    /**
+     * How many times a failed plan may be rewritten before the original diagnosis stands.
+     *
+     * Two, and low on purpose. Repair is a model guessing at a plan from a log, and the
+     * guesses do not converge: on a repository needing Postgres, attempt one reported a
+     * missing setting, attempt two installed a database driver to satisfy a connection
+     * string the model had itself invented, and attempt three broke a working async
+     * driver by replacing it with a synchronous one. Each attempt was a confident answer
+     * to the problem the previous attempt created, and a fourth would have been too.
+     *
+     * The cost is not only time. Every attempt reinstalls the dependency tree and pushes
+     * the real first error further up a log a person has to scroll back through. Raising
+     * this buys more guesses, not more accuracy — the failures worth fixing are the ones
+     * that stop the guessing being necessary.
+     */
+    maxRepairAttempts: intEnv('DEVLAUNCH_MAX_REPAIR_ATTEMPTS', 2),
   },
 
   /**

@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { FailureCode, type RepositoryMetadata, type RunPlan } from '@devlaunch/shared';
+import { FailureCode, RunPlanSchema, type RepositoryMetadata, type RunPlan } from '@devlaunch/shared';
 import { AIPlanner } from '../services/ai/AIPlanner.js';
 import { AIRepair } from '../services/ai/AIRepair.js';
 import { GroqProvider, AIUnavailable, retryDelayMs } from '../services/ai/GroqProvider.js';
 import { UnavailableAIProvider, MAX_REPAIR_ATTEMPTS } from '../services/ai/AIProvider.js';
-import { untrusted, systemPrompt, describeRepository } from '../services/ai/prompts.js';
+import { untrusted, systemPrompt, describeRepository, repairPrompt } from '../services/ai/prompts.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 import type { AIProvider } from '../services/ai/AIProvider.js';
 
@@ -208,6 +208,51 @@ describe('prompts', () => {
     // The allowlist is stated up front so most rejections never need a round trip.
     expect(sys).toContain('npm');
     expect(sys).toMatch(/0\.0\.0\.0/);
+  });
+
+  it('tells a repair what DevLaunch already provisioned, and what not to touch', () => {
+    // Reconstructed from a real run. Shown only a log complaining about a database, the
+    // model invented `postgresql://user:pass@db:5432/dbname`, then installed psycopg2 to
+    // satisfy the error that caused, then met "the asyncio extension requires an async
+    // driver" — because the repository had declared asyncpg all along. Neither fact was
+    // secret; both were in the metadata, and neither was in the prompt.
+    const prompt = repairPrompt(
+      RunPlanSchema.parse({ ...GOOD_PLAN, planSource: 'rule-based' }),
+      { code: FailureCode.START_COMMAND_FAILED, message: 'exited 1' },
+      'pydantic_core.ValidationError: database_url Field required',
+      [],
+      meta({
+        backing: [
+          {
+            kind: 'postgres',
+            evidence: 'depends on asyncpg',
+            driver: 'asyncpg',
+            urlEnvKeys: ['DATABASE_URL'],
+            neededBy: [],
+          },
+        ],
+      }),
+    );
+
+    expect(prompt).toContain('postgres');
+    // The variable is managed: a value the model supplies is discarded either way, and
+    // saying so stops it spending an attempt on one.
+    expect(prompt).toContain('DATABASE_URL');
+    expect(prompt).toMatch(/do not set or change/i);
+    // The declared driver, so a repair does not install a competing one.
+    expect(prompt).toContain('asyncpg');
+    expect(prompt).toMatch(/do not add a different driver/i);
+  });
+
+  it('says none of that when the repository needs no database', () => {
+    const prompt = repairPrompt(
+      RunPlanSchema.parse({ ...GOOD_PLAN, planSource: 'rule-based' }),
+      { code: FailureCode.START_COMMAND_FAILED, message: 'exited 1' },
+      'boom',
+      [],
+      meta(),
+    );
+    expect(prompt).not.toMatch(/do not set or change/i);
   });
 
   it('sends dependency names but never a whole repository', () => {

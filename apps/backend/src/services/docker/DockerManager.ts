@@ -102,7 +102,13 @@ export class DockerManager {
     try {
       await this.docker.getVolume(name).inspect();
     } catch {
-      await this.docker.createVolume({ Name: name });
+      // Labelled, because this one deliberately outlives every session that uses it:
+      // an unlabelled volume of unknown origin is something a person cannot safely
+      // remove, and the label is what makes `docker volume ls` an answer.
+      await this.docker.createVolume({
+        Name: name,
+        Labels: { [config.docker.managedLabel]: 'true', [config.docker.cacheLabel]: 'true' },
+      });
     }
   }
 

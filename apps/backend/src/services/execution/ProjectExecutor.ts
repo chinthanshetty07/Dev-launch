@@ -9,8 +9,8 @@ import {
   type ServiceRunPlan,
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
-import { buildLabels } from '../docker/ContainerSecurity.js';
-import { BACKING_SPECS, connectionEnv, databaseName } from './BackingServices.js';
+import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
+import { BackingProvisioner, type BackingRun } from './BackingProvisioner.js';
 import { preferredApiHostPort, wireService } from './CrossServiceWiring.js';
 import { choosePort } from '../ports/HostPorts.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
@@ -40,12 +40,7 @@ export interface ServiceRun {
   restart(): Promise<void>;
 }
 
-export interface BackingRun {
-  kind: BackingService['kind'];
-  alias: string;
-  container: Dockerode.Container;
-  ready: boolean;
-}
+export type { BackingRun };
 
 export interface ProjectRun {
   services: ServiceRun[];
@@ -133,24 +128,19 @@ export class ProjectExecutor {
     // Databases first, and waited for. Applications connect at boot — the real
     // repository that prompted this exits with "MongoDB connection error" rather than
     // retrying — so starting them in parallel would be a race the application loses.
-    const database = databaseName(opts.repoName);
+    let injected: { key: string; value: string; required: boolean }[] = [];
     try {
-      for (const need of opts.backing ?? []) {
-        const db = await this.startBacking(opts, need, database);
-        if (db) backing.push(db);
-      }
+      const provisioned = await new BackingProvisioner(this.exec).provision({
+        sessionId: opts.sessionId,
+        backing: opts.backing ?? [],
+        repoName: opts.repoName,
+        logs: opts.logs,
+      });
+      backing.push(...provisioned.runs);
+      injected = provisioned.injected;
     } catch (err) {
       await run.cleanup();
       throw err;
-    }
-
-    const injected = connectionEnv(opts.backing ?? [], database);
-    if (injected.length) {
-      opts.logs.write(
-        'stdout',
-        `Provisioned ${backing.map((b) => b.kind).join(', ')}; ` +
-          `injected ${injected.map((v) => v.key).join(', ')}.`,
-      );
     }
 
     // Host ports are chosen here rather than by Docker, because each service's URL has
@@ -244,6 +234,7 @@ export class ProjectExecutor {
           logs,
           networkAliases: aliasesFor(plan.name),
           hostPort: hostPorts[plan.name],
+          packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
         });
         const entry: ServiceRun = {
           name: plan.name,
@@ -269,6 +260,7 @@ export class ProjectExecutor {
               sourceDir: opts.sourceDir,
               image: imageForRuntime(plan.runtime.language, plan.runtime.version),
               logs,
+              packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
               networkAliases: aliasesFor(plan.name),
               hostPort: hostPorts[plan.name],
             });
@@ -293,65 +285,6 @@ export class ProjectExecutor {
    * applications, and it matters more here because an application that connects at boot
    * gets exactly one chance.
    */
-  private async startBacking(
-    opts: ProjectLaunchOptions,
-    need: BackingService,
-    database: string,
-  ): Promise<BackingRun | null> {
-    const spec = BACKING_SPECS[need.kind];
-    if (!spec) return null;
-
-    const docker = this.exec.docker;
-    opts.logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${spec.alias}...`);
-    await docker.ensureImage(spec.image);
-
-    const networkName = (await docker.networkExists(config.docker.networkName))
-      ? config.docker.networkName
-      : undefined;
-
-    const container = await docker.createBackingContainer({
-      image: spec.image,
-      alias: spec.alias,
-      user: spec.user,
-      env: spec.env,
-      labels: buildLabels(opts.sessionId),
-      dataPaths: spec.dataPaths,
-      networkName,
-    });
-
-    await docker.start(container);
-    const ready = await this.waitForBacking(docker, container, spec.readyCheck);
-
-    if (!ready) {
-      opts.logs.write('stderr', `${need.kind} did not become ready; the project will fail.`);
-    } else {
-      opts.logs.write('stdout', `${need.kind} is accepting connections at ${spec.url(database)}`);
-    }
-    return { kind: need.kind, alias: spec.alias, container, ready };
-  }
-
-  /** Poll the image's own health command until it succeeds, or the budget runs out. */
-  private async waitForBacking(
-    docker: ExecutionManager['docker'],
-    container: Dockerode.Container,
-    check: string[],
-    timeoutMs = config.timeouts.backingReadyMs,
-  ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      try {
-        const out = await docker.execCapture(container, check);
-        // Every one of these commands prints something recognisable on success and
-        // fails or stays silent otherwise.
-        if (/\b(1|PONG|accepting connections|mysqld is alive)\b/i.test(out)) return true;
-      } catch {
-        /* not up yet; the loop is the retry */
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    return false;
-  }
-
   /**
    * Wait for every service that serves traffic, and report the project's readiness.
    *

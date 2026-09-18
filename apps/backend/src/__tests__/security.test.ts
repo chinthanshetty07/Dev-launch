@@ -1,3 +1,4 @@
+import { cacheVolumeFor } from '../services/docker/ContainerSecurity.js';
 import { describe, it, expect } from 'vitest';
 import { FailureCode } from '@devlaunch/shared';
 import {
@@ -223,5 +224,45 @@ describe('environment variables that inject code (found by adversarial review)',
       },
     });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('the package cache volume', () => {
+  it('gives two services of one project separate caches', () => {
+    // They install at the same time. One volume would put two package managers in one
+    // cache directory concurrently, which is a race to rely on rather than to arrange.
+    const a = cacheVolumeFor('https://github.com/acme/app', 'frontend');
+    const b = cacheVolumeFor('https://github.com/acme/app', 'backend');
+    expect(a).not.toBe(b);
+  });
+
+  it('gives the same service the same cache on a later run', () => {
+    // The entire point: a repair, or a re-run after a fix, must not re-download a
+    // dependency tree it already has.
+    expect(cacheVolumeFor('https://github.com/acme/app.git', 'api')).toBe(
+      cacheVolumeFor('https://github.com/acme/app', 'api'),
+    );
+  });
+
+  it('never lets two repositories share one', () => {
+    expect(cacheVolumeFor('https://github.com/acme/app')).not.toBe(
+      cacheVolumeFor('https://github.com/other/app'),
+    );
+  });
+
+  it('is warm on the second run of a local directory, not just a URL', () => {
+    // The gap this closes: a `sourceDir` launch has no repository URL, and falling back
+    // to the session id gave a key that is never seen twice — no cache reuse at all, and
+    // one abandoned volume per run. 134 of them, 2.7 GB, accumulated inside a single
+    // test suite before anyone noticed, because nothing about it fails.
+    expect(cacheVolumeFor('/repos/my-app')).toBe(cacheVolumeFor('/repos/my-app'));
+    expect(cacheVolumeFor('/repos/my-app')).not.toBe(cacheVolumeFor('/repos/other-app'));
+  });
+
+  it('produces a name Docker will accept', () => {
+    // Docker rejects a volume name outside [a-zA-Z0-9][a-zA-Z0-9_.-]; a URL contains
+    // slashes and colons, so an unsanitised key fails at creation rather than at review.
+    const name = cacheVolumeFor('https://github.com/Acme/My App!@#.git', 'web/ui');
+    expect(name).toMatch(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
   });
 });

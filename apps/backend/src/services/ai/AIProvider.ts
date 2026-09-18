@@ -1,4 +1,5 @@
 import type { FailureDetail, RepositoryMetadata, RunPlan } from '@devlaunch/shared';
+import { config } from '../../config/index.js';
 
 export interface PlanRequest {
   /** Repository description. Everything here originates from untrusted repository text. */
@@ -50,7 +51,12 @@ export const REPAIRABLE_FIELDS = Object.freeze([
   'healthCheck',
 ] as const);
 
-export const MAX_REPAIR_ATTEMPTS = 2;
+/**
+ * Configurable, but see `config.ai.maxRepairAttempts` before raising it: the reason the
+ * default is two is that repair attempts do not converge, and a third guess is still a
+ * guess.
+ */
+export const MAX_REPAIR_ATTEMPTS = config.ai.maxRepairAttempts;
 
 /**
  * Default provider: refuses.

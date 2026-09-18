@@ -164,6 +164,15 @@ export interface BackingService {
    * wrong name costs the entire run.
    */
   urlEnvKeys?: string[];
+  /**
+   * The database driver the repository actually declares, when it names one.
+   *
+   * SQLAlchemy encodes the driver in the URL scheme, so this is not decoration: a
+   * project depending on `asyncpg` and handed `postgresql://` loads psycopg2 and dies
+   * with "The asyncio extension requires an async driver to be used". The connection
+   * string is correct, the server is running, and it still cannot start.
+   */
+  driver?: string;
   /** Which services need it. */
   neededBy: string[];
 }

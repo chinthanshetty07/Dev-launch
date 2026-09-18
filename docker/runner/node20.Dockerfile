@@ -32,8 +32,20 @@ RUN npm install -g pnpm@9.12.3 \
 RUN mkdir -p /workspace/.tmp /devlaunch/src \
  && chown -R node:node /workspace /devlaunch
 
+# /cache  package downloads, on a volume that outlives the container.
+#
+# Created here, owned by the runtime user, because a fresh named volume inherits the
+# ownership of the image directory it is mounted over — and a root-owned mount point
+# leaves a non-root process unable to write a single byte to its own cache. Without it
+# the cache directory lived under /workspace, which is discarded with the clone: a repair
+# re-downloading every dependency from scratch is why one failing install becomes three,
+# and why the live log looks like it has stalled.
+RUN mkdir -p /cache/npm /cache/pnpm \
+ && chown -R node:node /cache
+
 ENV HOME=/workspace \
-    npm_config_cache=/workspace/.npm \
+    npm_config_cache=/cache/npm \
+    npm_config_store_dir=/cache/pnpm \
     npm_config_update_notifier=false \
     npm_config_fund=false
 

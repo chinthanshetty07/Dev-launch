@@ -29,6 +29,8 @@ import {
   requiredConfiguration,
   requiredConfigurationForSingle,
 } from '../planning/RequiredConfiguration.js';
+import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
+import { BackingProvisioner, type ProvisionResult } from '../execution/BackingProvisioner.js';
 import { ProjectExecutor, type ProjectRun } from '../execution/ProjectExecutor.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
@@ -87,6 +89,14 @@ export interface Session {
   handle?: LaunchHandle;
   /** Set instead of `handle` for a multi-service run. */
   run?: ProjectRun;
+  /**
+   * Databases provisioned for a single-service run, which `run` would otherwise own.
+   *
+   * Kept on the session rather than the handle because it outlives one: a repair
+   * replaces the application container, and the database it connects to must survive
+   * that or every retry starts against an empty server.
+   */
+  backing?: ProvisionResult;
   cleanupRepo?: () => Promise<void>;
 
   /** Plans already tried by the repair loop, so an attempt cannot repeat one. */
@@ -533,10 +543,27 @@ export class SessionManager extends EventEmitter {
     // One gate for every plan, whatever produced it.
     this.validator.validate({ plan, image });
 
+    // A single service needs its database as much as a project does. Until this ran
+    // here, a lone API detected as needing Postgres was started with no server and no
+    // connection string, and the repair loop filled the gap by inventing one —
+    // `postgresql://user:pass@db:5432/dbname`, a host that does not exist — then spent
+    // its remaining attempts installing drivers to satisfy a URL that could not connect.
+    // Re-read: provisioning rewrites the plan to carry the connection string, and the
+    // local `plan` above was captured before that happened.
+    const resolved = await this.provisionBacking(session);
+
     this.setState(session, ExecutionState.STARTING);
     const handle = await this.exec.launch({
       sessionId: session.id,
-      plan,
+      plan: resolved,
+      // Downloads survive this container. A repair re-runs the same install seconds
+      // later, and without a cache it fetches every package again from scratch — which
+      // is most of what a live log is showing while it appears to have stalled.
+      // A local directory is as stable an identity as a URL, and is what a fixture or a
+      // `sourceDir` launch has instead of one. Falling back to the session id looks
+      // harmless and is not: the key is never seen twice, so the cache is never warm and
+      // every run leaves a volume behind for good.
+      packageCacheVolume: cacheVolumeFor(session.repoUrl ?? session.sourceDir ?? session.id),
       sourceDir,
       image,
       logs: session.logs,
@@ -581,6 +608,62 @@ export class SessionManager extends EventEmitter {
     session.failure = original ?? outcome.failure;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
+  }
+
+  /**
+   * Start the databases this repository expects, once per session.
+   *
+   * Once, because a repair replaces the application container and re-enters here: a
+   * second provisioning would start a second Postgres, leave the first orphaned, and
+   * hand the retry an empty database under the same alias.
+   *
+   * The injected variables overwrite whatever the plan carried. That is deliberate — an
+   * AI-authored plan for this shape of repository reliably invents a placeholder
+   * connection string, and a placeholder that silently wins over a real server is the
+   * exact failure this closes.
+   */
+  private async provisionBacking(session: Session): Promise<RunPlan> {
+    const needed = session.metadata?.backing ?? [];
+    if (needed.length === 0 || !session.plan) return session.plan!;
+
+    // Started once per session, but injected on every entry. A repair replaces the plan
+    // wholesale with one the model wrote, and that plan does not carry the connection
+    // string — so skipping this on a retry hands the new container a database it cannot
+    // find, and the repair loop then diagnoses the absence it just caused.
+    if (!session.backing && this.exec.docker) {
+      try {
+        session.backing = await new BackingProvisioner(this.exec).provision({
+          sessionId: session.id,
+          backing: needed,
+          repoName: repoNameFromUrl(session.repoUrl ?? session.sourceDir),
+          logs: { write: (stream, line) => session.logs.buffer.push(stream, line) },
+        });
+      } catch (err) {
+        // A database that will not start is worth saying plainly, but it is not worth
+        // refusing to run over: some applications degrade without one, and those that do
+        // not will say so in their own logs with better detail than a guess here.
+        session.logs.buffer.push(
+          'stderr',
+          `Could not provision a database: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return session.plan;
+      }
+    }
+
+    const injected = session.backing?.injected ?? [];
+    if (injected.length === 0) return session.plan;
+
+    // The injected value wins over whatever the plan carried. Deliberate: an AI-authored
+    // plan for this shape of repository reliably invents a placeholder connection string,
+    // and a placeholder that silently outranks a running server is the failure this closes.
+    session.plan = {
+      ...session.plan,
+      environmentVariables: [
+        ...session.plan.environmentVariables.filter((v) => !injected.some((i) => i.key === v.key)),
+        ...injected,
+      ],
+    };
+    return session.plan;
   }
 
   /**
@@ -934,6 +1017,7 @@ export class SessionManager extends EventEmitter {
     } else if (session.handle?.container) {
       containers.push(['app', session.handle.container]);
     }
+    for (const db of session.backing?.runs ?? []) containers.push([db.kind, db.container]);
 
     const sampled = await Promise.all(
       containers.map(async ([name, container]) => {
@@ -977,6 +1061,12 @@ export class SessionManager extends EventEmitter {
       for (const err of result?.errors ?? []) {
         session.logs.buffer.push('stderr', `cleanup warning: ${err.message}`);
       }
+      // After the application, so a container still shutting down does not lose its
+      // connection mid-write and log an alarming error on the way out.
+      for (const err of (await session.backing?.cleanup()) ?? []) {
+        session.logs.buffer.push('stderr', `cleanup warning: ${err.message}`);
+      }
+      session.backing = undefined;
     } catch (err) {
       // A thrown failure must not mask the transition that triggered teardown, but it
       // should still be visible.
@@ -1072,7 +1162,7 @@ function discoveryByService(
 /** The repository's own name, for naming its database after it rather than after nothing. */
 function repoNameFromUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
-  return url.replace(/\.git$/, '').split('/').pop() || undefined;
+  return url.replace(/\/+$/, '').replace(/\.git$/, '').split('/').pop() || undefined;
 }
 
 /** The last line the application wrote, which is where a post-ready death explains itself. */

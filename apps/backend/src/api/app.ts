@@ -49,7 +49,10 @@ function present(session: Session) {
         failure: sv.failure,
       }),
     ),
-    backing: session.run?.backing.map(
+    // From either path: a single service gets its database provisioned the same way a
+    // project does, and a database running unannounced is the kind of thing a person
+    // discovers in `docker ps` and cannot account for.
+    backing: (session.run?.backing ?? session.backing?.runs)?.map(
       (db): BackingView => ({ kind: db.kind, alias: db.alias, ready: db.ready }),
     ),
   };

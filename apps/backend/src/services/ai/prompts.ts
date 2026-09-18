@@ -129,11 +129,52 @@ export function planPrompt(meta: RepositoryMetadata, ruleBasedReason: string): s
   ].join('\n');
 }
 
+/**
+ * What the repository already settled, which a repair must not relitigate.
+ *
+ * Both halves of this come from one observed run. A model repairing a FastAPI project
+ * was shown a log complaining about a database and nothing else, so it invented a
+ * connection string, then installed `psycopg2-binary` to satisfy the error that caused,
+ * then met "the asyncio extension requires an async driver" — because the repository had
+ * declared `asyncpg` all along and the repair had replaced it with a synchronous driver.
+ * Three attempts, each a confident answer to a problem the previous one created.
+ *
+ * Neither fact was secret. Both were in the metadata, and neither was in the prompt.
+ */
+function alreadyDecided(meta: RepositoryMetadata): string {
+  const lines: string[] = [];
+  const backing = meta.backing ?? [];
+
+  if (backing.length > 0) {
+    const managed = [...new Set(backing.flatMap((b) => b.urlEnvKeys ?? (b.urlEnvKey ? [b.urlEnvKey] : [])))];
+    lines.push(
+      `DevLaunch has already started and is managing: ${backing.map((b) => b.kind).join(', ')}.`,
+      managed.length
+        ? `Do not set or change ${managed.join(', ')} — DevLaunch injects the real connection ` +
+          'string after your plan is applied, and any value you supply is discarded. The ' +
+          'database is running and reachable; a failure mentioning it is not a missing server.'
+        : '',
+    );
+
+    const drivers = backing.map((b) => b.driver).filter(Boolean);
+    if (drivers.length) {
+      lines.push(
+        `The repository declares these database drivers: ${drivers.join(', ')}. Do not add a ` +
+          'different driver for the same database — the declared one is the one its code is ' +
+          'written against, and installing another breaks it rather than fixing it.',
+      );
+    }
+  }
+
+  return lines.filter(Boolean).join('\n');
+}
+
 export function repairPrompt(
   plan: RunPlan,
   failure: FailureDetail,
   logs: string,
   previousAttempts: RunPlan[],
+  meta?: RepositoryMetadata,
 ): string {
   return [
     'A run plan failed. Propose a corrected plan.',
@@ -146,6 +187,8 @@ export function repairPrompt(
     failure.remedy ? `Suggested remedy: ${failure.remedy}` : '',
     '',
     untrusted('container output (tail)', logs.slice(-3000)),
+    '',
+    meta ? alreadyDecided(meta) : '',
     '',
     previousAttempts.length > 0
       ? `Already attempted and rejected:\n${previousAttempts

@@ -27,7 +27,17 @@ export interface BackingSpec {
    * worse way than one that starts clean.
    */
   dataPaths: string[];
-  env: string[];
+  /**
+   * Environment for the server, given the database name the application will ask for.
+   *
+   * A function rather than a list because of what the name has to do: the connection
+   * string DevLaunch injects names a database per repository, and Postgres and MySQL
+   * create exactly one database at init and nothing afterwards. Without the name here,
+   * every injected URL pointed at a database that was never created — the server was
+   * healthy, the credentials right, and the connection refused with `database "x" does
+   * not exist`. MongoDB hid this for a long time by creating databases on first write.
+   */
+  env(database: string): string[];
   /** Command that exits 0 once the service is accepting connections. */
   readyCheck: string[];
   /** Environment variable an application conventionally reads its connection from. */
@@ -47,7 +57,8 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     port: 27017,
     user: '999:999',
     dataPaths: ['/data/db', '/data/configdb'],
-    env: [],
+    // Created on first write; naming it up front would change nothing.
+    env: () => [],
     readyCheck: ['mongosh', '--quiet', '--eval', 'db.adminCommand({ ping: 1 }).ok'],
     defaultEnvKey: 'MONGODB_URI',
     url: (database) => `mongodb://mongodb:27017/${database}`,
@@ -59,7 +70,7 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     port: 5432,
     user: '999:999',
     dataPaths: ['/var/lib/postgresql/data', '/var/run/postgresql'],
-    env: [`POSTGRES_PASSWORD=${PASSWORD}`, 'POSTGRES_USER=postgres'],
+    env: (database) => [`POSTGRES_PASSWORD=${PASSWORD}`, 'POSTGRES_USER=postgres', `POSTGRES_DB=${database}`],
     readyCheck: ['pg_isready', '-U', 'postgres'],
     defaultEnvKey: 'DATABASE_URL',
     url: (database) => `postgresql://postgres:${PASSWORD}@postgres:5432/${database}`,
@@ -71,7 +82,7 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     port: 3306,
     user: '999:999',
     dataPaths: ['/var/lib/mysql', '/var/run/mysqld'],
-    env: [`MYSQL_ROOT_PASSWORD=${PASSWORD}`],
+    env: (database) => [`MYSQL_ROOT_PASSWORD=${PASSWORD}`, `MYSQL_DATABASE=${database}`],
     readyCheck: ['mysqladmin', 'ping', '-h', '127.0.0.1', `-p${PASSWORD}`],
     defaultEnvKey: 'MYSQL_URL',
     url: (database) => `mysql://root:${PASSWORD}@mysql:3306/${database}`,
@@ -83,7 +94,8 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     port: 6379,
     user: '999:999',
     dataPaths: ['/data'],
-    env: [],
+    // Redis has no databases to create; it numbers them and they always exist.
+    env: () => [],
     readyCheck: ['redis-cli', 'ping'],
     defaultEnvKey: 'REDIS_URL',
     url: () => 'redis://redis:6379',
@@ -115,6 +127,40 @@ export function databaseName(repoName: string | undefined): string {
 }
 
 /**
+ * SQLAlchemy dialects, which name the driver inside the URL scheme.
+ *
+ * Only the async ones are listed, because they are the ones that *must* be named. A
+ * sync driver is SQLAlchemy's default for its dialect, so `postgresql://` already
+ * reaches psycopg2; an async driver is not, so the same URL loads psycopg2 and raises
+ * "The asyncio extension requires an async driver to be used" against a perfectly
+ * healthy database. Observed on a repository that declared asyncpg and was handed the
+ * plain scheme: three separate start attempts, none of which could have worked.
+ */
+const ASYNC_DIALECTS: Readonly<Record<string, string>> = Object.freeze({
+  asyncpg: 'postgresql+asyncpg',
+  aiomysql: 'mysql+aiomysql',
+  asyncmy: 'mysql+asyncmy',
+  aiosqlite: 'sqlite+aiosqlite',
+});
+
+/**
+ * The connection string for one backing service, in the dialect its driver requires.
+ *
+ * Exported so both the single-service and the project path build it identically; a URL
+ * that differs between them is a defect that only reproduces on one kind of repository.
+ */
+export function connectionUrl(need: BackingService, database: string): string {
+  const spec = BACKING_SPECS[need.kind];
+  const url = spec.url(database);
+  const dialect = need.driver ? ASYNC_DIALECTS[need.driver] : undefined;
+  if (!dialect) return url;
+
+  // Replace only the scheme. Everything after it — credentials, host, database — was
+  // decided by the spec and is already correct.
+  return url.replace(/^[a-z0-9+]+:\/\//i, `${dialect}://`);
+}
+
+/**
  * The environment variables an application needs to reach its backing services.
  *
  * The key discovered from the repository wins: an application that reads `MONGO_URI`
@@ -129,7 +175,7 @@ export function connectionEnv(
   for (const need of backing) {
     const spec = BACKING_SPECS[need.kind];
     if (!spec) continue;
-    const url = spec.url(database);
+    const url = connectionUrl(need, database);
     const keys = new Set(need.urlEnvKeys ?? [need.urlEnvKey ?? spec.defaultEnvKey]);
     for (const key of keys) out.push({ key, value: url, required: false });
   }

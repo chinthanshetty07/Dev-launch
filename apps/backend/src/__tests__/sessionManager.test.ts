@@ -564,3 +564,174 @@ describe('a session that never becomes ready', () => {
     await mgr.shutdown();
   });
 });
+
+/** A Docker stub that records what was asked of it, so provisioning is observable. */
+function fakeDocker(created: string[]) {
+  return {
+    ensureImage: async () => undefined,
+    networkExists: async () => false,
+    createBackingContainer: async (o: { image: string }) => {
+      created.push(o.image);
+      return { id: 'db' } as never;
+    },
+    start: async () => undefined,
+    stop: async () => undefined,
+    remove: async () => undefined,
+    // The readiness poll: "1" is what mongosh and pg_isready print on success.
+    execCapture: async () => '1',
+  };
+}
+
+describe('a single service that needs a database', () => {
+  /** Metadata as the analyzer reports it for a lone Python API depending on asyncpg. */
+  const analyzed = {
+    analyze: async () => ({
+      backing: [
+        {
+          kind: 'postgres' as const,
+          evidence: 'depends on asyncpg',
+          driver: 'asyncpg',
+          urlEnvKeys: ['DATABASE_URL'],
+          neededBy: [],
+        },
+      ],
+    }),
+  };
+  const planned = {
+    planRepository: async () => ({ plan: plan(), detected: 'fastapi', warnings: [] }),
+  };
+
+  it('starts one, and tells the application where it is', async () => {
+    // The gap this closes: provisioning lived in the multi-service path only, so a lone
+    // API detected as needing Postgres started with no server and no connection string.
+    // Nothing reported a problem — the application simply crashed on its own first query,
+    // and the repair loop then invented `postgresql://user:pass@db:5432/dbname` to fill
+    // the silence, which no amount of retrying could have made reachable.
+    const created: string[] = [];
+    let launchedWith: RunPlan['environmentVariables'] = [];
+
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+    const launch = exec.launch.bind(exec);
+    exec.launch = async (opts: { plan: RunPlan; logs?: LogManager }) => {
+      launchedWith = opts.plan.environmentVariables;
+      return launch(opts as never);
+    };
+
+    const mgr = new SessionManager(exec, {
+      analyzer: analyzed as never,
+      planner: planned as never,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await settle();
+
+    expect(created, 'a postgres container was started').toEqual(['postgres:16']);
+    // Async driver, because the repository named one. `postgresql://` reaches psycopg2
+    // and dies with "the asyncio extension requires an async driver" against a database
+    // that is running and correct.
+    expect(launchedWith).toContainEqual({
+      key: 'DATABASE_URL',
+      value: 'postgresql+asyncpg://postgres:devlaunch@postgres:5432/repo',
+      required: false,
+    });
+    expect(session.state).toBe(ExecutionState.READY);
+    await mgr.shutdown();
+  });
+
+  it('overrules a connection string the plan invented', async () => {
+    // Taken from a real run. The AI fallback planned a lone FastAPI service and filled in
+    // `DATABASE_URL=postgresql://user:pass@db:5432/dbname` — a host that does not exist,
+    // credentials that were never real. Left to win, it produced three start attempts and
+    // three different tracebacks: the field missing, then psycopg2 missing, then psycopg2
+    // being the wrong driver. None of them were the problem, and none could be repaired.
+    const created: string[] = [];
+    let launchedWith: RunPlan['environmentVariables'] = [];
+
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+    const launch = exec.launch.bind(exec);
+    exec.launch = async (opts: { plan: RunPlan; logs?: LogManager }) => {
+      launchedWith = opts.plan.environmentVariables;
+      return launch(opts as never);
+    };
+
+    const invented = {
+      planRepository: async () => ({
+        plan: RunPlanSchema.parse({
+          ...plan(),
+          planSource: 'ai-fallback',
+          environmentVariables: [
+            { key: 'DATABASE_URL', value: 'postgresql://user:pass@db:5432/dbname', required: true },
+          ],
+        }),
+        detected: null,
+        warnings: [],
+      }),
+    };
+
+    const mgr = new SessionManager(exec, {
+      analyzer: analyzed as never,
+      planner: invented as never,
+    });
+    await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await settle();
+
+    expect(launchedWith.filter((v) => v.key === 'DATABASE_URL')).toEqual([
+      {
+        key: 'DATABASE_URL',
+        value: 'postgresql+asyncpg://postgres:devlaunch@postgres:5432/repo',
+        required: false,
+      },
+    ]);
+    await mgr.shutdown();
+  });
+
+  it('keeps the same database across a repair, and re-injects its URL', async () => {
+    // Two failures in one. A repair replaces the application container and re-enters the
+    // start path: provisioning again would orphan the first Postgres and hand the retry
+    // an empty one under the same alias. But the repair also replaces the *plan* with one
+    // the model wrote, which carries no connection string — so the injection has to run
+    // again, or the retry is handed a database it cannot find and the loop then diagnoses
+    // the absence it just caused.
+    const created: string[] = [];
+    const launches: string[] = [];
+
+    const exec = fakeExec(failed) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+    const launch = exec.launch.bind(exec);
+    exec.launch = async (opts: { plan: RunPlan; logs?: LogManager }) => {
+      launches.push(
+        opts.plan.environmentVariables.find((v) => v.key === 'DATABASE_URL')?.value ?? 'absent',
+      );
+      return launch(opts as never);
+    };
+
+    const mgr = new SessionManager(exec, {
+      analyzer: analyzed as never,
+      planner: planned as never,
+      aiRepair: {
+        // A model rewriting the plan from scratch, which is what repair actually does.
+        repair: async ({ previousAttempts }: { previousAttempts: RunPlan[] }) => ({
+          plan: RunPlanSchema.parse({
+            ...plan(),
+            startCommand: `node retry-${previousAttempts.length}.js`,
+            planSource: 'ai-fallback',
+          }),
+          attempt: previousAttempts.length + 1,
+          note: 'test',
+        }),
+      } as never,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await until(() => session.state === ExecutionState.FAILED);
+
+    expect(session.repairAttempts?.length, 'the repair loop ran').toBeGreaterThan(0);
+    expect(created, 'one database, however many attempts').toEqual(['postgres:16']);
+    // Every attempt, including the repaired ones, knows where the database is.
+    expect(launches.length).toBeGreaterThan(1);
+    expect(new Set(launches)).toEqual(
+      new Set(['postgresql+asyncpg://postgres:devlaunch@postgres:5432/repo']),
+    );
+    await mgr.shutdown();
+  });
+});

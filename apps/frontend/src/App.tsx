@@ -170,10 +170,13 @@ export default function App() {
         detected={session?.detected}
       />
 
-      {session?.services && session.services.length > 0 && (
+      {/* A single-service session has no service table but can still have a database,
+          and a database running unannounced is exactly the kind of thing a person finds
+          later in `docker ps` and cannot account for. */}
+      {((session?.services?.length ?? 0) > 0 || (session?.backing?.length ?? 0) > 0) && (
         <ServicePanel
-          services={session.services}
-          backing={session.backing}
+          services={session?.services ?? []}
+          backing={session?.backing}
           stats={stats}
           onRestart={restart}
           busy={busy}

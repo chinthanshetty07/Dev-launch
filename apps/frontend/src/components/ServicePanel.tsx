@@ -35,20 +35,26 @@ export function ServicePanel({
   onRestart: (service?: string) => void;
   busy: boolean;
 }) {
-  if (services.length === 0) return null;
+  // Not `services.length === 0`: a single-service session has no service table and can
+  // still have a database DevLaunch started on its behalf, which is worth showing.
+  if (services.length === 0 && (backing?.length ?? 0) === 0) return null;
 
   return (
     <section className="border-b border-edge bg-panel px-4 py-3">
       <div className="mb-2 flex items-center gap-3">
-        <h2 className="text-[11px] uppercase tracking-[0.15em] text-muted">Services</h2>
-        <button
-          type="button"
-          onClick={() => onRestart()}
-          disabled={busy}
-          className="rounded-md border border-edge px-2 py-0.5 text-[11px] hover:border-link hover:text-link disabled:opacity-40"
-        >
-          restart all
-        </button>
+        <h2 className="text-[11px] uppercase tracking-[0.15em] text-muted">
+          {services.length > 0 ? 'Services' : 'Provisioned'}
+        </h2>
+        {services.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onRestart()}
+            disabled={busy}
+            className="rounded-md border border-edge px-2 py-0.5 text-[11px] hover:border-link hover:text-link disabled:opacity-40"
+          >
+            restart all
+          </button>
+        )}
       </div>
 
       <table className="w-full text-[13px]">

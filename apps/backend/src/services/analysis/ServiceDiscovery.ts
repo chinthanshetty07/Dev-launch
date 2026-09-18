@@ -297,6 +297,10 @@ function backingFor(deps: string[], declaredKeys: string[]): Omit<BackingService
     out.push({
       kind: rule.kind,
       evidence: `depends on ${dep}`,
+      // The matched dependency *is* the driver. Carried forward because the connection
+      // string has to name it: a repository depending on asyncpg needs
+      // `postgresql+asyncpg://`, and the plain scheme sends SQLAlchemy to psycopg2.
+      driver: dep,
       urlEnvKey: declared[0],
       urlEnvKeys: declared.length ? declared : [...rule.envKeys],
     });
