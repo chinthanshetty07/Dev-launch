@@ -465,15 +465,110 @@ async function readPythonDeps(
   base: string,
 ): Promise<{ deps: string[]; hasManagePy: boolean } | null> {
   const requirements = await readCapped(join(base, 'requirements.txt'));
+  const pyproject = await readCapped(join(base, 'pyproject.toml'));
   const managePy = await readCapped(join(base, 'manage.py'));
-  if (requirements === null && managePy === null) return null;
+  if (requirements === null && pyproject === null && managePy === null) return null;
 
-  const deps = (requirements ?? '')
-    .split('\n')
-    .map((line) => line.trim().split(/[=<>~!\[; ]/)[0]!.toLowerCase())
-    .filter(Boolean);
+  const deps = [
+    ...requirementNames(requirements ?? ''),
+    ...(pyproject === null ? [] : pyprojectDeps(pyproject)),
+  ];
 
-  return { deps, hasManagePy: managePy !== null };
+  return { deps: [...new Set(deps)], hasManagePy: managePy !== null };
+}
+
+/** `asyncpg>=0.29`, `sqlalchemy[asyncio]>=2`, `pkg ; python_version<'3.9'` → the name. */
+const requirementName = (line: string): string =>
+  line.trim().split(/[=<>~!\[;(, ]/)[0]!.replace(/^["']|["']$/g, '').toLowerCase();
+
+const requirementNames = (raw: string): string[] =>
+  raw.split('\n').map(requirementName).filter((d) => d && !d.startsWith('#') && !d.startsWith('-'));
+
+/**
+ * Dependency names from a pyproject.toml.
+ *
+ * A repository with no requirements.txt used to report no dependencies at all, which is
+ * not a cosmetic gap: dependencies are how a database is detected. A modern packaged
+ * project — `pip install .`, PEP 621 metadata — declared asyncpg, was seen to declare
+ * nothing, got no Postgres and no connection string, and fell back to its own
+ * `localhost` default inside a container where nothing listens. It failed with
+ * `ConnectionRefusedError: [Errno 111]` from its startup hook, having never been told
+ * where its database was.
+ *
+ * Names only, so this is deliberately not a TOML parser: it reads the four tables that
+ * can hold dependencies and ignores everything else, rather than half-implementing a
+ * format and being wrong in ways nobody can see.
+ */
+function pyprojectDeps(raw: string): string[] {
+  const names: string[] = [];
+  let section = '';
+  // Buffer for an array that spans lines, which is how nearly all of them are written.
+  let pending: string | null = null;
+
+  const takeArray = (text: string): void => {
+    for (const m of text.matchAll(/["']([^"']+)["']/g)) names.push(requirementName(m[1]!));
+  };
+
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.replace(/\s+#.*$/, '').trim();
+    if (!line) continue;
+
+    if (pending !== null) {
+      pending += line;
+      // Depth, not "contains a ]": `uvicorn[standard]>=0.30` is an ordinary entry whose
+      // extras bracket would otherwise end the array early and hide every dependency
+      // after it — including, in the repository that prompted this, the database driver.
+      if (bracketDepth(pending) > 0) continue;
+      takeArray(pending);
+      pending = null;
+      continue;
+    }
+
+    const header = /^\[([^\]]+)\]$/.exec(line);
+    if (header) {
+      section = header[1]!.trim();
+      continue;
+    }
+
+    // PEP 621 `[project] dependencies = [...]`, its optional extras, and PEP 735 groups.
+    const isArraySection =
+      (section === 'project' && /^dependencies\s*=/.test(line)) ||
+      section === 'project.optional-dependencies' ||
+      section === 'dependency-groups';
+
+    if (isArraySection && line.includes('=')) {
+      const value = line.slice(line.indexOf('=') + 1).trim();
+      if (!value.startsWith('[')) continue;
+      if (bracketDepth(value) > 0) pending = value;
+      else takeArray(value);
+      continue;
+    }
+
+    // Poetry declares one dependency per line as `name = "^1.2"`.
+    if (/^tool\.poetry(\.group\.[^.]+)?\.dependencies$/.test(section)) {
+      const key = /^([A-Za-z0-9._-]+)\s*=/.exec(line);
+      // `python` is the interpreter constraint, not a package.
+      if (key && key[1]!.toLowerCase() !== 'python') names.push(key[1]!.toLowerCase());
+    }
+  }
+
+  return names.filter(Boolean);
+}
+
+/** Unclosed `[` outside of quoted strings, which is what ends a dependency array. */
+function bracketDepth(text: string): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (const ch of text) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '[') depth++;
+    else if (ch === ']') depth--;
+  }
+  return depth;
 }
 
 function asRecord(value: unknown): Record<string, string> {

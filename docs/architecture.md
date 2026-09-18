@@ -175,6 +175,19 @@ run started anyway with no server and no connection string. What filled the gap 
 repair loop inventing `postgresql://user:pass@db:5432/dbname` and then spending its
 remaining attempts installing drivers to satisfy a URL that could never have connected.
 
+Dependencies are read from `requirements.txt` **and** `pyproject.toml`, because that is
+how a database is detected. A packaged project — `pip install .`, PEP 621 metadata, no
+requirements file — declared `asyncpg` and was seen to declare nothing at all: no
+Postgres, no connection string, and an application falling back to its own `localhost`
+default inside a container where nothing listens. It died in its startup hook with
+`ConnectionRefusedError: [Errno 111]`, having never been told where its database was.
+
+Only the four tables that can hold dependencies are read — PEP 621 `[project]`, its
+optional extras, PEP 735 groups and Poetry's — rather than half-implementing TOML. Array
+scanning tracks bracket depth outside quotes: `uvicorn[standard]>=0.30` is an ordinary
+entry whose extras bracket, taken as the end of the list, hides every dependency after
+it. In the repository that prompted this, that was the database driver.
+
 The connection string names the driver the repository declared. SQLAlchemy encodes the
 driver in the URL scheme, so a project depending on `asyncpg` and handed a plain
 `postgresql://` loads psycopg2 and dies with *the asyncio extension requires an async

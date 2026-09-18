@@ -222,3 +222,30 @@ describe('variables a file documents as optional', () => {
     expect(parseEnvExample(['# The database password.', 'DB_PASSWORD='].join('\n'))[0]?.hasDefault).toBe(false);
   });
 });
+
+describe('what the analyzer reports for a packaged Python project', () => {
+  it('carries the database through to metadata, where provisioning reads it', () => {
+    // The two halves of this were each tested and the join between them was not, which
+    // is where the failure lived: discovery found the dependencies, provisioning read
+    // `metadata.backing`, and a repository with only a pyproject.toml produced an empty
+    // one. The application was started with no database and no connection string, fell
+    // back to its own localhost default, and died in its startup hook with
+    // `ConnectionRefusedError: [Errno 111]`.
+    return (async () => {
+      const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      const { tmpdir } = await import('node:os');
+      const dir = await mkdtemp(join(tmpdir(), 'devlaunch-pyproj-'));
+      await writeFile(
+        join(dir, 'pyproject.toml'),
+        '[project]\nname = "pg-rag"\ndependencies = ["fastapi", "sqlalchemy[asyncio]", "asyncpg"]\n',
+      );
+      await mkdir(join(dir, 'src'), { recursive: true });
+      await writeFile(join(dir, 'src', 'main.py'), 'from fastapi import FastAPI\napp = FastAPI()\n');
+
+      const meta = await analyzer.analyze(dir, '.');
+      expect(meta.backing?.map((b) => b.kind)).toEqual(['postgres']);
+      expect(meta.backing?.[0]?.driver).toBe('asyncpg');
+    })();
+  });
+});

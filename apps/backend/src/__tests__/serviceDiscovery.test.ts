@@ -263,3 +263,118 @@ describe('the analyzer reports services and backing needs', () => {
     expect(meta.backing).toBeUndefined();
   });
 });
+
+describe('a Python project that declares its dependencies in pyproject.toml', () => {
+  it('finds the database it needs, and the driver it declared', async () => {
+    // The gap this closes, taken from a real run. The repository is a package —
+    // `pip install .`, PEP 621 metadata, no requirements.txt — so dependency discovery
+    // read nothing, found no database, provisioned no Postgres and injected no
+    // connection string. The application fell back to its own `localhost` default inside
+    // a container where nothing listens and died in its startup hook with
+    // `ConnectionRefusedError: [Errno 111]`, having never been told where its database
+    // was. Nothing in the failure pointed at the missing half.
+    const root = await repo({
+      'pyproject.toml': `
+[build-system]
+requires = ["hatchling"]
+
+[project]
+name = "pg-rag"
+version = "0.1.0"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlalchemy[asyncio]>=2.0",
+  "asyncpg>=0.29",   # the driver the app is written against
+]
+
+[tool.ruff]
+select = ["E", "F"]
+`,
+      'src/pg_rag/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+    });
+
+    const { backing } = await discoverServices(root);
+    expect(backing.map((b) => b.kind)).toEqual(['postgres']);
+    expect(backing[0]!.driver).toBe('asyncpg');
+  });
+
+  it('is not cut short by an extras bracket', async () => {
+    // `uvicorn[standard]` contains a `]`, so an array reader that ends on the first one
+    // it sees stops there and never reaches what follows. In the repository that
+    // prompted this, what followed was the database driver — so the dependency list
+    // parsed cleanly, looked complete, and silently omitted the one entry that decides
+    // whether a database gets started.
+    const root = await repo({
+      'pyproject.toml': `
+[project]
+name = "svc"
+dependencies = [
+  "uvicorn[standard]>=0.30",
+  "fastapi>=0.115",
+  "redis>=5",
+]
+`,
+      'app.py': 'x = 1\n',
+    });
+
+    // Both entries after the bracket survive: the service is recognised at all (fastapi)
+    // and its backing service is found (redis).
+    const { backing } = await discoverServices(root);
+    expect(backing.map((b) => b.kind)).toEqual(['redis']);
+  });
+
+  it('reads Poetry dependencies too, and not the interpreter', async () => {
+    const root = await repo({
+      'pyproject.toml': `
+[tool.poetry]
+name = "svc"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.115"
+psycopg2-binary = "^2.9"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+`,
+      'app.py': 'x = 1\n',
+    });
+
+    const { backing } = await discoverServices(root);
+    expect(backing.map((b) => b.kind)).toEqual(['postgres']);
+    expect(backing[0]!.driver).toBe('psycopg2-binary');
+  });
+
+  it('does not mistake an unrelated table for a dependency list', async () => {
+    // A name-only reader that wandered outside the dependency tables would pick up tool
+    // settings and report databases nobody asked for — worse than finding none, because
+    // it starts a server the repository never wanted.
+    const root = await repo({
+      'pyproject.toml': `
+[project]
+name = "svc"
+dependencies = ["fastapi"]
+
+[tool.something]
+redis = "not a dependency"
+mysql = "also not"
+`,
+      'app.py': 'x = 1\n',
+    });
+
+    const { backing } = await discoverServices(root);
+    expect(backing).toEqual([]);
+  });
+
+  it('still reads requirements.txt, and merges both when a repository has each', async () => {
+    const root = await repo({
+      'requirements.txt': 'fastapi\nredis\n',
+      'pyproject.toml': '[project]\nname = "svc"\ndependencies = ["asyncpg"]\n',
+      'app.py': 'x = 1\n',
+    });
+
+    const { backing } = await discoverServices(root);
+    expect(backing.map((b) => b.kind).sort()).toEqual(['postgres', 'redis']);
+  });
+});
