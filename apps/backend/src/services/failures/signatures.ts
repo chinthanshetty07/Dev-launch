@@ -40,6 +40,24 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     describe: () => 'The process was killed for exceeding the container memory limit.',
   },
   {
+    id: 'docker-socket-required',
+    code: FailureCode.DOCKER_SOCKET_REQUIRED,
+    patterns: [
+      /No Docker socket found/i,
+      /Cannot connect to the Docker daemon/i,
+      /(connect )?ENOENT.*docker\.sock/i,
+      /docker\.sock.*(no such file|not found|permission denied)/i,
+      /Is the docker daemon running/i,
+    ],
+    remedy:
+      'DevLaunch never mounts the Docker socket into a container — its absence is what ' +
+      'stops a repository escaping the sandbox — so a project that drives Docker itself ' +
+      'cannot run inside one. Run this project directly on your machine.',
+    describe: () =>
+      'The project needs to talk to the Docker daemon, which is deliberately not ' +
+      'reachable from inside the sandbox.',
+  },
+  {
     id: 'workspace-protocol-unsupported',
     code: FailureCode.DEPENDENCY_INSTALL_FAILED,
     patterns: [

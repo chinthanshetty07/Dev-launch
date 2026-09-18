@@ -39,6 +39,16 @@ export const FailureCode = {
    * the log rather than the plan.
    */
   APPLICATION_EXITED: 'APPLICATION_EXITED',
+  /**
+   * Added: the project drives Docker itself, and the sandbox does not hand it the
+   * daemon.
+   *
+   * Distinct because no configuration fixes it. Every other failure here is a thing the
+   * user could supply, change or retry; this one says the project cannot run inside a
+   * container that withholds the socket — and withholding it is the point, since
+   * mounting it would give any repository root on the host.
+   */
+  DOCKER_SOCKET_REQUIRED: 'DOCKER_SOCKET_REQUIRED',
   CONTAINER_CREATE_FAILED: 'CONTAINER_CREATE_FAILED',
   UNKNOWN_RUNTIME_ERROR: 'UNKNOWN_RUNTIME_ERROR',
 } as const;

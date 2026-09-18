@@ -29,9 +29,10 @@ codes are consulted **only while the wrapper still owns the process** — that i
 
 ## Taxonomy
 
-21 codes. The original plan defined 14; five were added from things that actually
-happened during the build, one (`CONTAINER_CREATE_FAILED`) from a setup failure mode, and
-one (`APPLICATION_EXITED`) once sessions started re-checking liveness after readiness.
+22 codes. The original plan defined 14; five were added from things that actually
+happened during the build, one (`CONTAINER_CREATE_FAILED`) from a setup failure mode, one
+(`APPLICATION_EXITED`) once sessions started re-checking liveness after readiness, and one
+(`DOCKER_SOCKET_REQUIRED`) the first time a repository that drives Docker was run.
 
 | Code | Meaning |
 |---|---|
@@ -54,6 +55,7 @@ one (`APPLICATION_EXITED`) once sessions started re-checking liveness after read
 | **`REPOSITORY_TOO_LARGE`** | Exceeded intake caps |
 | **`OUT_OF_MEMORY`** | Killed for exceeding the memory limit |
 | **`APPLICATION_EXITED`** | Died *after* it had become ready |
+| **`DOCKER_SOCKET_REQUIRED`** | Drives Docker itself; the sandbox withholds the daemon |
 | `CONTAINER_CREATE_FAILED` | Working directory missing inside the container |
 | `UNKNOWN_RUNTIME_ERROR` | Not confidently classifiable |
 
@@ -79,6 +81,21 @@ success. `START_COMMAND_FAILED` would be actively misleading here: the command w
 it ran, and it served traffic. Nothing about the plan needs changing, so the remedy points
 at the end of the log rather than at the planner — and unlike every other code in this
 table, it is never repairable, because there is nothing in the plan to repair.
+
+**`DOCKER_SOCKET_REQUIRED`** is the only code here that no configuration can fix. Every
+other failure names something the user could supply, change or retry. This one says the
+project cannot run inside a container that withholds the Docker socket — and withholding
+it is the point, since mounting it would hand any repository root on the host. The honest
+answer is "run this on your machine", and a verdict that says so beats one that reports a
+port never opening.
+
+### Symptom versus cause
+
+`PORT_NOT_LISTENING` describes what DevLaunch observed. When the application is still
+running — `tsx watch` and every other watcher survive a crash in the code they watch — the
+log usually names why, and a cause beats a symptom, so that branch is classified against
+the log before reporting. A loopback-only bind is not: it is read from the container's own
+socket table, and a log line should not be able to overrule a measurement.
 
 ## Liveness after readiness
 

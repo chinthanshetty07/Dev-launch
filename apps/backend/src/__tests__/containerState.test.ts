@@ -144,10 +144,12 @@ describe('a running process that never bound its port', () => {
     // `tsx watch` and every other watcher survive a crash in the code they watch, so the
     // container stays up and nothing binds. "Nothing is listening" was the entire
     // verdict, while the reason sat in the log two lines above it.
+    // Deliberately an error no signature recognises, so this stays a test about
+    // evidence rather than about classification.
     const logs = new LogManager();
     logs.buffer.push('stdout', '> tsx watch src/server.ts');
-    logs.buffer.push('stderr', 'Error: No Docker socket found. Tried:');
-    logs.buffer.push('stderr', '    at resolveDockerSocket (/workspace/src/config.ts:23:11)');
+    logs.buffer.push('stderr', 'Error: config.yml is malformed at line 4');
+    logs.buffer.push('stderr', '    at loadConfig (/workspace/src/config.ts:23:11)');
     // A crashing Node process signs off with its own version, which is true and useless.
     logs.buffer.push('stderr', 'Node.js v20.20.2');
 
@@ -157,7 +159,35 @@ describe('a running process that never bound its port', () => {
     const out = await explain(exec, [container, plan, new Set(), readiness, logs]);
 
     expect(out.failure.code).toBe(FailureCode.PORT_NOT_LISTENING);
-    expect(out.failure.evidence).toBe('Error: No Docker socket found. Tried:');
+    expect(out.failure.evidence).toBe('Error: config.yml is malformed at line 4');
+  });
+
+  it('names the cause when the log gives one, instead of the symptom', async () => {
+    // "Nothing is listening" is what DevLaunch observed; the log says why. A project
+    // that drives Docker cannot run in a sandbox that withholds the socket, and no
+    // amount of retrying or configuring changes that — so saying so is the whole value.
+    const logs = new LogManager();
+    logs.buffer.push('stderr', 'Error: No Docker socket found. Tried:');
+    logs.buffer.push('stderr', '  /var/run/docker.sock');
+
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: true, ExitCode: 0 } })),
+    );
+    const out = await explain(exec, [container, plan, new Set(), readiness, logs]);
+
+    expect(out.failure.code).toBe(FailureCode.DOCKER_SOCKET_REQUIRED);
+    expect(out.failure.message).toMatch(/docker daemon/i);
+  });
+
+  it('keeps the port verdict when the log explains nothing', async () => {
+    const logs = new LogManager();
+    logs.buffer.push('stdout', 'compiling...');
+
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: true, ExitCode: 0 } })),
+    );
+    const out = await explain(exec, [container, plan, new Set(), readiness, logs]);
+    expect(out.failure.code).toBe(FailureCode.PORT_NOT_LISTENING);
   });
 
   it('offers no evidence rather than a meaningless line', async () => {

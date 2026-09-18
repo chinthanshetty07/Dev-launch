@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-09-18 — A project that drives Docker gets told so
+
+With the workspace install fixed, DevLaunch's own backend got as far as running its own
+code and died on its own precondition:
+
+```
+Error: No Docker socket found. Tried: /var/run/docker.sock …
+```
+
+DevLaunch reported `PORT_NOT_LISTENING`. True, and the least useful true thing available:
+it describes what was observed while the log two lines up names the cause.
+
+### The verdict now says what is wrong
+
+`DOCKER_SOCKET_REQUIRED` is the only code in the taxonomy that no configuration can fix.
+Every other failure names something a person could supply, change or retry. This one says
+the project cannot run inside a container that withholds the Docker socket — and
+withholding it is the point, since mounting it hands any repository root on the host. The
+honest remedy is "run this on your machine".
+
+```
+code    : DOCKER_SOCKET_REQUIRED
+message : backend: The project needs to talk to the Docker daemon, which is
+          deliberately not reachable from inside the sandbox.
+evidence: Error: No Docker socket found. Tried:
+remedy  : DevLaunch never mounts the Docker socket into a container — its absence is
+          what stops a repository escaping the sandbox …
+```
+
+### Symptom versus cause, generally
+
+The port branch now classifies against the log before reporting, so any diagnosable crash
+in a *still running* container is named rather than described. That case exists because
+watchers survive a crash in the code they watch: the container stays up, nothing binds,
+and "nothing is listening" was the whole verdict.
+
+A loopback-only bind is deliberately excluded. That one is read from the container's own
+socket table, and a log line should not be able to overrule a measurement.
+
+- 4 tests. **Proven able to fail:** dropping the signature, or reporting the symptom
+  without consulting the log, each turn the new test red.
+- 485 tests across three packages (482 passing, 3 skipped), zero residue.
+
+### Not changed, deliberately
+
+DevLaunch still cannot run DevLaunch, and should not. Making it possible means mounting
+the host's Docker socket into a container, which would give every repository DevLaunch
+runs — including one whose plan came from a model reading an untrusted README — root on
+the machine. Docker-in-Docker is a real alternative, and a larger decision than a bug fix.
+
 ## 2026-09-18 — Workspaces install once, at the root
 
 Running DevLaunch through itself failed at install, for both services:

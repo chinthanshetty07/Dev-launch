@@ -627,19 +627,30 @@ export class ExecutionManager {
 
     if (diagnosis.kind === 'not-listening') {
       const seen = diagnosis.observed.map((o) => `${o.address}:${o.port}`).join(', ');
+      const portFailure: FailureDetail = {
+        code: FailureCode.PORT_NOT_LISTENING,
+        message:
+          `Nothing is listening on port ${plan.expectedPort}.` +
+          (seen ? ` Sockets observed: ${seen}.` : ' No listening sockets at all.'),
+        phase: 'start',
+        evidence: lastError,
+        remedy: lastError
+          ? 'The application is running but never bound the port. Its last error is above.'
+          : undefined,
+      };
+
+      // "Nothing is listening" describes the symptom; the log often names the cause, and
+      // a cause beats a symptom. Only this branch defers to the log — a loopback-only
+      // bind is read from the container's own socket table and is not a guess a log line
+      // should be allowed to overrule.
       return {
         diagnosis,
-        failure: {
-          code: FailureCode.PORT_NOT_LISTENING,
-          message:
-            `Nothing is listening on port ${plan.expectedPort}.` +
-            (seen ? ` Sockets observed: ${seen}.` : ' No listening sockets at all.'),
+        failure: this.classifier.classify({
+          logs: logs?.buffer.all() ?? [],
+          exitCode: 0,
           phase: 'start',
-          evidence: lastError,
-          remedy: lastError
-            ? 'The application is running but never bound the port. Its last error is above.'
-            : undefined,
-        },
+          fallback: portFailure,
+        }),
       };
     }
 
