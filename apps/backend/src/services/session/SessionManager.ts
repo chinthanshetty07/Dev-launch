@@ -605,7 +605,13 @@ export class SessionManager extends EventEmitter {
       );
     }
 
-    session.failure = original ?? outcome.failure;
+    // Say which attempt this describes. Without it the dashboard pairs the repaired
+    // plan with the original diagnosis and the two disagree on their face — a plan
+    // starting `--port 8080` beside "Nothing is listening on port 8000" — which reads
+    // as the tool contradicting itself rather than as a deliberate choice.
+    const attempts = session.repairAttempts?.length ?? 0;
+    const kept = original ?? outcome.failure;
+    session.failure = kept && attempts > 0 ? { ...kept, repairAttemptsAfter: attempts } : kept;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
   }

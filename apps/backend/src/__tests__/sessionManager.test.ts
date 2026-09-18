@@ -582,6 +582,45 @@ function fakeDocker(created: string[]) {
   };
 }
 
+describe('a failure that outlived its plan', () => {
+  it('says how many times the plan was rewritten after the diagnosis was taken', async () => {
+    // The first diagnosis is kept on purpose: it describes the repository, where every
+    // later one describes a plan the model invented. The cost is that the plan on screen
+    // is no longer the plan the failure came from — a real dashboard showed
+    // `uvicorn --port 8080` beside "Nothing is listening on port 8000" with nothing to
+    // connect them. Two numbers that cannot both be right is how a tool teaches someone
+    // to stop reading it and just retry.
+    const mgr = new SessionManager(fakeExec(failed), {
+      aiRepair: {
+        repair: async ({ previousAttempts }: { previousAttempts: RunPlan[] }) => ({
+          plan: RunPlanSchema.parse({ ...plan(), startCommand: `node retry-${previousAttempts.length}.js` }),
+          attempt: previousAttempts.length + 1,
+          note: 'test',
+        }),
+      } as never,
+      analyzer: { analyze: async () => ({}) } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'x', warnings: [] }) } as never,
+    });
+
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => session.state === ExecutionState.FAILED);
+
+    expect(session.repairAttempts?.length).toBe(2);
+    expect(session.failure?.repairAttemptsAfter).toBe(2);
+    // And the diagnosis itself is still the original one, not a repaired plan's.
+    expect(session.failure?.code).toBe('PORT_NOT_LISTENING');
+    await mgr.shutdown();
+  });
+
+  it('says nothing about repairs when there were none', async () => {
+    const mgr = new SessionManager(fakeExec(failed));
+    const session = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await settle();
+    expect(session.failure?.repairAttemptsAfter).toBeUndefined();
+    await mgr.shutdown();
+  });
+});
+
 describe('a single service that needs a database', () => {
   /** Metadata as the analyzer reports it for a lone Python API depending on asyncpg. */
   const analyzed = {

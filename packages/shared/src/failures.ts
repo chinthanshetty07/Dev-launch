@@ -69,4 +69,15 @@ export interface FailureDetail {
    * is a guess — saying so is better than implying a diagnosis we do not have.
    */
   confidence?: 'high' | 'medium' | 'low';
+  /**
+   * Repair attempts made *after* this diagnosis was taken.
+   *
+   * The first diagnosis is kept because it describes the repository as it was written,
+   * where every later one describes a plan the model invented. The cost is that the plan
+   * on screen is then not the plan this failure came from: a dashboard showed
+   * `uvicorn --port 8080` beside "Nothing is listening on port 8000" with nothing to
+   * connect them, which reads as the tool contradicting itself and is why a person
+   * retries rather than reads.
+   */
+  repairAttemptsAfter?: number;
 }

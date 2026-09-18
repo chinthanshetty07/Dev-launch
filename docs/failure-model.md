@@ -186,3 +186,23 @@ A server that announced it was starting and never announced it had started is ca
 specifically, because its remedy is different from every other way of not listening: the
 port was never opened because startup never *finished*, and the thing to look at is
 whatever the application connects to at boot.
+
+## The reported diagnosis is the first one, and says so
+
+When repair runs and fails, the failure reported is the one taken *before* any repair.
+The first diagnosis describes the repository as the user wrote it; every later one
+describes a plan the model invented, and letting those overwrite it makes the reported
+cause depend on model output — an application that plainly bound loopback could be
+reported as failing to start.
+
+The cost is that the plan shown on the dashboard is then not the plan the failure came
+from. A real session displayed a start command reading `uvicorn --port 8080` beside
+*Nothing is listening on port 8000*. Both were correct: 8000 was the planned port that
+failed, 8080 was what repair invented afterwards. Nothing on screen connected them, and
+two numbers that cannot both be right is how a tool teaches someone to stop reading it
+and retry blindly instead — which is exactly what happened, six times.
+
+So a retained diagnosis now carries `repairAttemptsAfter`, and the dashboard says plainly
+that the diagnosis describes the first attempt and the plan above has since been
+rewritten. The repair attempts themselves are on the session, rather than being visible
+only in the log.

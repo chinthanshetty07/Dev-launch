@@ -38,6 +38,20 @@ export function FailurePanel({ failure }: { failure?: FailureDetail }) {
           {failure.remedy}
         </p>
       )}
+
+      {/* Without this the plan on screen and the failure disagree on their face — a
+          start command reading `--port 8080` beside "Nothing is listening on port 8000"
+          — because the plan is the last one repair produced and the diagnosis is the
+          first one taken. Both are deliberate; the pairing is what needs explaining. */}
+      {(failure.repairAttemptsAfter ?? 0) > 0 && (
+        <p className="mt-2 border-t border-edge pt-2 text-[12px] text-muted">
+          This describes the first attempt. The plan shown above was rewritten{' '}
+          {failure.repairAttemptsAfter} time{failure.repairAttemptsAfter === 1 ? '' : 's'} by
+          automated repair, and none of those worked either. The first diagnosis is kept
+          because it describes your repository; the later ones describe plans the model
+          invented.
+        </p>
+      )}
     </section>
   );
 }

@@ -31,6 +31,17 @@ function present(session: Session) {
     pending: session.pending,
     url: session.url,
     failure: session.failure,
+    /**
+     * What automated repair tried. Withheld until now, which left the plan on screen
+     * unexplainable: it is the last plan repair produced, not the one that was planned
+     * and not the one the reported failure came from.
+     */
+    repairAttempts: session.repairAttempts?.map((p) => ({
+      installCommand: p.installCommand,
+      startCommand: p.startCommand,
+      expectedPort: p.expectedPort,
+    })),
+    aiNote: session.aiNote,
     endedReason: session.endedReason,
     createdAt: session.createdAt,
     readyAt: session.readyAt,
