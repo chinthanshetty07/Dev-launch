@@ -34,6 +34,7 @@ They are deliberately not in the automated suite.
 | `node-needs-database` | `DATABASE_REQUIRED` from a refused connection on :5432 |
 | `node-module-missing` | `START_COMMAND_FAILED`, naming the missing module |
 | `node-dies-after-ready` | `APPLICATION_EXITED` — serves a real request, then exits 3. The one failure readiness alone cannot see |
+| `python-slow-install` | An install that outlasts the readiness budget, then a normal start. Readiness must wait for the application, not the container |
 
 ## Multi-service
 

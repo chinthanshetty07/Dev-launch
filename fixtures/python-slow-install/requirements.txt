@@ -1,0 +1,1 @@
+# Nothing to fetch: the delay is simulated, so the fixture stays offline and deterministic.

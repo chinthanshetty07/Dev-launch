@@ -516,6 +516,34 @@ export class ExecutionManager {
       };
     }
 
+    // Readiness measures the application, so its clock starts when the application
+    // does — not when the container does.
+    //
+    // Install and build run inside the container before the start command is exec'd. A
+    // heavy dependency tree can take many minutes, and counting that against a
+    // sixty-second readiness budget reports "nothing is listening" about a project that
+    // has not been asked to listen yet — then repairs a plan that was never wrong,
+    // re-running the same install from scratch each time.
+    const reached = await this.waitForStart(container, sentinels, logs);
+    if (reached === 'timeout') {
+      return {
+        state: ExecutionState.FAILED,
+        hostPort,
+        readiness: { ready: false, attempts: 0, elapsedMs: 0 },
+        failure: {
+          code: FailureCode.PROCESS_TIMEOUT,
+          message:
+            'Installing dependencies did not finish within the time-to-ready budget, so ' +
+            'the application was never started.',
+          phase: sentinels.has(Sentinel.BUILD_BEGIN) ? 'build' : 'install',
+          remedy:
+            'Raise DEVLAUNCH_TIMEOUT_TIME_TO_READY_MS for a project with a large ' +
+            'dependency tree. A pip resolver that reports backtracking is the usual cause.',
+          confidence: 'high',
+        },
+      };
+    }
+
     const readiness = await this.readiness.waitForReady({
       port: hostPort,
       healthCheck: plan.healthCheck,
@@ -679,6 +707,52 @@ export class ExecutionManager {
    * Returning null for "unknown" forces the caller to decide what to do about not
    * knowing, rather than being handed a fabricated certainty.
    */
+  /**
+   * Wait until the application is actually started, or it becomes clear it never will be.
+   *
+   * The wrapper prints the START sentinel immediately before `exec`ing the start
+   * command, which is the only signal that install and build are behind us. Bounded by
+   * the time-to-ready budget, which is what stops the container anyway.
+   */
+  private async waitForStart(
+    container: Dockerode.Container,
+    sentinels: Set<string>,
+    logs: LogManager | undefined,
+    budgetMs = config.timeouts.timeToReadyMs,
+  ): Promise<'started' | 'exited' | 'timeout'> {
+    if (sentinels.has(Sentinel.START_BEGIN)) return 'started';
+    if (!logs) return 'started';
+
+    const deadline = Date.now() + budgetMs;
+
+    return new Promise<'started' | 'exited' | 'timeout'>((resolve) => {
+      let settled = false;
+      const finish = (outcome: 'started' | 'exited' | 'timeout'): void => {
+        if (settled) return;
+        settled = true;
+        logs.off('sentinel', onSentinel);
+        clearInterval(poll);
+        resolve(outcome);
+      };
+
+      function onSentinel(marker: string): void {
+        if (marker.trim() === Sentinel.START_BEGIN) finish('started');
+      }
+      logs.on('sentinel', onSentinel);
+
+      // A container that exits during install never prints the sentinel, and the caller
+      // attributes that failure properly from its exit code.
+      const poll = setInterval(() => {
+        if (sentinels.has(Sentinel.START_BEGIN)) return finish('started');
+        if (Date.now() > deadline) return finish('timeout');
+        void this.containerState(container).then((state) => {
+          if (state && !state.running) finish('exited');
+        });
+      }, 1000);
+      poll.unref?.();
+    });
+  }
+
   /**
    * One inspect, reported as a liveness answer rather than as a diagnosis.
    *

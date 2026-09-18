@@ -156,3 +156,35 @@ describe('Phase 3 — port mapping and readiness', () => {
     }
   }, 120_000);
 });
+
+describe('readiness waits for the application, not the container', () => {
+  it('does not fail a project whose install outlasts the readiness budget', async () => {
+    // Reported from a real run: a Python project with a large dependency tree was
+    // declared PORT_NOT_LISTENING while pip was still resolving, then "repaired" twice —
+    // re-running the same multi-minute install from scratch each time. The readiness
+    // clock was counting from the container starting rather than the application.
+    //
+    // The install here takes 75s against a 20s readiness budget: without the fix the
+    // budget expires long before anything listens.
+    const handle = await exec.launch({
+      sessionId: 'rdy-slow-install',
+      plan: plan({
+        runtime: { language: 'python', version: '3.12' },
+        packageManager: 'pip',
+        installCommand: 'python3 slow_install.py',
+        startCommand: 'python3 app.py',
+        expectedPort: 8000,
+      }),
+      sourceDir: `${FIXTURES}/python-slow-install`,
+      image: 'devlaunch/python:3.12',
+    });
+
+    try {
+      const outcome = await handle.waitForReady(20_000);
+      expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+      expect((await fetch(outcome.url!)).status).toBe(200);
+    } finally {
+      await handle.cleanup();
+    }
+  }, 300_000);
+});

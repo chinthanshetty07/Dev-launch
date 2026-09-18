@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-09-18 — Readiness was timing the wrong thing
+
+Reported from a real run against a large FastAPI project:
+
+```
+PORT_NOT_LISTENING during start
+Nothing is listening on port 8000. Sockets observed: 127.0.0.11:41749.
+```
+
+The only socket observed is Docker's own DNS. Nothing was listening because nothing had
+been started: `pip install -e .` was still resolving, and pip said so itself —
+`This is taking longer than usual… See backtracking for guidance`.
+
+Install and build run *inside* the container, before the wrapper `exec`s the start
+command. The readiness clock was started when the container started, so a sixty-second
+budget expired while a multi-minute install was still going. DevLaunch then reported a
+failure the application had not committed — and, because `READINESS_TIMEOUT` is
+repairable, "fixed" a plan that was never wrong and ran the whole install again. The log
+shows that install three times.
+
+Readiness now waits for the `START` sentinel before its clock begins, bounded by the
+time-to-ready budget. An install that never finishes within that budget is reported for
+what it is — `PROCESS_TIMEOUT` against the install or build phase, naming
+`DEVLAUNCH_TIMEOUT_TIME_TO_READY_MS` in the remedy — rather than as a port that never
+opened.
+
+- New fixture `python-slow-install`: an install that takes 75 seconds against a 20-second
+  readiness budget, then a normal start. **Proven able to fail:** starting the clock at
+  container start reproduces the reported failure exactly, Docker DNS socket included.
+- 487 tests across three packages (484 passing, 3 skipped), zero residue.
+
+### What this does not fix
+
+A dependency tree that genuinely takes longer than the time-to-ready budget still needs a
+larger budget. Ten minutes is the default; a resolver that backtracks through dozens of
+versions of a dozen packages can exceed it, and the honest answer is to raise the budget
+or constrain the requirements — which is what pip's own advice says.
+
 ## 2026-09-18 — "No space left on device", on a disk that was 8% full
 
 Reported from a real run:

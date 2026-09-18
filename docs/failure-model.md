@@ -89,6 +89,18 @@ it is the point, since mounting it would hand any repository root on the host. T
 answer is "run this on your machine", and a verdict that says so beats one that reports a
 port never opening.
 
+### Readiness starts when the application does
+
+Install and build run inside the container before the start command is `exec`'d, so a
+readiness clock started at container start is measuring the wrong thing. A project with a
+large dependency tree — pip resolving for minutes — was reported as `PORT_NOT_LISTENING`
+before it had been asked to listen, and then *repaired*, re-running the same install from
+scratch each time.
+
+Readiness now waits for the `START` sentinel, bounded by the time-to-ready budget. An
+install that never finishes within it is reported as `PROCESS_TIMEOUT` against the
+install or build phase, with the budget named in the remedy.
+
 ### Symptom versus cause
 
 `PORT_NOT_LISTENING` describes what DevLaunch observed. When the application is still
