@@ -1,5 +1,59 @@
 # Changelog
 
+## 2026-09-18 — "No space left on device", on a disk that was 8% full
+
+Reported from a real run:
+
+```
+ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device
+```
+
+The Colima VM was using 1.4 GB of 19 GB, and the workspace volume had 88 GB free. The
+disk the message names was nearly empty.
+
+`/tmp` is a 64 MB tmpfs. That is deliberate — it is memory, mounted `noexec,nosuid` so it
+cannot be used to stage an executable payload — and pip unpacks and builds there by
+default. One ordinary wheel exhausts it. Every Python project with a real dependency
+failed this way, and the error pointed at the wrong thing.
+
+`TMPDIR` now points at `/workspace/.tmp`: disk-backed, already writable and executable by
+the running user, and tens of gigabytes rather than 64 MB. `/tmp` keeps its `noexec`
+mount for everything else, so nothing is weakened — the workspace was always writable and
+executable, because that is where `node_modules/.bin` lives.
+
+### A regression this caused, caught before it shipped
+
+Setting `TMPDIR` in the image broke pnpm outright:
+
+```
+Error: ENOENT: no such file or directory, lstat '/workspace/.tmp'
+```
+
+pnpm resolves `TMPDIR` the moment it starts, so `pnpm -v` alone failed. The directory is
+now created in the image as well as by the wrapper — an anonymous volume is initialised
+from the image path it shadows, so it survives into the mount.
+
+### The remedy was pointing at the wrong place too
+
+The `disk-full` signature said to reclaim space in the VM. Almost always wrong: the
+tmpfs is what fills, while the disk beside it is empty. It now names the likely cause
+first and the genuinely-full-disk case second.
+
+### Verified
+
+A `pandas` install under the full runtime profile — read-only rootfs, 64 MB tmpfs,
+`--cap-drop ALL`, `no-new-privileges`, 1 GB memory, 256 pids — completes, and the package
+imports. Reverting `TMPDIR` to `/tmp` reproduces the reported error exactly, which is what
+the new test asserts against.
+
+- 486 tests across three packages (483 passing, 3 skipped).
+- **One unexplained failure**, in the first of four full runs: the cross-service
+  name-resolution test reported `FAILED` where `READY` was expected. It passed alone
+  immediately afterwards and in three consecutive full runs since. Manual sessions were
+  being started against the same daemon around that time, which is the alias-collision
+  case documented in `limitations.md`, but that is a plausible explanation rather than a
+  demonstrated one.
+
 ## 2026-09-18 — A project that drives Docker gets told so
 
 With the workspace install fixed, DevLaunch's own backend got as far as running its own

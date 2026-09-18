@@ -77,7 +77,14 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     id: 'disk-full',
     code: FailureCode.DEPENDENCY_INSTALL_FAILED,
     patterns: [/ENOSPC/, /No space left on device/i],
-    remedy: 'Reclaim space in the Colima VM with `docker builder prune`.',
+    // The remedy used to name the VM's disk, which is usually the wrong place to look:
+    // /tmp is a 64 MB tmpfs and it is what an install fills, while the volume beside it
+    // has tens of gigabytes free. Both are worth saying, most likely cause first.
+    remedy:
+      'Almost always the container\'s 64 MB /tmp rather than a full disk — build scratch ' +
+      'belongs on the workspace volume, which TMPDIR points at. Raise it with ' +
+      'DEVLAUNCH_CONTAINER_TMP_MB if a tool ignores TMPDIR, or reclaim space in the ' +
+      'Colima VM with `docker builder prune` if the VM really is full.',
     describe: () => 'The container ran out of disk space.',
   },
 

@@ -248,3 +248,35 @@ describe('Phase 2 — security hardening (§27)', () => {
     expect((await docker.listManaged()).length).toBe(before);
   });
 });
+
+describe('build scratch has somewhere to go', () => {
+  it('installs a package too large for the tmpfs', async () => {
+    // Reported from a real run: `[Errno 28] No space left on device` while the VM was
+    // 8% full. /tmp is a 64 MB tmpfs — it is memory, and deliberately small — and pip
+    // unpacks there by default, so one ordinary wheel exhausts it. TMPDIR now points at
+    // the volume, which is disk-backed and has tens of gigabytes.
+    //
+    // A real install, because the bug was invisible to anything smaller: a tiny package
+    // fits in 64 MB and proves nothing.
+    const out = await exec.runToCompletion({
+      sessionId: 'tmpdir-headroom',
+      plan: plan({
+        runtime: { language: 'python', version: '3.12' },
+        packageManager: 'pip',
+        installCommand: 'pip install --quiet --target /workspace/lib pandas',
+        // The allowlist forbids quotes in a command, so the proof is that the install
+        // completes at all: it is the step that used to die. That the package then
+        // imports was verified by hand under the same profile.
+        startCommand: 'python3 --version',
+        expectedPort: null,
+      }),
+      sourceDir: `${FIXTURES}/python-flask-basic`,
+      image: 'devlaunch/python:3.12',
+      timeoutMs: 600_000,
+    });
+
+    const text = out.logs.map((l) => l.text).join('\n');
+    expect(text, 'the tmpfs must not be what an install fills').not.toMatch(/No space left on device/);
+    expect(out.state).toBe(ExecutionState.COMPLETED);
+  }, 900_000);
+});

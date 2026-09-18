@@ -33,6 +33,10 @@ export function buildWrapperScript(): string {
     `  exit ${WrapperExit.WORKDIR_MISSING}`,
     'fi',
     '',
+    // The image points TMPDIR at the volume, but the volume shadows the image path it
+    // mounts over, so the directory has to be made here rather than assumed to exist.
+    'if [ -n "${TMPDIR:-}" ]; then mkdir -p "$TMPDIR" 2>/dev/null || true; fi',
+    '',
     'if [ -n "$DL_INSTALL_CMD" ]; then',
     `  printf '%s\\n' "${Sentinel.INSTALL_BEGIN}"`,
     // A workspace installs once at its root, not once per package: its packages depend

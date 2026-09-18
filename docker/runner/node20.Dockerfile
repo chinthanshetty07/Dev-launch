@@ -29,13 +29,30 @@ RUN npm install -g pnpm@9.12.3 \
 
 # /workspace   writable volume mount point; the repository is copied here at start
 # /devlaunch   read-only staging area for the wrapper and the pristine repo copy
-RUN mkdir -p /workspace /devlaunch/src \
+RUN mkdir -p /workspace/.tmp /devlaunch/src \
  && chown -R node:node /workspace /devlaunch
 
 ENV HOME=/workspace \
     npm_config_cache=/workspace/.npm \
     npm_config_update_notifier=false \
     npm_config_fund=false
+
+# Build scratch on the volume, not in RAM.
+#
+# /tmp is a 64 MB tmpfs, deliberately: it is memory, and noexec/nosuid so it cannot be
+# used to stage an executable payload. pip unpacks and builds there by default, so a
+# single ordinary wheel — pandas, numpy — exhausts it and fails with
+# `[Errno 28] No space left on device` while /workspace has tens of gigabytes free. The
+# message names a disk that is nearly empty, which is why this is worth stating.
+#
+# /workspace is disk-backed and already writable and executable by this user, so nothing
+# is weakened by building there; /tmp keeps its noexec mount for everything else.
+ENV TMPDIR=/workspace/.tmp
+# Created here as well as by the wrapper: pnpm resolves TMPDIR the moment it starts
+# and exits with ENOENT if the directory is not already there, so `pnpm -v` alone
+# fails. An anonymous volume is initialised from this path, so the directory
+# survives into the mount.
+
 
 USER node
 WORKDIR /workspace

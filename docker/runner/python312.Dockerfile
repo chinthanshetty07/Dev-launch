@@ -16,7 +16,7 @@ RUN apt-get update \
 # 1000:1000 matches the Node runner, so ContainerSecurity needs no per-image special case.
 RUN groupadd --gid 1000 app \
  && useradd --uid 1000 --gid 1000 --create-home app \
- && mkdir -p /workspace /devlaunch \
+ && mkdir -p /workspace/.tmp /devlaunch \
  && chown -R app:app /workspace /devlaunch
 
 # pip installs console scripts (flask, uvicorn, streamlit, gunicorn) into the user
@@ -29,6 +29,23 @@ ENV PATH=/workspace/.local/bin:$PATH \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
+
+# Build scratch on the volume, not in RAM.
+#
+# /tmp is a 64 MB tmpfs, deliberately: it is memory, and noexec/nosuid so it cannot be
+# used to stage an executable payload. pip unpacks and builds there by default, so a
+# single ordinary wheel — pandas, numpy — exhausts it and fails with
+# `[Errno 28] No space left on device` while /workspace has tens of gigabytes free. The
+# message names a disk that is nearly empty, which is why this is worth stating.
+#
+# /workspace is disk-backed and already writable and executable by this user, so nothing
+# is weakened by building there; /tmp keeps its noexec mount for everything else.
+ENV TMPDIR=/workspace/.tmp
+# Created here as well as by the wrapper: pnpm resolves TMPDIR the moment it starts
+# and exits with ENOENT if the directory is not already there, so `pnpm -v` alone
+# fails. An anonymous volume is initialised from this path, so the directory
+# survives into the mount.
+
 
 USER app
 WORKDIR /workspace
