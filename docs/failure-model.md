@@ -232,3 +232,11 @@ attempt and spends no model call — it quotes the manifest or log line that jus
 it, and proposes nothing without one, which is what makes it safe to run first. A model
 is asked at most once per failure class, after. Every repair is a typed record on the
 session: what changed, why, and which of the two decided it.
+
+## `python: not found` is the image, not a system library
+
+`sqlite3@5.0.2` unpacks its amalgamation from a Makefile with a bare `python`. node-gyp
+finds `python3` on its own, so the toolchain check passes and the compile then dies with
+`/bin/sh: 1: python: not found`, exit 127. The generic native-build rule matched the
+`gyp ERR!` that followed and sent people after a missing system library. The runner
+image now ships `python-is-python3`, and the line is its own signature.

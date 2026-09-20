@@ -50,6 +50,17 @@ export interface PackageJsonSummary {
   engineNode?: string;
   /** Raw `workspaces` field, npm/yarn style. */
   workspaces?: string[];
+  /** The manifest's `main`, when declared. */
+  main?: string;
+  /**
+   * Conventional entry files that exist beside the manifest — `app.js`, `server.js`,
+   * `index.js` and their `src/` equivalents.
+   *
+   * A framework with no `start` or `dev` script is not unplannable; it is the commonest
+   * shape of a tutorial repository, and `node app.js` is what its README says. Falling
+   * to the AI for that was a model call to read a filename.
+   */
+  entryFiles?: string[];
 }
 
 export interface PythonSummary {

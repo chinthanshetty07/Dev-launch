@@ -230,6 +230,12 @@ nothing, and fell through to the AI planner. Its entry point lives inside the pa
 `src/pg_rag/main.py` — where a scan of the working directory never looks, and it runs
 only by its module path: `uvicorn pg_rag.main:app`, never `uvicorn src/pg_rag/main:app`.
 
+A framework with no `start` or `dev` script is planned from its entry file — `main`
+if it exists, else `app.js`, `server.js`, `index.js` and their `src/` forms. It is the
+commonest shape of a tutorial repository, and `node app.js` is what its README says;
+falling to the AI for it was a model call to read a filename, and the model left the
+port and binding unknown.
+
 A compose port below 1024 is never adopted for a dev server. `3000:80` describes nginx
 serving a built bundle in the author's production image; DevLaunch runs `vite` instead,
 and handing it `--port 80` is a permission error from a non-root process.

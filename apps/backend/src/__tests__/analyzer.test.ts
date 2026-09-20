@@ -296,3 +296,31 @@ describe('a placeholder in .env.example', () => {
     expect(Object.values(d).every(Boolean)).toBe(true);
   });
 });
+
+describe('what the manifest says about an entry point', () => {
+  it('records main first, then the conventional files that actually exist', async () => {
+    const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-entry-'));
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 't', main: './server.js', dependencies: { express: '4' } }));
+    await writeFile(join(dir, 'server.js'), 'require("express")().listen(3000)');
+    await writeFile(join(dir, 'app.js'), '');
+    await mkdir(join(dir, 'src'));
+    await writeFile(join(dir, 'src', 'index.js'), '');
+
+    const meta = await analyzer.analyze(dir, '.');
+    expect(meta.packageJson?.main).toBe('./server.js');
+    expect(meta.packageJson?.entryFiles).toEqual(['server.js', 'app.js', 'src/index.js']);
+  });
+
+  it('does not list a main that is not there, or that Node cannot run', async () => {
+    const { mkdtemp, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-entry2-'));
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 't', main: 'src/index.ts', dependencies: { express: '4' } }));
+    const meta = await analyzer.analyze(dir, '.');
+    expect(meta.packageJson?.entryFiles).toEqual([]);
+  });
+});

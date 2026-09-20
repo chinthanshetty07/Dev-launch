@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { ExecutionState } from '@devlaunch/shared';
+import { progressOf, type ExecutionState } from '@devlaunch/shared';
 import { PipelineStrip } from './PipelineStrip';
 
 /**
@@ -49,6 +49,13 @@ describe('<PipelineStrip>', () => {
     expect(colours('FAILED', 'STARTING')[4]).toBe('border-bad');
   });
 
+  it('marks Start, not Readiness, when the container died installing', () => {
+    // What a native-module build failure looked like before: Start ok, Readiness ×.
+    expect(chips('FAILED', 'BUILDING')).toEqual([
+      'ok Clone', 'ok Analyze', 'ok Plan', 'ok Validate', '× Start', '· Readiness', '· Ready',
+    ]);
+  });
+
   it('marks only the Ready chip when the application died after serving traffic', () => {
     expect(chips('FAILED', 'READY')).toEqual([
       'ok Clone', 'ok Analyze', 'ok Plan', 'ok Validate', 'ok Start', 'ok Readiness', '× Ready',
@@ -84,5 +91,21 @@ describe('<PipelineStrip>', () => {
     );
     expect(html).toContain('plan: ai-fallback');
     expect(html).not.toContain('detected:');
+  });
+});
+
+describe('progressOf', () => {
+  it('lets a failure inside the container overrule what the state machine saw', () => {
+    // Install runs after the machine has moved on to WAITING_FOR_READY, so a session
+    // that died compiling a native module was drawn as "Start ok, Readiness failed" —
+    // two stages it never reached.
+    expect(progressOf('WAITING_FOR_READY', { failure: { phase: 'install' } })).toBe('BUILDING');
+    expect(progressOf('WAITING_FOR_READY', { failure: { phase: 'build' } })).toBe('BUILDING');
+  });
+
+  it('otherwise keeps the furthest point observed', () => {
+    expect(progressOf('WAITING_FOR_READY', { failure: { phase: 'start' } })).toBe('WAITING_FOR_READY');
+    expect(progressOf('STARTING', { readyAt: 1 })).toBe('READY');
+    expect(progressOf(null, null)).toBeNull();
   });
 });

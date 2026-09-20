@@ -123,3 +123,21 @@ export function furthestOf(
   if (ia < 0 && ib < 0) return null;
   return ia >= ib ? (a ?? null) : (b ?? null);
 }
+
+/**
+ * How far a session really got, for the strip.
+ *
+ * Install and build run *inside* the container, after the state machine has already
+ * moved on to STARTING and WAITING_FOR_READY. So a session that died compiling a native
+ * module was observed at WAITING_FOR_READY and drawn as "Start ok, Readiness failed" —
+ * two stages it never reached. The failure's own phase knows better than the observed
+ * state here, and it wins.
+ */
+export function progressOf(
+  observed: ExecutionState | null | undefined,
+  view: ProgressEvidence | null | undefined,
+): ExecutionState | null {
+  const phase = view?.failure?.phase;
+  if (phase === 'install' || phase === 'build') return 'BUILDING';
+  return furthestOf(observed, impliedProgress(view));
+}

@@ -306,3 +306,39 @@ describe('RuleBasedPlanner — unrecognised', () => {
     expect(out.reason).toMatch(/no recognised framework or start script/);
   });
 });
+
+describe('a framework with no start script', () => {
+  const express = (over: Record<string, unknown> = {}) =>
+    meta({
+      packageJson: {
+        name: 'tutorial',
+        scripts: {},
+        dependencies: { express: '^4.18.0', sqlite3: '^5.0.2' },
+        devDependencies: { nodemon: '^2.0.7' },
+        ...over,
+      },
+    });
+
+  it('starts the entry file directly instead of asking a model to read a filename', () => {
+    // A real run: express, no scripts, app.js beside the manifest. Rule-based planning
+    // declined, the AI planned `node app.js` — the same answer — with the port and
+    // binding left unknown. Reading the filename costs nothing and is not a guess.
+    const out = planner.plan(express({ entryFiles: ['app.js'] }));
+    expect(out.detected).toBe('express');
+    expect(out.plan?.startCommand).toBe('node app.js');
+    expect(out.plan?.planSource).toBe('rule-based');
+    expect(out.plan?.expectedPort).toBe(3000);
+    expect(out.warnings.join(' ')).toMatch(/starting its entry file app\.js directly/);
+  });
+
+  it('prefers the manifest\'s main when it exists', () => {
+    const out = planner.plan(express({ main: 'server.js', entryFiles: ['server.js', 'app.js'] }));
+    expect(out.plan?.startCommand).toBe('node server.js');
+  });
+
+  it('still declines when there is nothing to start', () => {
+    const out = planner.plan(express({ entryFiles: [] }));
+    expect(out.plan).toBeNull();
+    expect(out.warnings.join(' ')).toMatch(/found none of its expected scripts/);
+  });
+});

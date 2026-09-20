@@ -147,3 +147,25 @@ describe('FailureClassifier — behaviour', () => {
     expect(FailureClassifier.summarise(classify('Killed'))).not.toMatch(/uncertain/);
   });
 });
+
+describe('a native build that only needed `python` on PATH', () => {
+  const LOG = `.../sqlite3@5.0.2/node_modules/sqlite3 install: gyp info find Python using Python version 3.11.2 found at "/usr/bin/python3"
+.../sqlite3@5.0.2/node_modules/sqlite3 install: /bin/sh: 1: python: not found
+.../sqlite3@5.0.2/node_modules/sqlite3 install: make: *** [deps/action_before_build.target.mk:13: Release/obj/gen/sqlite-autoconf-3340000/sqlite3.c] Error 127
+.../sqlite3@5.0.2/node_modules/sqlite3 install: gyp ERR! build error`;
+
+  it('names the missing alias rather than a missing system library', () => {
+    // The generic native-build rule matched `gyp ERR!` and sent people after a system
+    // library. The Makefile's own line says what was missing, three lines up.
+    const out = classify(LOG, 'install');
+    expect(out.code).toBe(FailureCode.DEPENDENCY_INSTALL_FAILED);
+    expect(out.message).toMatch(/needs `python` on PATH/);
+    expect(out.remedy).toMatch(/python-is-python3/);
+    expect(out.evidence).toMatch(/python: not found/);
+  });
+
+  it('still reports a genuine compiler failure generically', () => {
+    const out = classify('gyp ERR! build error\ngyp ERR! stack Error: `make` failed with exit code: 2', 'install');
+    expect(out.message).toMatch(/native code failed to build/);
+  });
+});

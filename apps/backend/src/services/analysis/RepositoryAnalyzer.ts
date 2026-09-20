@@ -92,6 +92,7 @@ export class RepositoryAnalyzer {
     const fileNames = entries.filter((e) => e.isFile()).map((e) => e.name);
 
     const packageJson = await this.readPackageJson(join(base, 'package.json'), warnings);
+    if (packageJson) packageJson.entryFiles = await this.findEntryFiles(base, fileNames, packageJson.main);
     const python = await this.readPython(base, fileNames);
     const envRaw = await readCapped(join(base, '.env.example'));
     const readme = await this.readReadme(base, fileNames);
@@ -185,6 +186,7 @@ export class RepositoryAnalyzer {
         devDependencies: asStringRecord(parsed.devDependencies),
         engineNode: (parsed.engines as { node?: string } | undefined)?.node,
         workspaces,
+        main: typeof parsed.main === 'string' ? parsed.main : undefined,
       };
     } catch (err) {
       // A malformed manifest is a fact about the repository, not a crash. The planner
@@ -192,6 +194,30 @@ export class RepositoryAnalyzer {
       warnings.push(`package.json could not be parsed: ${(err as Error).message}`);
       return undefined;
     }
+  }
+
+  /**
+   * Entry files that exist, `main` first if it does.
+   *
+   * Only files Node can run directly: a `.ts` main needs a runner the plan would have
+   * to guess at, and guessing is what this exists to avoid.
+   */
+  private async findEntryFiles(base: string, fileNames: string[], main?: string): Promise<string[]> {
+    const conventional = [
+      'app.js', 'server.js', 'index.js', 'main.js', 'app.mjs', 'server.mjs', 'index.mjs',
+      'src/app.js', 'src/server.js', 'src/index.js', 'bin/www',
+    ];
+    const declared = main?.replace(/^\.\//, '');
+    const candidates = [...(declared && /\.(?:c|m)?js$/.test(declared) ? [declared] : []), ...conventional];
+    const out: string[] = [];
+    for (const rel of candidates) {
+      if (out.includes(rel)) continue;
+      const exists = rel.includes('/')
+        ? await stat(join(base, rel)).then((st) => st.isFile()).catch(() => false)
+        : fileNames.includes(rel);
+      if (exists) out.push(rel);
+    }
+    return out;
   }
 
   private async readPython(base: string, fileNames: string[]): Promise<PythonSummary | undefined> {

@@ -169,11 +169,44 @@ export class RuleBasedPlanner {
 
     if (!script) {
       if (!framework) return null;
+      const entry = pkg.entryFiles?.[0];
+      if (!entry) {
+        warnings.push(
+          `Detected ${framework.id} but found none of its expected scripts ` +
+            `(${framework.scripts.join(', ')}).`,
+        );
+        return null;
+      }
+      // A framework with no start script is the commonest shape of a tutorial repository,
+      // and `node app.js` is what its README says. Falling to the AI for that was a
+      // model call to read a filename — and the model got the port and binding wrong.
       warnings.push(
-        `Detected ${framework.id} but found none of its expected scripts ` +
-          `(${framework.scripts.join(', ')}).`,
+        `Detected ${framework.id} with no ${framework.scripts.join('/')} script; ` +
+          `starting its entry file ${entry} directly.`,
       );
-      return null;
+      const port = framework.defaultPort;
+      return {
+        detected: framework.id,
+        warnings,
+        plan: RunPlanSchema.parse({
+          runtime: { language: 'node', version: NODE_IMAGE_VERSION },
+          packageManager: pm,
+          installCommand: installFor(pm),
+          buildCommand: null,
+          startCommand: `node ${entry}`,
+          workingDirectory,
+          expectedPort: port,
+          // The file binds whatever it binds; nothing here forces 0.0.0.0. The verifier
+          // reads the truth off the socket table and names it if it is loopback.
+          hostBinding: 'unknown',
+          environmentVariables: [
+            { key: 'HOST', value: '0.0.0.0', required: false },
+            { key: 'PORT', value: String(port), required: false },
+          ],
+          healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
+          planSource: 'rule-based',
+        }),
+      };
     }
 
     const port = framework?.defaultPort ?? 3000;

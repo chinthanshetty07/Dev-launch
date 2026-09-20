@@ -11,12 +11,19 @@
 # 2. build-essential + python3, so node-gyp can compile from source. On arm64 a great
 #    many packages ship no prebuilt binary, and without a toolchain those become hard
 #    failures rather than slow successes.
+#
+# 3. python-is-python3. node-gyp finds python3 by itself, but the build scripts *inside*
+#    older native modules do not: sqlite3@5.0.2 unpacks its amalgamation with a bare
+#    `python` from a Makefile, and without the alias the compile dies with
+#    `/bin/sh: 1: python: not found` — exit 127, after a successful toolchain check —
+#    which reads as a missing system library and is nothing of the kind.
 FROM node:20-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential \
       python3 \
+      python-is-python3 \
       ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 

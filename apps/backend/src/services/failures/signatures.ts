@@ -179,6 +179,20 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     describe: () => 'npm could not resolve a consistent dependency tree.',
   },
   {
+    // Before the generic native-build rule, because it names the cause exactly: the
+    // module's own Makefile called a bare `python` and the image had only `python3`.
+    // node-gyp's toolchain check passed moments earlier, so the generic remedy —
+    // "usually a missing system library" — sent people looking for the wrong thing.
+    id: 'python-alias-missing',
+    code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+    phases: ['install', 'build'],
+    patterns: [/\/bin\/sh: \d*:? ?python: not found/, /(?:^|\s)python: not found/],
+    remedy:
+      'A native module\'s build script runs `python` unqualified. The runner image now ' +
+      'ships python-is-python3; rebuild it (docker/runner/node20.Dockerfile).',
+    describe: () => 'A native module\'s build script needs `python` on PATH, and only `python3` was present.',
+  },
+  {
     id: 'native-build-failed',
     code: FailureCode.DEPENDENCY_INSTALL_FAILED,
     phases: ['install', 'build'],

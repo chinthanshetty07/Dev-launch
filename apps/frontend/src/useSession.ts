@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExecutionState, FailureDetail, RepairRecord, ServerMessage, WireLogEntry } from '@devlaunch/shared';
-import { furthestOf, impliedProgress } from '@devlaunch/shared';
+import { furthestOf, progressOf } from '@devlaunch/shared';
 import { api, type SessionView } from './api';
 
 export interface LogLine extends WireLogEntry {
@@ -55,8 +55,11 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
       .then((view) => {
         setSession(view);
         // A page opened after the fact has no transition history, so the snapshot is the
-        // only evidence of how far the session got.
-        setFurthest((prev) => furthestOf(prev, impliedProgress(view)));
+        // only evidence of how far the session got. And a failure inside the container —
+        // install, build — happened *before* the states the machine went on to report,
+        // so it is allowed to lower the mark: "Start ok, Readiness failed" on a session
+        // that died compiling a native module described two stages it never reached.
+        setFurthest((prev) => progressOf(prev, view));
       })
       .catch(() => undefined);
   }, [sessionId]);
