@@ -1,4 +1,5 @@
 import { cacheVolumeFor } from '../services/docker/ContainerSecurity.js';
+import { isBackingImageApproved } from '../services/execution/BackingServices.js';
 import { describe, it, expect } from 'vitest';
 import { FailureCode } from '@devlaunch/shared';
 import {
@@ -264,5 +265,34 @@ describe('the package cache volume', () => {
     // slashes and colons, so an unsanitised key fails at creation rather than at review.
     const name = cacheVolumeFor('https://github.com/Acme/My App!@#.git', 'web/ui');
     expect(name).toMatch(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/);
+  });
+});
+
+describe('the image a repository may ask for', () => {
+  it('accepts a known variant of the kind already detected', () => {
+    // pgvector is not optional for a project that uses it: plain postgres starts, then
+    // fails the application's first CREATE EXTENSION vector.
+    expect(isBackingImageApproved('pgvector/pgvector:pg16', 'postgres')).toBe(true);
+    expect(isBackingImageApproved('postgis/postgis:16-3.4', 'postgres')).toBe(true);
+    expect(isBackingImageApproved('mariadb:11', 'mysql')).toBe(true);
+    expect(isBackingImageApproved('postgres:16', 'postgres')).toBe(true);
+  });
+
+  it('refuses a variant of a different kind', () => {
+    // The repository may move between variants of what was detected; it may not choose
+    // what kind of thing DevLaunch starts.
+    expect(isBackingImageApproved('pgvector/pgvector:pg16', 'redis')).toBe(false);
+    expect(isBackingImageApproved('mongo:7', 'postgres')).toBe(false);
+  });
+
+  it('refuses anything that is not a plain Docker Hub name', () => {
+    // This value comes out of a file in the repository, so it is attacker-controlled in
+    // exactly the way the runtime allowlist exists to contain.
+    expect(isBackingImageApproved('evil.example.com/postgres:16', 'postgres')).toBe(false);
+    expect(isBackingImageApproved('postgres@sha256:deadbeef', 'postgres')).toBe(false);
+    expect(isBackingImageApproved('../../postgres', 'postgres')).toBe(false);
+    expect(isBackingImageApproved('postgres:16 && rm -rf /', 'postgres')).toBe(false);
+    expect(isBackingImageApproved('library/postgres/extra:16', 'postgres')).toBe(false);
+    expect(isBackingImageApproved('', 'postgres')).toBe(false);
   });
 });

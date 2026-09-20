@@ -102,13 +102,47 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
   },
 });
 
-/** Images DevLaunch may run as backing services. Frozen, like the runtime allowlist. */
+/**
+ * Images DevLaunch may run as a backing service, by kind.
+ *
+ * A repository's compose file names the image it needs, and often that is not the stock
+ * one: a project using pgvector needs `pgvector/pgvector`, and plain `postgres` starts
+ * perfectly and then fails the application's first `CREATE EXTENSION vector`. Honouring
+ * that is the difference between a database that exists and one that works.
+ *
+ * It is also repository-controlled text choosing a container image, which is exactly the
+ * thing an allowlist exists to prevent. So the repository may only move DevLaunch between
+ * *known variants of the kind it already detected* — never to an arbitrary image, never
+ * to another registry. An unrecognised name is declined and the stock image used, which
+ * degrades to the previous behaviour rather than to trust.
+ */
+const APPROVED_BACKING_REPOS: Readonly<Record<BackingService['kind'], readonly string[]>> =
+  Object.freeze({
+    postgres: ['postgres', 'pgvector/pgvector', 'postgis/postgis', 'timescale/timescaledb'],
+    mongodb: ['mongo'],
+    mysql: ['mysql', 'mariadb'],
+    redis: ['redis', 'valkey/valkey'],
+  });
+
+/** Every image name the allowlist permits, for tests and for reporting. */
 export const APPROVED_BACKING_IMAGES: readonly string[] = Object.freeze(
   Object.values(BACKING_SPECS).map((s) => s.image),
 );
 
-export function isBackingImageApproved(image: string): boolean {
-  return APPROVED_BACKING_IMAGES.includes(image);
+/**
+ * Whether this image may be run for this kind of backing service.
+ *
+ * Anchored deliberately: a bare `name` or `name:tag` on Docker Hub and nothing else. A
+ * value carrying a registry host, a path, a digest or a tag outside the ordinary
+ * character set is declined rather than parsed, because the only reason for a compose
+ * file to name `evil.example.com/postgres` is one DevLaunch should not serve.
+ */
+export function isBackingImageApproved(image: string, kind: BackingService['kind']): boolean {
+  const match = /^([a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)?)(?::([A-Za-z0-9][A-Za-z0-9._-]*))?$/.exec(
+    image,
+  );
+  if (!match) return false;
+  return (APPROVED_BACKING_REPOS[kind] ?? []).includes(match[1]!);
 }
 
 /**

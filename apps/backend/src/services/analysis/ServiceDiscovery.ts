@@ -16,7 +16,7 @@ import { parseEnvExample } from './parseEnvExample.js';
  */
 
 /** Directories worth looking inside. Depth 1, plus the monorepo conventions. */
-const CONTAINER_DIRS = ['apps', 'packages', 'services'];
+const CONTAINER_DIRS = ['apps', 'app', 'packages', 'services', 'src'];
 
 /** Never a service, and expensive to walk. */
 const IGNORED = new Set([
@@ -122,8 +122,19 @@ export async function workspaceInstall(
   return { manager: 'npm', command: 'npm install --no-audit --no-fund' };
 }
 
-export async function discoverServices(root: string): Promise<DiscoveryResult> {
-  const dirs = await candidateDirs(root);
+/**
+ * @param declaredDirs Directories a compose file names outright.
+ *
+ * Conventions are a guess and a declaration is not. `app/backend` was missed here for
+ * exactly one reason — the convention list held `apps` and not `app` — while the
+ * repository's own compose file named the path in full. Reading it removes the guess
+ * rather than lengthening the list.
+ */
+export async function discoverServices(
+  root: string,
+  declaredDirs: readonly string[] = [],
+): Promise<DiscoveryResult> {
+  const dirs = await candidateDirs(root, declaredDirs);
   const orchestrator = await isWorkspaceRoot(root);
   const services: ServiceCandidate[] = [];
   const backing = new Map<BackingService['kind'], BackingService>();
@@ -178,8 +189,8 @@ export async function isWorkspaceRoot(root: string): Promise<boolean> {
 }
 
 /** Immediate subdirectories, plus one level inside apps/ packages/ services/. */
-async function candidateDirs(root: string): Promise<string[]> {
-  const out: string[] = ['.'];
+async function candidateDirs(root: string, declared: readonly string[] = []): Promise<string[]> {
+  const out: string[] = ['.', ...declared.filter((d) => d && d !== '.')];
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
 
   for (const entry of entries) {
@@ -195,7 +206,9 @@ async function candidateDirs(root: string): Promise<string[]> {
       }
     }
   }
-  return out;
+  // A declared directory can also be found by convention, and two compose services
+  // can be built from one directory; either way it is probed once.
+  return [...new Set(out)];
 }
 
 async function inspectDir(

@@ -6,6 +6,7 @@ import type {
   PythonEntry,
   PythonSummary,
   RepositoryMetadata,
+  ServiceCandidate,
   WorkspacePackage,
   WorkspaceSummary,
 } from '@devlaunch/shared';
@@ -13,6 +14,7 @@ import { config } from '../../config/index.js';
 import { readCapped } from './readCapped.js';
 import { parseEnvExample } from './parseEnvExample.js';
 import { backingFromEnvKeys, discoverServices } from './ServiceDiscovery.js';
+import { readCompose, type ComposeService, type ComposeSummary } from './ComposeFile.js';
 
 const LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb'];
 
@@ -122,21 +124,40 @@ export class RepositoryAnalyzer {
     base: string,
     envExample: EnvExampleVar[],
   ): Promise<Pick<RepositoryMetadata, 'services' | 'backing'>> {
-    const { services, backing } = await discoverServices(base);
+    // The compose file first, because it is a declaration rather than an inference: it
+    // names the directories, the ports and the database image outright. Convention-based
+    // discovery then fills in *how* to run what it found — which language, which scripts,
+    // which variables — since compose says nothing about that.
+    const compose = await readCompose(base);
+    const { services, backing } = await discoverServices(
+      base,
+      (compose?.services ?? []).map((c) => c.dir).filter((d): d is string => Boolean(d)),
+    );
+
+    const declared = composeOverlay(services, compose);
 
     // A repository can name a dependency it never imports — `DATABASE_URL` in
     // .env.example with no driver in the manifest still means a database is expected.
-    const declared = backingFromEnvKeys(envExample.map((v) => v.key));
+    const fromEnv = backingFromEnvKeys(envExample.map((v) => v.key));
     const merged = [...backing];
-    for (const found of declared) {
+    for (const found of fromEnv) {
       const existing = merged.find((b) => b.kind === found.kind);
       // A variable the repository actually names beats the one the rule guessed.
       if (existing) existing.urlEnvKey = found.urlEnvKey ?? existing.urlEnvKey;
       else merged.push({ ...found, neededBy: [] });
     }
 
+    // Anything the compose file states outranks all of it. A project using pgvector
+    // needs `pgvector/pgvector`: plain `postgres` starts happily and then fails the
+    // application's first `CREATE EXTENSION vector`, which no dependency list reveals.
+    for (const found of compose?.backing ?? []) {
+      const existing = merged.find((b) => b.kind === found.kind);
+      if (existing) Object.assign(existing, { ...found, urlEnvKeys: existing.urlEnvKeys, neededBy: existing.neededBy });
+      else merged.push({ ...found, neededBy: [] });
+    }
+
     return {
-      ...(services.length ? { services } : {}),
+      ...(declared.length ? { services: declared } : {}),
       ...(merged.length ? { backing: merged } : {}),
     };
   }
@@ -307,4 +328,62 @@ async function measureShallow(root: string): Promise<{ sizeBytes: number; fileCo
   };
   await walk(root, 0);
   return { sizeBytes, fileCount };
+}
+
+/**
+ * Apply what the compose file declares on top of what convention discovered.
+ *
+ * Discovery answers "what kind of thing lives here"; compose answers "which things exist,
+ * where, and on what port". Neither is sufficient alone — compose says nothing about a
+ * service's language or scripts, and convention cannot know that `app/backend` listens on
+ * 8000 or that `frontend` is the browser's entry point.
+ */
+function composeOverlay(
+  found: ServiceCandidate[],
+  compose: ComposeSummary | null,
+): ServiceCandidate[] {
+  if (!compose || compose.services.length === 0) return found;
+
+  const out = found.map((candidate) => {
+    const declared = primaryFor(compose, candidate.dir);
+    if (!declared) return candidate;
+    return {
+      ...candidate,
+      // The author's name for the service, which is what their own documentation and
+      // their sibling services refer to it by.
+      name: declared.name,
+      role: declared.role,
+      ...(declared.containerPort ? { declaredPort: declared.containerPort } : {}),
+      envKeys: [...new Set([...(candidate.envKeys ?? []), ...declared.declaredKeys])],
+      evidence: `docker-compose declares ${declared.name}`,
+    };
+  });
+
+  // A compose service in a directory discovery could not classify is left out rather
+  // than invented: without a language there is nothing to run it with, and a candidate
+  // that cannot be planned is worse than one that was never offered.
+  return out;
+}
+
+/**
+ * Which compose service a directory really represents.
+ *
+ * One directory can back several: a repository here builds both `backend` and `mcp`
+ * from `./app/backend`, the same image started two different ways. Only one of them can
+ * be the service DevLaunch runs for that directory, so the choice has to be principled
+ * rather than "whichever came first in the file".
+ *
+ * A `command:` override is the giveaway. It means the author is running something other
+ * than the image's own default entry point — a side process, a worker, a tool — while
+ * the service with no override is the thing the image was built to be.
+ */
+function primaryFor(compose: ComposeSummary, dir: string): ComposeService | undefined {
+  const sharing = compose.services.filter((c) => c.dir === dir);
+  if (sharing.length <= 1) return sharing[0];
+  return (
+    sharing.find((c) => !c.command && c.containerPort !== undefined) ??
+    sharing.find((c) => !c.command) ??
+    sharing.find((c) => c.containerPort !== undefined) ??
+    sharing[0]
+  );
 }

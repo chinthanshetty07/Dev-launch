@@ -155,6 +155,42 @@ Services share `devlaunch-net` rather than getting a network of their own, becau
 egress policy is keyed to that network's subnet: a per-session network would come up
 unfiltered. Aliases give name resolution without touching isolation.
 
+## The compose file is a declaration, not an inference
+
+Every other signal DevLaunch reads is inferred: a start script implies a command, a
+dependency implies a database, a literal in source implies a port. A `docker-compose.yml`
+is none of those. It is the author stating which services exist, where each one lives,
+what it runs, which port it listens on and which database it needs.
+
+Not reading it is what made complex repositories fail. Of three that failed here, two
+shipped a compose file and the third a Makefile. One of those two keeps its code in
+`app/backend` and `app/frontend`; discovery looked inside `apps/`, `packages/` and
+`services/` — `app` singular was not on the list — found nothing, fell through to the AI
+planner, and was handed `pip install -e .` at a repository root containing no Python
+package. The compose file names both paths in full.
+
+The lesson is not that the convention list was too short. It is that a convention is a
+guess and a declaration is not, and lengthening the list would have produced the same
+class of failure on the next repository that named its directories differently.
+
+Compose supplies the map; convention-based discovery still supplies the detail, because
+compose says nothing about a service's language, scripts or configuration variables.
+Where they overlap the file wins. Two services built from one directory — the same image
+started two ways — resolve to the one *without* a `command:` override, since an override
+means the author is running something other than what the image is for.
+
+It is read as evidence and never executed. DevLaunch still runs its own hardened
+containers on its own network; `build:` contexts are read for their directory only.
+
+An image named there is honoured only if it is a known variant of the kind already
+detected — `pgvector/pgvector` for a Postgres, never an arbitrary name or another
+registry. This matters both ways: a project using pgvector genuinely needs that image,
+because plain `postgres` starts perfectly and then fails its first `CREATE EXTENSION
+vector`; and the value comes out of a file in the repository, which is exactly the
+attacker-controlled input the runtime allowlist exists to contain. An unrecognised name
+is declined and the stock image used, which degrades to the previous behaviour rather
+than to trust.
+
 ## Databases are provisioned, not assumed
 
 A repository that declares `mongoose` needs MongoDB running before its backend starts —

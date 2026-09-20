@@ -378,3 +378,75 @@ mysql = "also not"
     expect(backing.map((b) => b.kind).sort()).toEqual(['postgres', 'redis']);
   });
 });
+
+describe('a repository whose compose file says where everything is', () => {
+  /** The shape of a real repository that failed: services two levels down, under `app/`. */
+  const build = () =>
+    repo({
+      'docker-compose.yml': `
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: pgrag
+  backend:
+    build: ./app/backend
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/pgrag
+    depends_on: [postgres]
+  mcp:
+    build: ./app/backend
+    command: ["uv", "run", "python", "-m", "pg_rag.mcp_integration.server"]
+    ports: ["8001:8001"]
+  frontend:
+    build: ./app/frontend
+    ports: ["3000:80"]
+    depends_on: [backend]
+`,
+      'app/backend/pyproject.toml': '[project]\nname = "pg-rag"\ndependencies = ["fastapi", "sqlalchemy[asyncio]", "asyncpg"]\n',
+      'app/backend/src/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+      'app/frontend/package.json': pkg('web', { dev: 'vite' }, { react: '18', vite: '5' }),
+      'app/frontend/src/App.tsx': 'export default () => null;\n',
+    });
+
+  it('finds services convention would have walked straight past', async () => {
+    // Discovery looked inside `apps/`, `packages/` and `services/`. This repository uses
+    // `app/` — singular — so nothing was found, the whole repository fell through to the
+    // AI planner, and it guessed `pip install -e .` at a root containing no Python
+    // package at all. The compose file names both paths outright.
+    const root = await build();
+    const meta = await new RepositoryAnalyzer().analyze(root, '.');
+    const seen = (meta.services ?? []).map((s) => `${s.name}:${s.dir}:${s.role}`).sort();
+    expect(seen).toEqual(['backend:app/backend:api', 'frontend:app/frontend:web']);
+  });
+
+  it('takes the port the author published, not a framework default', async () => {
+    const meta = await new RepositoryAnalyzer().analyze(await build(), '.');
+    const backend = meta.services!.find((s) => s.name === 'backend')!;
+    const frontend = meta.services!.find((s) => s.name === 'frontend')!;
+    expect(backend.declaredPort).toBe(8000);
+    // `3000:80` is host 3000, container 80 — the container side is what to wait on.
+    expect(frontend.declaredPort).toBe(80);
+  });
+
+  it('keeps the database image the author chose', async () => {
+    // pgvector is not an optional detail: plain `postgres` starts, and then the
+    // application's first `CREATE EXTENSION vector` fails. No dependency list says this.
+    const meta = await new RepositoryAnalyzer().analyze(await build(), '.');
+    expect(meta.backing).toHaveLength(1);
+    const db = meta.backing![0] as { kind: string; image?: string; database?: string };
+    expect(db.kind).toBe('postgres');
+    expect(db.image).toBe('pgvector/pgvector:pg16');
+    expect(db.database).toBe('pgrag');
+  });
+
+  it('runs one service per directory, choosing the image default over an override', async () => {
+    // `backend` and `mcp` are the same image started two ways. A `command:` override
+    // means the author is running something other than what the image is for, so the
+    // service without one is the directory's real identity.
+    const meta = await new RepositoryAnalyzer().analyze(await build(), '.');
+    const inBackendDir = (meta.services ?? []).filter((s) => s.dir === 'app/backend');
+    expect(inBackendDir.map((s) => s.name)).toEqual(['backend']);
+  });
+});

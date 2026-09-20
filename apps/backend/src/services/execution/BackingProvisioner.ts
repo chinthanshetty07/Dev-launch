@@ -2,7 +2,13 @@ import type Dockerode from 'dockerode';
 import type { BackingService } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
 import { buildLabels } from '../docker/ContainerSecurity.js';
-import { BACKING_SPECS, connectionEnv, connectionUrl, databaseName } from './BackingServices.js';
+import {
+  BACKING_SPECS,
+  connectionEnv,
+  connectionUrl,
+  databaseName,
+  isBackingImageApproved,
+} from './BackingServices.js';
 import type { ExecutionManager } from './ExecutionManager.js';
 
 /**
@@ -56,7 +62,10 @@ export class BackingProvisioner {
     repoName?: string;
     logs: LogSink;
   }): Promise<ProvisionResult> {
-    const database = databaseName(opts.repoName);
+    // The name the repository expects, when its compose file states one. A connection
+    // string DevLaunch invents points at a database the application's own migrations
+    // and fixtures know nothing about.
+    const database = opts.backing.find((b) => b.database)?.database ?? databaseName(opts.repoName);
     const runs: BackingRun[] = [];
 
     const cleanup = async (): Promise<Error[]> => {
@@ -107,15 +116,32 @@ export class BackingProvisioner {
     if (!spec) return null;
 
     const docker = this.exec.docker;
-    logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${spec.alias}...`);
-    await docker.ensureImage(spec.image);
+
+    // The repository may name a variant of the kind already detected, and nothing else.
+    // Declining an unrecognised name falls back to the stock image, which is the
+    // behaviour from before compose files were read — a degradation, not a trust.
+    let image = spec.image;
+    if (need.image && need.image !== spec.image) {
+      if (isBackingImageApproved(need.image, need.kind)) {
+        image = need.image;
+      } else {
+        logs.write(
+          'stderr',
+          `Ignoring the ${need.kind} image the repository names (${need.image}); it is ` +
+            `not an approved variant. Using ${spec.image}.`,
+        );
+      }
+    }
+
+    logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${spec.alias} from ${image}...`);
+    await docker.ensureImage(image);
 
     const networkName = (await docker.networkExists(config.docker.networkName))
       ? config.docker.networkName
       : undefined;
 
     const container = await docker.createBackingContainer({
-      image: spec.image,
+      image,
       alias: spec.alias,
       user: spec.user,
       env: spec.env(database),

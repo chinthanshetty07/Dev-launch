@@ -173,6 +173,16 @@ export interface BackingService {
    * string is correct, the server is running, and it still cannot start.
    */
   driver?: string;
+  /**
+   * The image the repository's own compose file names, when it names one.
+   *
+   * Not decoration: a project using pgvector needs `pgvector/pgvector`, and plain
+   * `postgres` starts perfectly and then fails its first `CREATE EXTENSION vector`.
+   * Honoured only if it is a known variant of this kind — see isBackingImageApproved.
+   */
+  image?: string;
+  /** The database name the repository expects, when its compose file states one. */
+  database?: string;
   /** Which services need it. */
   neededBy: string[];
 }
