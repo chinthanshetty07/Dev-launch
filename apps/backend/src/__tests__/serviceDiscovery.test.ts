@@ -421,13 +421,15 @@ services:
     expect(seen).toEqual(['backend:app/backend:api', 'frontend:app/frontend:web']);
   });
 
-  it('takes the port the author published, not a framework default', async () => {
+  it('takes the port the author published, unless the dev server cannot use it', async () => {
     const meta = await new RepositoryAnalyzer().analyze(await build(), '.');
     const backend = meta.services!.find((s) => s.name === 'backend')!;
     const frontend = meta.services!.find((s) => s.name === 'frontend')!;
     expect(backend.declaredPort).toBe(8000);
-    // `3000:80` is host 3000, container 80 — the container side is what to wait on.
-    expect(frontend.declaredPort).toBe(80);
+    // `3000:80` describes nginx serving a built bundle in the production image. DevLaunch
+    // runs vite instead, and 80 is not a port a non-root dev server can bind — this
+    // assertion once demanded 80 and would have handed vite a permission error.
+    expect(frontend.declaredPort).toBeUndefined();
   });
 
   it('keeps the database image the author chose', async () => {
@@ -448,5 +450,37 @@ services:
     const meta = await new RepositoryAnalyzer().analyze(await build(), '.');
     const inBackendDir = (meta.services ?? []).filter((s) => s.dir === 'app/backend');
     expect(inBackendDir.map((s) => s.name)).toEqual(['backend']);
+  });
+});
+
+describe('a compose port the dev server cannot use', () => {
+  it('does not hand the dev server a privileged port from the production image', async () => {
+    // `3000:80` describes nginx serving a built bundle in the author's production image.
+    // DevLaunch runs the dev server instead, and adopting 80 hands vite `--port 80` — which
+    // a non-root process cannot bind. The dev server's own default is the right port.
+    const root = await repo({
+      'docker-compose.yml': 'services:\n  frontend:\n    build: ./web\n    ports: ["3000:80"]\n',
+      'web/package.json': pkg('web', { dev: 'vite' }, { vite: '5' }),
+      'web/src/main.ts': 'export {};\n',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root, '.');
+    // Single service: the analyzer reports no services list, so probe discovery directly.
+    const { services } = await discoverServices(root, ['web']);
+    expect(services).toEqual([]);
+    expect(meta.services).toBeUndefined();
+    // The overlay is exercised through a two-service shape too.
+    const root2 = await repo({
+      'docker-compose.yml':
+        'services:\n  frontend:\n    build: ./web\n    ports: ["3000:80"]\n  api:\n    build: ./api\n    ports: ["8000:8000"]\n',
+      'web/package.json': pkg('web', { dev: 'vite' }, { vite: '5' }),
+      'web/src/main.ts': 'export {};\n',
+      'api/requirements.txt': 'fastapi\n',
+      'api/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+    });
+    const meta2 = await new RepositoryAnalyzer().analyze(root2, '.');
+    const web = meta2.services!.find((s) => s.dir === 'web')!;
+    const api = meta2.services!.find((s) => s.dir === 'api')!;
+    expect(web.declaredPort).toBeUndefined();
+    expect(api.declaredPort).toBe(8000);
   });
 });

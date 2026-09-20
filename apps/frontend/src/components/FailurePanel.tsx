@@ -1,4 +1,4 @@
-import type { FailureDetail } from '@devlaunch/shared';
+import type { FailureDetail, RepairRecord } from '@devlaunch/shared';
 
 /**
  * A failure, shown with the evidence behind it.
@@ -6,7 +6,7 @@ import type { FailureDetail } from '@devlaunch/shared';
  * The evidence line is what makes a verdict checkable rather than merely confident, and
  * an uncertain classification says so instead of implying a diagnosis it does not have.
  */
-export function FailurePanel({ failure }: { failure?: FailureDetail }) {
+export function FailurePanel({ failure, repairs }: { failure?: FailureDetail; repairs?: RepairRecord[] }) {
   if (!failure) return null;
   const uncertain = failure.confidence === 'low';
 
@@ -43,6 +43,32 @@ export function FailurePanel({ failure }: { failure?: FailureDetail }) {
           start command reading `--port 8080` beside "Nothing is listening on port 8000"
           — because the plan is the last one repair produced and the diagnosis is the
           first one taken. Both are deliberate; the pairing is what needs explaining. */}
+      {/* Each repair, typed: a rule quoting the manifest or log line that justified it,
+          or a model rewriting the plan. Reading these is how a person tells "it tried the
+          obvious thing and the obvious thing was wrong" from "it guessed twice". */}
+      {repairs && repairs.length > 0 && (
+        <ul className="mt-2 border-t border-edge pt-2 text-[12px]">
+          {repairs.map((r, i) => (
+            <li key={i} className="mb-1">
+              <span
+                className={`mr-2 rounded-full border px-2 py-0.5 text-[11px] ${
+                  r.source === 'deterministic' ? 'border-link text-link' : 'border-warn text-warn'
+                }`}
+              >
+                {r.source === 'deterministic' ? 'rule' : 'model'}
+              </span>
+              <span className="text-muted">{r.type.toLowerCase().replace(/_/g, ' ')}: </span>
+              {Object.entries(r.after)
+                .map(([k, v]) => `${k} → ${String(v)}`)
+                .join(', ')}
+              {r.evidence.length > 0 && (
+                <span className="block pl-2 text-muted">because {r.evidence.join('; ')}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
       {(failure.repairAttemptsAfter ?? 0) > 0 && (
         <p className="mt-2 border-t border-edge pt-2 text-[12px] text-muted">
           This describes the first attempt. The plan shown above was rewritten{' '}

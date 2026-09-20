@@ -423,13 +423,21 @@ describe('repair and the reported diagnosis', () => {
     const s = await mgr.launch({ sourceDir: '/tmp', image: 'devlaunch/node:20' });
     await until(() => s.state === ExecutionState.FAILED, 3000);
 
-    expect(repairs, 'the repair loop must actually have run').toBe(2);
+    // Two attempts ran: a rule first (the loopback bind has a known fix and needs no
+    // model), then one model call. This once demanded two model calls, which is the
+    // "two retries for every failure" shape the repair policy replaced.
+    expect(s.repairAttempts?.length, 'the repair loop must actually have run').toBe(2);
+    expect(s.repairs?.map((r) => r.source)).toEqual(['deterministic', 'ai']);
+    expect(repairs, 'the model is asked once').toBe(1);
     expect(s.failure?.code).toBe(FailureCode.PORT_BOUND_TO_LOCALHOST);
     expect(s.failure?.message).toMatch(/Bind 0\.0\.0\.0 instead/);
     // What the attempts produced is still visible, just not presented as the cause.
     const trail = s.logs.buffer.all().map((l) => l.text).join('\n');
     expect(trail).toMatch(/Reporting the original diagnosis/);
     expect(trail).toMatch(/START_COMMAND_FAILED/);
+    // The hard ceiling: a rule and a model make two attempts, and a third failure stops
+    // at the cap rather than starting another of either.
+    expect(trail).toMatch(/Repair limit of 2 reached/);
     await mgr.shutdown();
   });
 
@@ -605,8 +613,10 @@ describe('a failure that outlived its plan', () => {
     const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
     await until(() => session.state === ExecutionState.FAILED);
 
-    expect(session.repairAttempts?.length).toBe(2);
-    expect(session.failure?.repairAttemptsAfter).toBe(2);
+    // One rewrite, not two: a model is asked at most once per failure class. The second
+    // attempt used to be a second model guess, and the guesses did not converge.
+    expect(session.repairAttempts?.length).toBe(1);
+    expect(session.failure?.repairAttemptsAfter).toBe(1);
     // And the diagnosis itself is still the original one, not a repaired plan's.
     expect(session.failure?.code).toBe('PORT_NOT_LISTENING');
     await mgr.shutdown();
@@ -771,6 +781,79 @@ describe('a single service that needs a database', () => {
     expect(new Set(launches)).toEqual(
       new Set(['postgresql+asyncpg://postgres:devlaunch@postgres:5432/repo']),
     );
+    await mgr.shutdown();
+  });
+});
+
+describe('how a failure is repaired', () => {
+  const analyzed = { analyze: async () => ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [] }) };
+  const planned = { planRepository: async () => ({ plan: plan(), detected: 'x', warnings: [] }) };
+  const aiSpy = () => {
+    const calls: number[] = [];
+    return {
+      calls,
+      repair: {
+        repair: async ({ previousAttempts }: { previousAttempts: RunPlan[] }) => {
+          calls.push(previousAttempts.length);
+          return {
+            plan: RunPlanSchema.parse({ ...plan(), startCommand: `node ai-${previousAttempts.length}.js` }),
+            attempt: previousAttempts.length + 1,
+          };
+        },
+      } as never,
+    };
+  };
+
+  it('never asks the model about a failure a person has to fix', async () => {
+    const missing = (): ReadyOutcome => ({
+      state: ExecutionState.FAILED, hostPort: null,
+      readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+      failure: { code: 'MISSING_ENV', message: 'A required environment variable is not set: GROQ_API_KEY' } as ReadyOutcome['failure'],
+    });
+    const ai = aiSpy();
+    const mgr = new SessionManager(fakeExec(missing), { analyzer: analyzed as never, planner: planned as never, aiRepair: ai.repair });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => session.state === ExecutionState.FAILED);
+
+    expect(ai.calls).toEqual([]);
+    expect(session.repairAttempts ?? []).toEqual([]);
+    expect(session.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/Not repairing MISSING_ENV: a secret has to come from a person/);
+    await mgr.shutdown();
+  });
+
+  it('lets a rule with evidence go first, and spends no model call on it', async () => {
+    // The log says which port opened. A rule reads it; a model would have guessed.
+    const exec = fakeExec(failed);
+    const launch = exec.launch.bind(exec);
+    const ports: (number | null)[] = [];
+    exec.launch = async (opts: { plan: RunPlan; logs?: LogManager }) => {
+      ports.push(opts.plan.expectedPort);
+      const h = await launch(opts as never);
+      opts.logs?.buffer.push('stderr', 'INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)');
+      return h;
+    };
+    const ai = aiSpy();
+    const mgr = new SessionManager(exec, { analyzer: analyzed as never, planner: planned as never, aiRepair: ai.repair });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => session.state === ExecutionState.FAILED);
+
+    expect(ports[0]).toBe(3000);
+    expect(ports[1], 'the retry watched the port the log named').toBe(8080);
+    expect(session.repairs?.[0]).toMatchObject({ source: 'deterministic', type: 'PORT_CORRECTION' });
+    // The rule's retry also failed, so the model got its one call — after, not instead.
+    expect(ai.calls).toEqual([1]);
+    expect(session.repairs?.[1]?.source).toBe('ai');
+    await mgr.shutdown();
+  });
+
+  it('asks the model once per failure class, not once per attempt', async () => {
+    const ai = aiSpy();
+    const mgr = new SessionManager(fakeExec(failed), { analyzer: analyzed as never, planner: planned as never, aiRepair: ai.repair });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => session.state === ExecutionState.FAILED);
+
+    expect(ai.calls).toEqual([0]);
+    expect(session.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/budget of 1 call\(s\) is spent/);
     await mgr.shutdown();
   });
 });

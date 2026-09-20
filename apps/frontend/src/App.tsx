@@ -214,7 +214,7 @@ export default function App() {
         </section>
       )}
 
-      <FailurePanel failure={session?.failure} />
+      <FailurePanel failure={session?.failure} repairs={session?.repairs} />
       <PlanPanel plan={session?.plan} warnings={session?.planWarnings} />
       <LogTerminal lines={lines} connected={connected} />
     </div>

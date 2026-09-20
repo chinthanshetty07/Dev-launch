@@ -77,6 +77,9 @@ export function cacheVolumeFor(key: string, service?: string): string {
   const clean = (part: string): string =>
     part
       .replace(/^https?:\/\//, '')
+      // Tracking parameters are not identity: with them, the same repository pasted
+      // from two places gets two caches and neither is ever warm.
+      .replace(/[?#].*$/, '')
       .replace(/\.git$/, '')
       .replace(/[^a-zA-Z0-9_.-]+/g, '-')
       .replace(/^-+|-+$/g, '')

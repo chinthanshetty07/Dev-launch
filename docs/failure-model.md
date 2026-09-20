@@ -206,3 +206,29 @@ So a retained diagnosis now carries `repairAttemptsAfter`, and the dashboard say
 that the diagnosis describes the first attempt and the plan above has since been
 rewritten. The repair attempts themselves are on the session, rather than being visible
 only in the log.
+
+## A placeholder in .env.example is a request, not a default
+
+`OPENAI_API_KEY=sk-your-key-here` is the author saying where yours goes. Counted as a
+value it meant the gate asked for nothing, the container started without the variable,
+and the application died at import with *Missing credentials … set the OPENAI_API_KEY
+environment variable* — the exact failure the gate exists to prevent, on a repository
+that had documented the variable perfectly. The recogniser is deliberately narrow:
+`<your-token>`, `your_secret_here`, `changeme`, `xxxxxxxx`, `${VAR}` and the
+`sk-your…` family match; `development`, `localhost`, `5000`, `info` and `gpt-4o-mini`
+are real defaults and must stay that way.
+
+The missing-configuration signature also matches the reverse word order — *set the
+`X` environment variable* — which is how the OpenAI SDK phrases it. It had been landing
+as a low-confidence generic start failure with the variable's name in plain sight.
+
+## Repair is decided by policy, attempted by rule, and only then by model
+
+Every failure used to be a generic AI repair task with two retries. The policy
+(`RepairPolicy`) now decides from the failure class alone: a missing secret, an outage,
+a memory ceiling or a plan the model already got wrong stops at once, with the reason in
+the log. Where a rule can have evidence (`DeterministicRepair`) it gets the first
+attempt and spends no model call — it quotes the manifest or log line that justified
+it, and proposes nothing without one, which is what makes it safe to run first. A model
+is asked at most once per failure class, after. Every repair is a typed record on the
+session: what changed, why, and which of the two decided it.

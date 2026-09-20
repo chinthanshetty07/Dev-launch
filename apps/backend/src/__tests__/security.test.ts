@@ -1,4 +1,5 @@
 import { cacheVolumeFor } from '../services/docker/ContainerSecurity.js';
+import { repoNameFromUrl } from '../services/session/SessionManager.js';
 import { isBackingImageApproved } from '../services/execution/BackingServices.js';
 import { describe, it, expect } from 'vitest';
 import { FailureCode } from '@devlaunch/shared';
@@ -294,5 +295,20 @@ describe('the image a repository may ask for', () => {
     expect(isBackingImageApproved('postgres:16 && rm -rf /', 'postgres')).toBe(false);
     expect(isBackingImageApproved('library/postgres/extra:16', 'postgres')).toBe(false);
     expect(isBackingImageApproved('', 'postgres')).toBe(false);
+  });
+});
+
+describe('a pasted URL with tracking baggage', () => {
+  // `?utm_source=chatgpt.com` came along with a pasted URL and ended up in the
+  // database name — `pgrag-utm_source-chatgpt-com` — and in the cache key, so the same
+  // repository pasted from two places got two caches and neither was ever warm.
+  it('is not part of the repository name', () => {
+    expect(repoNameFromUrl('https://github.com/x/pgrag?utm_source=chatgpt.com')).toBe('pgrag');
+    expect(repoNameFromUrl('https://github.com/x/pgrag.git#readme')).toBe('pgrag');
+  });
+  it('is not part of the cache key', () => {
+    expect(cacheVolumeFor('https://github.com/x/pgrag?utm_source=chatgpt.com')).toBe(
+      cacheVolumeFor('https://github.com/x/pgrag'),
+    );
   });
 });

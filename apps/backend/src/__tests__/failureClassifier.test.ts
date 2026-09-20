@@ -53,8 +53,22 @@ describe('FailureClassifier — signatures', () => {
     ['django secret key', 'ImproperlyConfigured: The SECRET_KEY setting must not be empty'],
     ['explicit message', 'Error: Missing required environment variable REQUIRED_TOKEN'],
     ['python KeyError', "KeyError: 'DATABASE_URL'"],
+    // The other word order. The OpenAI SDK says it this way at import time, and it was
+    // landing as a low-confidence generic start failure with the name in plain sight.
+    ['openai at import', 'openai.OpenAIError: Missing credentials. Please pass an `api_key`, or set the `OPENAI_API_KEY` or `OPENAI_ADMIN_KEY` environment variable.'],
+    ['set-the phrasing', 'Error: please set the STRIPE_SECRET environment variable'],
   ])('classifies %s as missing configuration', (_label, logs) => {
     expect(classify(logs, 'start').code).toBe(FailureCode.MISSING_ENV);
+  });
+
+  it('names the variable the OpenAI SDK asks for', () => {
+    const out = classify(
+      'openai.OpenAIError: Missing credentials. Please pass an `api_key`, or set the `OPENAI_API_KEY` or `OPENAI_ADMIN_KEY` environment variable.',
+      'start',
+    );
+    expect(out.code).toBe(FailureCode.MISSING_ENV);
+    expect(out.confidence).toBe('high');
+    expect(out.evidence).toContain('OPENAI_API_KEY');
   });
 
   it.each([

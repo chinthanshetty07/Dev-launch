@@ -232,9 +232,13 @@ export class RuleBasedPlanner {
       return null;
     }
 
-    const requirementNames = py.requirements
-      .map((r) => r.split(/[<>=!~[\s]/)[0]!.trim().toLowerCase())
-      .filter(Boolean);
+    // Both manifests, because a packaged project declares its framework only in
+    // pyproject.toml — and read from requirements.txt alone it declared nothing, planned
+    // as nothing, and fell through to a guess.
+    const requirementNames = [
+      ...py.requirements.map((r) => r.split(/[<>=!~[\s]/)[0]!.trim().toLowerCase()),
+      ...(py.dependencies ?? []),
+    ].filter(Boolean);
     const signal = Object.keys(PYTHON_REQUIREMENT_SIGNALS).find((k) => requirementNames.includes(k));
 
     // manage.py is definitive and outranks anything requirements.txt merely mentions.
@@ -250,7 +254,9 @@ export class RuleBasedPlanner {
 
     const entry = py.entryCandidates.find((e) => e.framework === kind)
       ?? py.entryCandidates.find((e) => e.file !== 'manage.py');
-    const moduleName = entry?.file.replace(/\.py$/, '');
+    // Inside a package the file path is not the import path: `src/pg_rag/main.py` runs
+    // as `pg_rag.main` once installed, and only as that.
+    const moduleName = entry?.module ?? entry?.file.replace(/\.py$/, '');
 
     const env: EnvVar[] = [];
     let startCommand: string;

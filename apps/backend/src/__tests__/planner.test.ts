@@ -251,6 +251,32 @@ describe('RuleBasedPlanner — Python frameworks', () => {
     expect(out.plan?.installCommand).toBe('pip install .');
   });
 
+  it('reads the framework from pyproject.toml when requirements.txt says nothing', () => {
+    // A packaged project declares fastapi only in pyproject.toml. Read from
+    // requirements.txt alone it declared nothing, planned as nothing, and fell through
+    // to the AI planner — which guessed `pip install -e .` at a directory with no package.
+    const out = planner.plan(py({
+      hasPyproject: true,
+      dependencies: ['fastapi', 'sqlalchemy', 'asyncpg'],
+      entryCandidates: [{ file: 'main.py', framework: null }],
+    }));
+    expect(out.detected).toBe('fastapi');
+    expect(out.plan?.installCommand).toBe('pip install .');
+  });
+
+  it('starts a packaged entry point by its module path, not its file path', () => {
+    // `src/pg_rag/main.py` is not runnable as `uvicorn src/pg_rag/main:app`. Once the
+    // package is installed it is `pg_rag.main:app`, and that is the only form that works.
+    const out = planner.plan(py({
+      hasPyproject: true,
+      dependencies: ['fastapi'],
+      entryCandidates: [
+        { file: 'src/pg_rag/main.py', module: 'pg_rag.main', framework: 'fastapi', appVariable: 'app' },
+      ],
+    }));
+    expect(out.plan?.startCommand).toBe('uvicorn pg_rag.main:app --host 0.0.0.0 --port 8000');
+  });
+
   it('declines a Pipfile-only project rather than guessing', () => {
     const out = planner.plan(py({ hasPipfile: true, hasManagePy: true }));
     expect(out.plan).toBeNull();

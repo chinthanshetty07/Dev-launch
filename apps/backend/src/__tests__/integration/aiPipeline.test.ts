@@ -173,7 +173,12 @@ describe('Phase 8 — AI fallback and bounded repair', () => {
     await sessions.cancel(s.id);
   }, 300_000);
 
-  it('respects the two-attempt cap and then gives up', async () => {
+  it('asks an always-wrong model once for a failure class, then gives up', async () => {
+    // This once asserted two model guesses at the same failure — the "two retries for
+    // every failure" shape the repair policy replaced. A model that is wrong once is not
+    // improved by a second question about the same class; the budget is one call, and
+    // the session stops with that reason in the log. The hard ceiling of two attempts
+    // in total (a rule, then the model) is asserted in the session manager tests.
     let n = 0;
     const provider: AIProvider = {
       name: 'always-wrong',
@@ -201,12 +206,13 @@ describe('Phase 8 — AI fallback and bounded repair', () => {
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/unrecognized-app` });
     await until(sessions, s.id, [ExecutionState.FAILED], 300_000);
 
-    expect(s.repairAttempts).toHaveLength(2);
-    expect(n).toBe(2);
+    expect(s.repairAttempts).toHaveLength(1);
+    expect(n, 'the model is asked once').toBe(1);
+    expect(s.repairs?.map((r) => r.source)).toEqual(['ai']);
     const text = s.logs.buffer.all().map((l) => l.text).join('\n');
     expect(text).toMatch(/Attempting repair 1\/2/);
-    expect(text).toMatch(/Attempting repair 2\/2/);
-    expect(text).toMatch(/Repair limit of 2 reached/);
+    expect(text).toMatch(/budget of 1 call\(s\) is spent/);
+    expect(text).not.toMatch(/Attempting repair 2\/2/);
   }, 300_000);
 
   it('does not spend a repair on a failure a plan cannot fix', async () => {

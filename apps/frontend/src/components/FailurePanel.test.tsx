@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FailureCode, type FailureDetail } from '@devlaunch/shared';
+import { FailureCode, type FailureDetail, type RepairRecord } from '@devlaunch/shared';
 import { FailurePanel } from './FailurePanel';
 
 /** What a person actually reads, with the markup taken back out. */
-function text(failure: FailureDetail): string {
-  return renderToStaticMarkup(<FailurePanel failure={failure} />)
+function text(failure: FailureDetail, repairs?: RepairRecord[]): string {
+  return renderToStaticMarkup(<FailurePanel failure={failure} repairs={repairs} />)
     .replace(/<[^>]+>/g, ' ')
     .replace(/&#x27;/g, "'")
     .replace(/\s+/g, ' ')
@@ -40,5 +40,35 @@ describe('a failure whose plan has since been rewritten', () => {
     expect(rendered).not.toMatch(/rewritten/i);
     // The failure itself is still reported.
     expect(rendered).toContain('Nothing is listening on port 8000');
+  });
+});
+
+describe('what repair tried', () => {
+  it('shows a rule with the evidence that justified it, distinct from a model guess', () => {
+    const repairs: RepairRecord[] = [
+      {
+        source: 'deterministic',
+        type: 'PORT_CORRECTION',
+        failureCode: FailureCode.PORT_NOT_LISTENING,
+        before: { expectedPort: 8000 },
+        after: { expectedPort: 8080 },
+        evidence: ['log: Uvicorn running on http://0.0.0.0:8080'],
+        confidence: 'high',
+      },
+      {
+        source: 'ai',
+        type: 'PLAN_REWRITE',
+        failureCode: FailureCode.PORT_NOT_LISTENING,
+        before: { startCommand: 'a' },
+        after: { startCommand: 'b' },
+        evidence: [],
+        confidence: 'low',
+      },
+    ];
+    const rendered = text(base, repairs);
+    expect(rendered).toMatch(/rule/);
+    expect(rendered).toMatch(/model/);
+    expect(rendered).toMatch(/expectedPort → 8080/);
+    expect(rendered).toMatch(/because log: Uvicorn running on/);
   });
 });

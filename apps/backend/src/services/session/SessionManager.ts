@@ -6,6 +6,7 @@ import {
   TERMINAL_STATES,
   type RequiredEnvVar,
   type FailureDetail,
+  type RepairRecord,
   type RepositoryMetadata,
   type ProjectPlan,
   type RunPlan,
@@ -37,6 +38,8 @@ import { imageForRuntime } from '../security/ImageAllowlist.js';
 import type { AIPlanner } from '../ai/AIPlanner.js';
 import type { AIRepair } from '../ai/AIRepair.js';
 import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
+import { repairPolicyFor } from '../failures/RepairPolicy.js';
+import { tryDeterministicRepair } from '../planning/DeterministicRepair.js';
 
 /**
  * Failures a different plan could plausibly fix.
@@ -46,15 +49,6 @@ import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
  * rather than a plan change, and MISSING_ENV needs a person. Retrying those would spend
  * a model call to arrive at the same answer.
  */
-const REPAIRABLE_FAILURES: readonly FailureCode[] = [
-  FailureCode.START_COMMAND_FAILED,
-  FailureCode.PORT_NOT_LISTENING,
-  FailureCode.PORT_BOUND_TO_LOCALHOST,
-  FailureCode.READINESS_TIMEOUT,
-  FailureCode.DEPENDENCY_INSTALL_FAILED,
-  FailureCode.BUILD_FAILED,
-  FailureCode.WRONG_RUNTIME_VERSION,
-];
 
 /** What a session is blocked on while in AWAITING_INPUT. */
 export interface PendingInput {
@@ -101,6 +95,10 @@ export interface Session {
 
   /** Plans already tried by the repair loop, so an attempt cannot repeat one. */
   repairAttempts?: RunPlan[];
+  /** What each repair changed, why, and whether a rule or a model decided it. */
+  repairs?: RepairRecord[];
+  /** Model calls spent on repair, against the per-failure budget. */
+  aiRepairCalls?: number;
   /** The model's own account of what it inferred. Displayed, never acted on. */
   aiNote?: string;
 }
@@ -675,8 +673,10 @@ export class SessionManager extends EventEmitter {
   /**
    * Attempt one bounded repair. Returns true when a retry was started.
    *
-   * Capped at two attempts, each of which must differ from the last, and only for
-   * failures a different plan could plausibly fix.
+   * Progressive, in the sense the policy spells out: the failure class decides whether
+   * repair is worth attempting at all; a rule with evidence gets the first attempt and
+   * spends no model call; a model gets one call, after, with a budget per failure class.
+   * The session-wide ceiling still bounds the whole sequence.
    */
   private async tryRepair(
     session: Session,
@@ -684,9 +684,15 @@ export class SessionManager extends EventEmitter {
     sourceDir: string,
     req: LaunchRequest,
   ): Promise<boolean> {
-    const repair = this.deps.aiRepair;
-    if (!repair || !failure || !session.plan || !session.metadata) return false;
-    if (!REPAIRABLE_FAILURES.includes(failure.code)) return false;
+    if (!failure || !session.plan || !session.metadata) return false;
+
+    const policy = repairPolicyFor(failure.code);
+    if (policy.repairability === 'NON_REPAIRABLE') {
+      // Saying why is the whole point: a session that stops here stops with a reason a
+      // person can act on, instead of two silent retries that arrive at the same place.
+      session.logs.buffer.push('stdout', `Not repairing ${failure.code}: ${policy.reason}.`);
+      return false;
+    }
 
     const previous = session.repairAttempts ?? [];
     if (previous.length >= MAX_REPAIR_ATTEMPTS) {
@@ -694,32 +700,67 @@ export class SessionManager extends EventEmitter {
       return false;
     }
 
-    this.setState(session, ExecutionState.REPAIRING);
-    session.logs.buffer.push(
-      'stdout',
-      `Attempting repair ${previous.length + 1}/${MAX_REPAIR_ATTEMPTS} for ${failure.code}...`,
-    );
+    const logs = session.logs.buffer.all().map((l) => l.text).join('\n');
 
-    // The previous container is released before a retry, so two never overlap.
-    try {
-      await session.handle?.cleanup();
-      session.handle = undefined;
-    } catch {
-      /* teardown failures must not mask the repair attempt */
+    // Attempt: a rule with evidence, first. It cannot invent, so it cannot make the
+    // failure worse — and when it applies, the retry costs no model call at all.
+    const deterministic =
+      policy.repairability === 'DETERMINISTIC'
+        ? tryDeterministicRepair({ plan: session.plan, failure, metadata: session.metadata, logs, previousAttempts: previous })
+        : null;
+
+    if (deterministic) {
+      await this.beginRepair(session, previous.length, failure, `rule: ${deterministic.record.type}`);
+      session.repairAttempts = [...previous, session.plan];
+      session.repairs = [...(session.repairs ?? []), deterministic.record];
+      session.plan = deterministic.plan;
+      session.logs.buffer.push(
+        'stdout',
+        `Repair ${previous.length + 1} (${deterministic.record.type}): ` +
+          deterministic.record.evidence.join('; '),
+      );
+      await this.startAndVerify(session, sourceDir, req);
+      return true;
     }
+
+    // Attempt: one model call, within this failure class's budget.
+    const repair = this.deps.aiRepair;
+    const used = session.aiRepairCalls ?? 0;
+    if (!repair) return false;
+    if (used >= policy.aiCalls) {
+      session.logs.buffer.push('stdout', `Not asking the model again for ${failure.code}: its budget of ${policy.aiCalls} call(s) is spent.`);
+      return false;
+    }
+
+    await this.beginRepair(session, previous.length, failure, 'model');
+    session.aiRepairCalls = used + 1;
 
     try {
       const result = await repair.repair({
         plan: session.plan,
         failure,
-        logs: session.logs.buffer.all().map((l) => l.text).join('\n'),
+        logs,
         metadata: session.metadata,
         previousAttempts: previous,
       });
 
-      session.repairAttempts = [...previous, session.plan];
+      const before = session.plan;
+      session.repairAttempts = [...previous, before];
       session.plan = result.plan;
       session.aiNote = result.note;
+      session.repairs = [
+        ...(session.repairs ?? []),
+        {
+          source: 'ai',
+          type: 'PLAN_REWRITE',
+          failureCode: failure.code,
+          before: { installCommand: before.installCommand, startCommand: before.startCommand, expectedPort: before.expectedPort },
+          after: { installCommand: result.plan.installCommand, startCommand: result.plan.startCommand, expectedPort: result.plan.expectedPort },
+          evidence: [failure.evidence ?? failure.message].filter(Boolean),
+          confidence: 'low',
+          ...(result.note ? { note: result.note } : {}),
+        },
+      ];
       session.logs.buffer.push(
         'stdout',
         `Repair ${result.attempt}: start=${result.plan.startCommand}` +
@@ -736,6 +777,22 @@ export class SessionManager extends EventEmitter {
       return false;
     }
   }
+
+  /** Announce an attempt and release the previous container, so two never overlap. */
+  private async beginRepair(session: Session, done: number, failure: FailureDetail, how: string): Promise<void> {
+    this.setState(session, ExecutionState.REPAIRING);
+    session.logs.buffer.push(
+      'stdout',
+      `Attempting repair ${done + 1}/${MAX_REPAIR_ATTEMPTS} for ${failure.code} (${how})...`,
+    );
+    try {
+      await session.handle?.cleanup();
+      session.handle = undefined;
+    } catch {
+      /* teardown failures must not mask the repair attempt */
+    }
+  }
+
 
   private awaitInput(session: Session, pending: PendingInput): void {
     session.pending = pending;
@@ -1166,9 +1223,11 @@ function discoveryByService(
 }
 
 /** The repository's own name, for naming its database after it rather than after nothing. */
-function repoNameFromUrl(url: string | undefined): string | undefined {
+export function repoNameFromUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
-  return url.replace(/\/+$/, '').replace(/\.git$/, '').split('/').pop() || undefined;
+  // Pasted URLs arrive with tracking baggage — `?utm_source=chatgpt.com` — and it was
+  // ending up in the database name: `pgrag-utm_source-chatgpt-com`.
+  return url.replace(/[?#].*$/, '').replace(/\/+$/, '').replace(/\.git$/, '').split('/').pop() || undefined;
 }
 
 /** The last line the application wrote, which is where a post-ready death explains itself. */

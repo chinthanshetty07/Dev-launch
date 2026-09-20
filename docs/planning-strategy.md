@@ -264,6 +264,14 @@ allowlist.
 Maximum 2 attempts, and **each attempt must differ from the previous one**, so a
 confidently-wrong model cannot burn both retries on identical output.
 
+The attempts are progressive, not two of the same thing. The failure class decides
+first whether repair is worth attempting at all (`RepairPolicy`); a rule with evidence
+gets the first attempt and spends no model call (`DeterministicRepair`); a model is
+asked at most once per failure class, after. "Two model retries for every failure" spent
+calls on a missing secret and an outage, and gave the model the first go at failures the
+manifest or the log had already settled — "the start script does not exist and `dev`
+does" is not a hypothesis.
+
 ## Timeouts and session lifetime
 
 The original plan's single ~10-minute budget would kill a READY application while the
@@ -390,10 +398,15 @@ Only those a different plan could plausibly fix: `START_COMMAND_FAILED`,
 `PORT_NOT_LISTENING`, `PORT_BOUND_TO_LOCALHOST`, `READINESS_TIMEOUT`,
 `DEPENDENCY_INSTALL_FAILED`, `BUILD_FAILED`, `WRONG_RUNTIME_VERSION`.
 
-Excluded deliberately: a missing database cannot be provisioned by v1, an x86-only
-dependency cannot be rewritten, `OUT_OF_MEMORY` is a configuration change rather than a
-plan change, and `MISSING_ENV` needs a person. Retrying those spends a model call to
-arrive at the same answer.
+Excluded deliberately, and now by policy rather than by a list: an x86-only dependency
+cannot be rewritten, `OUT_OF_MEMORY` is a configuration change rather than a plan
+change, `MISSING_ENV` needs a person, an outage is not a plan problem, and a plan the
+model has already got wrong (`INVALID_AI_PLAN`) is not improved by asking again. Each
+of these stops at once with its reason in the log. Databases are provisioned now, so
+`DATABASE_REQUIRED` means one DevLaunch still could not reach — also not a plan problem.
+
+Every repair is a typed record — what changed, why, and whether a rule or a model
+decided it — exposed on the session and shown beside the failure.
 
 ### Operational notes from running it live
 

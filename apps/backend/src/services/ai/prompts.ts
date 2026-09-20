@@ -75,6 +75,7 @@ export function describeRepository(meta: RepositoryMetadata): string {
         JSON.stringify(
           {
             requirements: meta.python.requirements.slice(0, 40),
+            dependencies: (meta.python.dependencies ?? []).slice(0, 40),
             hasPyproject: meta.python.hasPyproject,
             hasManagePy: meta.python.hasManagePy,
             entryCandidates: meta.python.entryCandidates,

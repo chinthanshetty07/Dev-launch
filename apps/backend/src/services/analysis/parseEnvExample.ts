@@ -18,6 +18,37 @@ import type { EnvExampleVar } from '@devlaunch/shared';
  */
 const OPTIONAL_COMMENT = /\b(optional|not required|if you have one|leave (?:it )?(?:blank|empty))\b/i;
 
+/**
+ * Values that are a placeholder rather than a default.
+ *
+ * `OPENAI_API_KEY=sk-your-key-here` is not a usable value; it is the author telling you
+ * where yours goes. Counted as a default, the gate asked for nothing, the container
+ * started without the variable, and the application died at import time with "Missing
+ * credentials … set the OPENAI_API_KEY environment variable" — the exact failure the
+ * gate exists to prevent, on a repository that had documented the variable perfectly.
+ *
+ * Deliberately narrow. `development`, `localhost`, `5000` and `info` are real defaults
+ * and must stay that way; only the shapes people write to mean "put yours here" match.
+ */
+const PLACEHOLDER = new RegExp(
+  [
+    /^<[^>]*>$/, // <your-token>
+    /^\$\{[^}]*\}$/, // ${SECRET} — resolved from a shell DevLaunch does not have
+    /^(?:sk|pk|ghp|xox[abp]|AKIA)[-_]?(?:your|xxx|test|placeholder|\.\.\.|example)/i,
+    /^(?:your|my)[-_ ]?[a-z0-9_-]*(?:key|token|secret|password|id|url|here)/i,
+    /[-_](?:here|goes[-_]here)$/i,
+    /^(?:changeme|change[-_]me|replace[-_]?me|replace[-_]this|todo|fixme|placeholder|dummy|xxx+|x{4,}|\.{3,}|\*{3,})$/i,
+    /^(?:your|enter|insert|paste|add|put)[-_ ](?:your[-_ ])?/i,
+  ]
+    .map((r) => r.source)
+    .join('|'),
+  'i',
+);
+
+export function isPlaceholder(value: string): boolean {
+  return PLACEHOLDER.test(value.trim().replace(/^["']|["']$/g, ''));
+}
+
 export function parseEnvExample(content: string): EnvExampleVar[] {
   const out: EnvExampleVar[] = [];
   // Comments since the last declaration: a file documents a variable above it, and the
@@ -52,7 +83,8 @@ export function parseEnvExample(content: string): EnvExampleVar[] {
     // the same way: there is nothing the user has to decide.
     const value = line.slice(eq + 1).trim();
     const optional = notes.some((note) => OPTIONAL_COMMENT.test(note));
-    out.push({ key, hasDefault: value.length > 0 || optional });
+    // A placeholder is a request with the answer's shape written in, not an answer.
+    out.push({ key, hasDefault: (value.length > 0 && !isPlaceholder(value)) || optional });
     notes = [];
   }
   return out;

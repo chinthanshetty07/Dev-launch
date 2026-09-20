@@ -81,3 +81,40 @@ export interface FailureDetail {
    */
   repairAttemptsAfter?: number;
 }
+
+/**
+ * What can be done about a failure, decided before anything is tried.
+ *
+ * Every failure used to be a generic AI repair task, which spent model calls on things
+ * a model cannot fix — a missing secret, a network outage, a memory ceiling — and left
+ * fewer for the ones it can. The policy is decided from the failure class alone.
+ */
+export type Repairability = 'NON_REPAIRABLE' | 'DETERMINISTIC' | 'AI_ONLY';
+
+export type RepairType =
+  | 'START_COMMAND_CORRECTION'
+  | 'PORT_CORRECTION'
+  | 'HOST_BINDING_CORRECTION'
+  | 'HEALTHCHECK_CORRECTION'
+  | 'PLAN_REWRITE';
+
+/**
+ * One repair that was tried, with the evidence that justified it.
+ *
+ * Typed and kept, so a person reading a failed session can see what was changed, why,
+ * and whether a model or a rule decided it — rather than a plan that silently differs
+ * from the one that was planned.
+ */
+export interface RepairRecord {
+  source: 'deterministic' | 'ai';
+  type: RepairType;
+  /** The failure this repair answered. */
+  failureCode: FailureCode;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  /** Facts from the log or the repository that justified the change. */
+  evidence: string[];
+  confidence: 'high' | 'medium' | 'low';
+  /** The model's own account, when a model decided. Displayed, never acted on. */
+  note?: string;
+}

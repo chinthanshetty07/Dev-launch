@@ -224,6 +224,19 @@ scanning tracks bracket depth outside quotes: `uvicorn[standard]>=0.30` is an or
 entry whose extras bracket, taken as the end of the list, hides every dependency after
 it. In the repository that prompted this, that was the database driver.
 
+Framework detection reads both manifests too. A packaged project declares fastapi only
+in `pyproject.toml`; read from `requirements.txt` alone it declared nothing, planned as
+nothing, and fell through to the AI planner. Its entry point lives inside the package —
+`src/pg_rag/main.py` — where a scan of the working directory never looks, and it runs
+only by its module path: `uvicorn pg_rag.main:app`, never `uvicorn src/pg_rag/main:app`.
+
+A compose port below 1024 is never adopted for a dev server. `3000:80` describes nginx
+serving a built bundle in the author's production image; DevLaunch runs `vite` instead,
+and handing it `--port 80` is a permission error from a non-root process.
+
+Tracking parameters on a pasted URL — `?utm_source=chatgpt.com` — are not identity. They
+were ending up in the database name and the cache key.
+
 The connection string names the driver the repository declared. SQLAlchemy encodes the
 driver in the URL scheme, so a project depending on `asyncpg` and handed a plain
 `postgresql://` loads psycopg2 and dies with *the asyncio extension requires an async

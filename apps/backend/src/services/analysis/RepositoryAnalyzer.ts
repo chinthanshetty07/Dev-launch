@@ -13,7 +13,7 @@ import type {
 import { config } from '../../config/index.js';
 import { readCapped } from './readCapped.js';
 import { parseEnvExample } from './parseEnvExample.js';
-import { backingFromEnvKeys, discoverServices } from './ServiceDiscovery.js';
+import { backingFromEnvKeys, discoverServices, pyprojectDeps } from './ServiceDiscovery.js';
 import { readCompose, type ComposeService, type ComposeSummary } from './ComposeFile.js';
 
 const LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb'];
@@ -60,6 +60,8 @@ export function parsePnpmWorkspace(content: string): string[] {
   }
   return out;
 }
+
+const ENTRY_FILES = ['app.py', 'main.py', 'wsgi.py', 'asgi.py', 'server.py', 'manage.py'];
 
 function detectPythonFramework(source: string): Pick<PythonEntry, 'framework' | 'appVariable'> {
   if (/^\s*from\s+flask\s+import|^\s*import\s+flask/m.test(source)) {
@@ -213,7 +215,7 @@ export class RepositoryAnalyzer {
 
     // Only plausible entry points are read, not every .py file in the repository.
     const candidates = pyFiles
-      .filter((n) => ['app.py', 'main.py', 'wsgi.py', 'asgi.py', 'server.py', 'manage.py'].includes(n))
+      .filter((n) => ENTRY_FILES.includes(n))
       .slice(0, 6);
 
     const entryCandidates: PythonEntry[] = [];
@@ -223,7 +225,51 @@ export class RepositoryAnalyzer {
       entryCandidates.push({ file, ...detectPythonFramework(source) });
     }
 
-    return { requirements, hasPyproject, hasPipfile, hasManagePy, entryCandidates };
+    // A packaged project keeps its entry point inside the package — `src/pg_rag/main.py`
+    // — where a scan of the working directory never looks. Read it under the module path
+    // it is importable by once installed, which is the only path that runs it.
+    const pyproject = hasPyproject ? await readCapped(join(base, 'pyproject.toml')) : null;
+    if (entryCandidates.every((e) => !e.framework)) {
+      entryCandidates.push(...(await this.readPackageEntries(base)));
+    }
+
+    return {
+      requirements,
+      ...(pyproject ? { dependencies: pyprojectDeps(pyproject) } : {}),
+      hasPyproject,
+      hasPipfile,
+      hasManagePy,
+      entryCandidates,
+    };
+  }
+
+  /**
+   * Entry points inside a package, under `src/<pkg>/` or `<pkg>/`.
+   *
+   * Bounded on purpose: one level of package, the same handful of filenames as the root
+   * scan, and only the first package found. This is the layout the packaging tools
+   * produce, not a search of the tree.
+   */
+  private async readPackageEntries(base: string): Promise<PythonEntry[]> {
+    const out: PythonEntry[] = [];
+    for (const parent of ['src', '.']) {
+      const dir = parent === '.' ? base : join(base, parent);
+      const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+      for (const pkg of entries) {
+        if (!pkg.isDirectory() || pkg.name.startsWith('.') || pkg.name === 'src') continue;
+        if (!(await stat(join(dir, pkg.name, '__init__.py')).catch(() => null))) continue;
+        for (const file of ENTRY_FILES) {
+          const source = await readCapped(join(dir, pkg.name, file));
+          if (source === null) continue;
+          const detected = detectPythonFramework(source);
+          if (!detected.framework) continue;
+          const rel = parent === '.' ? `${pkg.name}/${file}` : `${parent}/${pkg.name}/${file}`;
+          out.push({ file: rel, module: `${pkg.name}.${file.replace(/\.py$/, '')}`, ...detected });
+        }
+        if (out.length) return out;
+      }
+    }
+    return out;
   }
 
   private async readReadme(base: string, fileNames: string[]): Promise<string | undefined> {
@@ -353,7 +399,13 @@ function composeOverlay(
       // their sibling services refer to it by.
       name: declared.name,
       role: declared.role,
-      ...(declared.containerPort ? { declaredPort: declared.containerPort } : {}),
+      // A compose port below 1024 describes the *production* image — nginx on 80 in
+      // front of a built bundle — not the dev server DevLaunch runs, and our non-root
+      // runtime could not bind it anyway. Adopting it hands vite `--port 80` and a
+      // permission error. The dev server's own default is the right port here.
+      ...(declared.containerPort && declared.containerPort >= 1024
+        ? { declaredPort: declared.containerPort }
+        : {}),
       envKeys: [...new Set([...(candidate.envKeys ?? []), ...declared.declaredKeys])],
       evidence: `docker-compose declares ${declared.name}`,
     };

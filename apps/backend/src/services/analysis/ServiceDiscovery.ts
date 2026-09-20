@@ -491,7 +491,7 @@ async function readPythonDeps(
 }
 
 /** `asyncpg>=0.29`, `sqlalchemy[asyncio]>=2`, `pkg ; python_version<'3.9'` → the name. */
-const requirementName = (line: string): string =>
+export const requirementName = (line: string): string =>
   line.trim().split(/[=<>~!\[;(, ]/)[0]!.replace(/^["']|["']$/g, '').toLowerCase();
 
 const requirementNames = (raw: string): string[] =>
@@ -512,7 +512,7 @@ const requirementNames = (raw: string): string[] =>
  * can hold dependencies and ignores everything else, rather than half-implementing a
  * format and being wrong in ways nobody can see.
  */
-function pyprojectDeps(raw: string): string[] {
+export function pyprojectDeps(raw: string): string[] {
   const names: string[] = [];
   let section = '';
   // Buffer for an array that spans lines, which is how nearly all of them are written.

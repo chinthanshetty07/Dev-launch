@@ -42,6 +42,8 @@ function present(session: Session) {
       expectedPort: p.expectedPort,
     })),
     aiNote: session.aiNote,
+    /** Typed and evidenced, so what changed and why is readable rather than inferred. */
+    repairs: session.repairs,
     endedReason: session.endedReason,
     createdAt: session.createdAt,
     readyAt: session.readyAt,

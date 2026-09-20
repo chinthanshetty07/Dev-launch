@@ -54,6 +54,14 @@ export interface PackageJsonSummary {
 
 export interface PythonSummary {
   requirements: string[];
+  /**
+   * Dependency names from pyproject.toml, which requirements.txt-only reading missed.
+   *
+   * The framework signal was read from requirements.txt alone, so a packaged project —
+   * `pip install .`, PEP 621 metadata — declaring fastapi was planned as nothing at all
+   * and fell through to the AI, which guessed. Names only, lower-cased.
+   */
+  dependencies?: string[];
   hasPyproject: boolean;
   hasPipfile: boolean;
   /** manage.py at the root is the definitive Django signal. */
@@ -64,6 +72,15 @@ export interface PythonSummary {
 
 export interface PythonEntry {
   file: string;
+  /**
+   * The importable module path, when the file is inside a package rather than at the
+   * working directory.
+   *
+   * `src/pg_rag/main.py` is not runnable as `uvicorn src/pg_rag/main:app`; once the
+   * package is installed it is `pg_rag.main:app`, and that is the only form that works.
+   * Absent for a top-level file, whose module is just its name.
+   */
+  module?: string;
   framework: 'flask' | 'django' | 'fastapi' | null;
   /** Name of the module-level app object, when one is obvious. */
   appVariable?: string;

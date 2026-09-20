@@ -139,6 +139,11 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       /KeyError:\s*['"]([A-Z][A-Z0-9_]{2,})['"]/,
       /pydantic_settings.*validation error/i,
       /Error:\s*([A-Z][A-Z0-9_]{2,})\s+(?:is required|must be (?:set|defined))/,
+      // The other word order: "set the `OPENAI_API_KEY` environment variable". The
+      // OpenAI SDK says it this way at import time, and it was landing as a
+      // low-confidence generic start failure with the variable's name in plain sight.
+      /set (?:the )?["'`]?([A-Z][A-Z0-9_]{2,})["'`]?(?: or ["'`]?[A-Z][A-Z0-9_]{2,}["'`]?)* environment variable/i,
+      /Missing credentials\./i,
     ],
     remedy:
       'Supply the variable before launching. DevLaunch reads .env.example and prompts ' +

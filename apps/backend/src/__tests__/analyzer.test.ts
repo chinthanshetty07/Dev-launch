@@ -249,3 +249,50 @@ describe('what the analyzer reports for a packaged Python project', () => {
     })();
   });
 });
+
+describe('a packaged Python project with a src layout', () => {
+  it('finds the entry point inside the package and names its module', async () => {
+    const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-srclayout-'));
+    await writeFile(join(dir, 'pyproject.toml'),
+      '[project]\nname = "pg-rag"\ndependencies = ["fastapi[standard]>=0.115", "asyncpg>=0.30"]\n');
+    await mkdir(join(dir, 'src', 'pg_rag'), { recursive: true });
+    await writeFile(join(dir, 'src', 'pg_rag', '__init__.py'), '');
+    await writeFile(join(dir, 'src', 'pg_rag', 'main.py'),
+      'from fastapi import FastAPI\napp = FastAPI(title="PG-RAG")\n');
+
+    const meta = await analyzer.analyze(dir, '.');
+    // The working directory has no .py file at all; the scan that stopped there found
+    // nothing and the planner had nothing to start.
+    const entry = meta.python?.entryCandidates.find((e) => e.framework === 'fastapi');
+    expect(entry?.file).toBe('src/pg_rag/main.py');
+    expect(entry?.module).toBe('pg_rag.main');
+    expect(entry?.appVariable).toBe('app');
+    // And the dependency names, which are the framework signal for a packaged project.
+    expect(meta.python?.dependencies).toEqual(expect.arrayContaining(['fastapi', 'asyncpg']));
+  });
+});
+
+describe('a placeholder in .env.example', () => {
+  const declared = (text: string) => Object.fromEntries(parseEnvExample(text).map((v) => [v.key, v.hasDefault]));
+
+  it('is a request, not a default', () => {
+    // `sk-your-key-here` counted as a value, so the gate asked for nothing, the container
+    // started without OPENAI_API_KEY, and the application died at import with "Missing
+    // credentials" — on a repository that had documented the variable perfectly.
+    const d = declared(
+      'OPENAI_API_KEY=sk-your-key-here\nTOKEN=<your-token>\nPASS=changeme\nSECRET=your_secret_here\nKEY=xxxxxxxx\nURL=${BASE_URL}\n',
+    );
+    expect(d).toEqual({ OPENAI_API_KEY: false, TOKEN: false, PASS: false, SECRET: false, KEY: false, URL: false });
+  });
+
+  it('leaves real defaults alone', () => {
+    // The shapes that must not match: these are usable values and asking for them is noise.
+    const d = declared(
+      'FLASK_ENV=development\nPORT=5000\nLOG_LEVEL=info\nDATABASE_URL=postgresql://postgres:postgres@localhost:5432/app\nOPENAI_CHAT_MODEL=gpt-4o-mini\nCHUNK_SIZE=500\n',
+    );
+    expect(Object.values(d).every(Boolean)).toBe(true);
+  });
+});
