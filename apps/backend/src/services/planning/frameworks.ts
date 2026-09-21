@@ -33,6 +33,16 @@ export interface NodeFramework {
    * diagnose it rather than the plan claiming a certainty it does not have.
    */
   binding?: 'forced' | 'unknown';
+  /**
+   * How a script starts this framework: by invoking its own CLI, or by handing a file
+   * to `node`.
+   *
+   * Needed only to tell frameworks apart when one manifest declares several, which is
+   * the ordinary shape of a MERN repository — `express` and `react-scripts` side by
+   * side. Argument style cannot answer it: CRA binds through the environment like
+   * Express does, yet it is started as `react-scripts start` and Express never is.
+   */
+  startedBy?: 'tool' | 'node';
   note?: string;
 }
 
@@ -91,25 +101,36 @@ export const NODE_FRAMEWORKS: readonly NodeFramework[] = Object.freeze([
     defaultPort: 3000,
     scripts: ['dev', 'start'],
     argStyle: 'env',
+    startedBy: 'node',
     // Fastify defaults to 127.0.0.1 in code. If the repository does not read HOST,
     // readiness will correctly report PORT_BOUND_TO_LOCALHOST rather than guess.
     binding: 'unknown',
     note: 'Fastify binds 127.0.0.1 unless the application reads HOST.',
   },
-  { id: 'koa', dep: 'koa', defaultPort: 3000, scripts: ['dev', 'start'], argStyle: 'env' },
-  { id: 'express', dep: 'express', defaultPort: 3000, scripts: ['dev', 'start'], argStyle: 'env' },
+  { id: 'koa', dep: 'koa', defaultPort: 3000, scripts: ['dev', 'start'], argStyle: 'env', startedBy: 'node' },
+  { id: 'express', dep: 'express', defaultPort: 3000, scripts: ['dev', 'start'], argStyle: 'env', startedBy: 'node' },
 ]);
 
 export interface PythonFramework {
   id: string;
   defaultPort: number;
+  /**
+   * A distribution the start command needs that the application never imports.
+   *
+   * ASGI is the only case: `uvicorn main:app` is run by uvicorn, and nothing in a FastAPI
+   * project's source imports it — so a project planned from its imports installed
+   * everything it needed except the thing that starts it, and died on
+   * `sh: 1: uvicorn: not found`. Everywhere else the runner is the framework: Flask ships
+   * the `flask` CLI, Streamlit ships `streamlit`, and Django is run by its own manage.py.
+   */
+  runner?: string;
   note?: string;
 }
 
 export const PYTHON_FRAMEWORKS: Readonly<Record<string, PythonFramework>> = Object.freeze({
   django: { id: 'django', defaultPort: 8000 },
   flask: { id: 'flask', defaultPort: 5000 },
-  fastapi: { id: 'fastapi', defaultPort: 8000 },
+  fastapi: { id: 'fastapi', defaultPort: 8000, runner: 'uvicorn' },
   streamlit: {
     id: 'streamlit',
     defaultPort: 8501,

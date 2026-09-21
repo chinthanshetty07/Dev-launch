@@ -273,3 +273,104 @@ top-level directory survives its exclusion list. When the answer is no, the decl
 dependencies are installed by name — without version specifiers, because the command
 allowlist permits no `>` or quotes, and saying so beats resolving to latest silently. A
 deterministic repair rule catches the variants prediction misses, at no model call.
+
+## The kernel's answer beats the log's claim
+
+`PORT_NOT_LISTENING` used to mean one thing: nothing was bound to the port the plan
+expected. Its message said so — `Nothing is listening on port 3000. Sockets observed:
+127.0.0.11:36213, ::1:8017.` — and it was true and useless. The process had opened 8017
+and said so in its own log, and the only responder that noticed was a model guessing at a
+new start command. It guessed twice, and its second guess was a script the manifest does
+not contain.
+
+`PortManager.diagnose` now reports a fourth kind, `other-port`: open, reachable, and not
+where the plan expected. Two things make it an answer rather than a guess.
+
+- **Docker's embedded DNS is excluded.** `127.0.0.11` listens in every container on a
+  user-defined network. Counting it turns "one socket, on the wrong port" into "several
+  sockets", which is not an answer.
+- **Only one socket qualifies.** Two open ports and no way to tell which is the
+  application is a guess, and this reports nothing rather than guess.
+
+The socket travels with the failure as `observedSocket`, a typed field rather than prose,
+so the repair rule acts on it without parsing English. It is the strongest evidence about
+a port there is: not a framework default, not a log line's claim, but what the kernel says
+the process bound. The rule corrects the port *and* the bind address in the same attempt
+when both are wrong — fixing one and rediscovering the other is how a session spends two
+attempts on one problem.
+
+The log-reading rule is still there, one place further down, for the case where the
+container is gone before its socket table could be read. Its patterns were widened: one
+real repository prints `I am running at localhost:8017/`, and every pattern required
+`http://` before the host.
+
+## A literal in the source is not a plan problem
+
+`app.listen(port, 'localhost')` cannot be changed by any environment variable, any flag,
+or any rewritten start command. Repair could only spend its attempts proving that — first
+a rule forcing `HOST=0.0.0.0` the application never reads, then a model inventing a start
+command — at a full reinstall each.
+
+The analyzer reads it before the run: `hardcodedBind` carries the file and the line. The
+planner warns while the plan is still on screen, the diagnosis carries the exact edit as
+its remedy, and repair declines with the reason in the log. An honest failure that names
+the line arrives minutes sooner than two doomed attempts.
+
+The remedy is attached where the diagnosis is taken, not where repair declines. The
+reported failure is deliberately the *first* one, so anything added later to a copy of it
+is discarded when the original is restored.
+
+## One runtime version means a version mismatch is not repairable
+
+`WRONG_RUNTIME_VERSION` was `DETERMINISTIC` with one model call, on the theory that a
+manifest might name a version an approved image can satisfy. The allowlist carries exactly
+one image per language, so `runtime.version` has nowhere else to point and no rewritten
+plan reaches a runtime that does not exist. A test holds the two in step: approving a
+second version makes the failure repairable again, and that test is what will say so.
+
+Three signatures now classify here, and each one was a real repository that spent a model
+call arriving where it started:
+
+- `No module named 'imp'` (and `distutils`, `cgi`, and the rest removed in 3.12) — a
+  dependency written for a Python that still had them.
+- `No module named 'pkg_resources'` and `'build_ext' object has no attribute
+  'cython_sources'` — a pinned dependency with no wheel for 3.12, whose source build does
+  not work there either. `--only-binary` cannot help: pip would have taken a wheel if one
+  existed.
+
+## An error that names its own remedy
+
+`pg_config is required to build psycopg2 from source` is followed, in pip's own output, by
+"If you prefer to avoid building psycopg2 from source, please install the PyPI
+'psycopg2-binary' package instead." Acting on that sentence is not inference.
+
+The substitution cannot be made any other way — the file is the repository's, and
+`-r requirements.txt` will always install what it says — so the same list is installed by
+name with one entry changed. `requirementsAsArguments` returns null rather than an
+approximation whenever a line cannot be reproduced faithfully: a URL, a VCS reference, an
+`-e .`, another `-r`, an environment marker, an extras bracket. Dropping one silently
+would install a different set of packages than the repository asked for and call it a
+repair. `==` survives because the allowlist permits it; `>=` collapses to the bare name,
+which the evidence states rather than hides.
+
+## A registry certificate is the network, not the repository
+
+`error Error: certificate has expired` from a package registry is a property of the
+network and of the runner image's certificate store. It was classified as a dependency
+install failure and repaired twice, each attempt re-running the same download against the
+same certificate.
+
+## An unclassified failure still quotes the application
+
+When no signature matches, the verdict stays the coarse fallback at low confidence —
+admitting there is no diagnosis beats inventing one. But that was previously implemented
+as reporting *nothing else either*, and the result was a failure panel reading, in full,
+`Start command exited with code 1.` on a run whose log ends
+`RuntimeError: Working outside of application context.`
+
+Withholding a verdict is honesty. Withholding what the program said is silence. The last
+meaningful line now travels as evidence, marked low-confidence like the verdict it sits
+beside, and the search prefers an exception line — `RuntimeError: …`,
+`sqlalchemy.exc.IntegrityError: …` — over the paragraph some runtimes print after it.
+Flask's continues for three lines past the exception and ends "See the documentation for
+more information.", which is true and says nothing.

@@ -105,3 +105,36 @@ Nor does it keep meaning anything. A READY session re-checks every five seconds 
 container is still alive, and ends as `APPLICATION_EXITED` when it is not — but that
 check asks whether the process exists, not whether it still serves traffic. An
 application that wedges without exiting, or starts returning 500s, stays READY.
+
+## A dev-server proxy pointing at localhost is reported, not fixed
+
+A Vite or CRA dev server told to forward `/api` to `http://localhost:8000` resolves that
+itself, inside the frontend's own container, where `localhost` is the frontend. No
+environment variable or flag reaches a literal in a config file, and DevLaunch does not
+edit a repository to make it run.
+
+It is detected and named — the file, the target and the replacement — as a planning
+warning before the run starts. The project still reaches `READY`, because every service
+genuinely is running; the page's requests are what fail.
+
+## A bind address written into the source cannot be overridden
+
+`app.listen(port, 'localhost')` is not configuration. The analyzer finds it, the planner
+warns about it before the run, and the failure names the line to change — but nothing
+DevLaunch can do makes that application reachable through a Docker port mapping.
+
+## Only one runtime version per language
+
+Node 20 and Python 3.12, and nothing else. A repository pinning a dependency that has no
+wheel for 3.12 — or importing `imp`, `distutils` or another module the standard library
+removed — cannot be run here. This is now classified as `WRONG_RUNTIME_VERSION` and
+reported at once rather than repaired, because no plan reaches a runtime that is not
+present.
+
+## Installing from imports is unpinned
+
+A Python project with no requirements.txt or pyproject.toml is planned from what its
+entry files import. The distributions are correct — they are what the source says it needs
+— but nothing constrains their versions, because the repository constrained nothing. A
+project written against an older major version of a library it does not pin will install
+the current one and may fail in its own code. The plan says so in a warning.

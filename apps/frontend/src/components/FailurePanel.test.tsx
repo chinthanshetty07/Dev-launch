@@ -72,3 +72,29 @@ describe('what repair tried', () => {
     expect(rendered).toMatch(/because log: Uvicorn running on/);
   });
 });
+
+describe('<FailurePanel> for a project', () => {
+  it('names the service a repair applied to', () => {
+    // "The start command was corrected" says nothing useful when four applications are
+    // running and three of them were already working.
+    const html = renderToStaticMarkup(
+      <FailurePanel
+        failure={{ code: 'PORT_NOT_LISTENING' as never, message: 'api: nothing is listening' }}
+        repairs={[
+          {
+            source: 'deterministic',
+            type: 'PORT_CORRECTION',
+            failureCode: 'PORT_NOT_LISTENING' as never,
+            service: 'api',
+            before: { expectedPort: 4000 },
+            after: { expectedPort: 9001 },
+            evidence: ['the socket table says 9001'],
+            confidence: 'high',
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain('api');
+    expect(html).toMatch(/9001/);
+  });
+});

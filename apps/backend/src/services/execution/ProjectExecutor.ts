@@ -20,6 +20,14 @@ import type { ExecutionManager, LaunchHandle, ReadyOutcome } from './ExecutionMa
 export interface ServiceRun {
   name: string;
   role: ServiceRole;
+  /**
+   * The plan this service is running, fully resolved — the planner's, plus the database
+   * URL and sibling addresses injected at launch.
+   *
+   * Mutable because repair replaces it. It must be the resolved plan that is rewritten
+   * and re-run, not the planner's: re-deriving one would drop the injected connection
+   * string and hand the retry a database it cannot find.
+   */
   plan: ServiceRunPlan;
   handle: LaunchHandle;
   /** This service's own output, kept separate so its sentinels stay its own. */
@@ -254,11 +262,15 @@ export class ProjectExecutor {
             entry.url = undefined;
             entry.failure = undefined;
             entry.state = ExecutionState.STARTING;
+            // `entry.plan`, not the captured `plan`: repair rewrites it in place, and
+            // restarting the plan this closure was built with would silently undo the
+            // repair and re-run the failure it just corrected.
+            const current = entry.plan;
             entry.handle = await this.exec.launch({
               sessionId: opts.sessionId,
-              plan,
+              plan: current,
               sourceDir: opts.sourceDir,
-              image: imageForRuntime(plan.runtime.language, plan.runtime.version),
+              image: imageForRuntime(current.runtime.language, current.runtime.version),
               logs,
               packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
               networkAliases: aliasesFor(plan.name),
@@ -302,6 +314,10 @@ export class ProjectExecutor {
           service.state = ExecutionState.READY;
           return null;
         }
+        // A service that is already ready is left alone. This is re-entered after a
+        // repair, which replaces one container; re-polling the three that are serving
+        // traffic would spend the readiness budget proving what is already known.
+        if (service.state === ExecutionState.READY) return null;
         const outcome = await service.handle.waitForReady(timeoutMs);
         service.state = outcome.state;
         service.url = outcome.url;

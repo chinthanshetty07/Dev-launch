@@ -289,6 +289,29 @@ export class DockerManager {
     await container.start();
   }
 
+  /**
+   * The tail of a container's output, as a string.
+   *
+   * Distinct from `followLogs`, which streams to a session's log. This is for asking a
+   * container that has already stopped why it stopped — a question with an answer, and
+   * one that was previously thrown away.
+   */
+  async logTail(container: Dockerode.Container, lines = 20): Promise<string> {
+    try {
+      const raw = (await container.logs({
+        follow: false,
+        stdout: true,
+        stderr: true,
+        tail: lines,
+      })) as unknown as Buffer;
+      // Multiplexed stream framing: an 8-byte header per chunk when no TTY. Stripping
+      // the non-printable bytes is enough for a message meant to be read by a person.
+      return raw.toString('utf8').replace(/[\u0000-\u0008\u000b-\u001f]/g, ' ').trim();
+    } catch {
+      return '';
+    }
+  }
+
   async followLogs(container: Dockerode.Container): Promise<NodeJS.ReadableStream> {
     return (await container.logs({
       follow: true,

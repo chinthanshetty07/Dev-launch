@@ -5,3 +5,6 @@ dist/
 *.log
 apps/frontend/dist/
 .claude/tasks/
+
+# Carries the Groq key for session handoff; must never reach the public remote.
+SESSION-HANDOFF.md

@@ -34,6 +34,18 @@ export interface RepositoryMetadata {
    */
   services?: ServiceCandidate[];
 
+  /**
+   * The one runnable part, when it is not at the repository root.
+   *
+   * A repository is not always a project *or* an application at its top level. The
+   * commonest third shape is an application in `src/` or `backend/` with only
+   * configuration above it — `build: ./src` in a compose file and nothing else. Planning
+   * the root finds no manifest and declines, and a declining rule-based planner is
+   * precisely what hands the repository to a model. The directory was declared all
+   * along.
+   */
+  soleService?: ServiceCandidate;
+
   /** Infrastructure the repository expects to exist but does not contain. */
   backing?: BackingService[];
 
@@ -46,6 +58,23 @@ export interface RepositoryMetadata {
    * to open instead, and they were in the source all along.
    */
   httpRoutes?: HttpRoute[];
+  /**
+   * The port this application's own code opens, when it says so outright.
+   *
+   * A framework default is a prediction; `const port = 8017` beside `app.listen(port)`
+   * is a fact, and it wins. An application that hardcodes a port ignores the `PORT`
+   * DevLaunch injects, so planning on the default watches a port nothing will ever open
+   * and reports a working application as failing to start.
+   */
+  declaredPort?: number;
+  /**
+   * A loopback bind address written into the source as a literal.
+   *
+   * No environment variable, flag or plan can change `app.listen(port, 'localhost')`.
+   * Knowing it in advance turns two doomed repair attempts into one honest failure that
+   * names the line to edit.
+   */
+  hardcodedBind?: { file: string; line: string };
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
 }
@@ -82,6 +111,26 @@ export interface PackageJsonSummary {
 export interface PythonSummary {
   requirements: string[];
   /**
+   * Third-party distributions the entry files import, in import order.
+   *
+   * The last resort for a project that declares nothing. A lone `app.py` with no
+   * requirements.txt is the commonest shape of a tutorial repository, and it used to be
+   * declined outright and handed to the model — which read the imports and installed
+   * them. `import flask_sqlalchemy` is a declaration, not a hint, so reading it needs no
+   * model.
+   */
+  imports?: string[];
+  /**
+   * A database URL written into the source with a loopback host.
+   *
+   * It reads no environment variable, so there is nothing for DevLaunch to set — and
+   * inside a container `localhost` is the application itself, so a provisioned database
+   * sits unreachable beside it. The failure that follows is `connection to server at
+   * "localhost" (::1), port 5432 failed: Connection refused`, which is accurate and
+   * explains nothing.
+   */
+  hardcodedDatabaseUrl?: { file: string; url: string };
+  /**
    * Dependency names from pyproject.toml, which requirements.txt-only reading missed.
    *
    * The framework signal was read from requirements.txt alone, so a packaged project —
@@ -89,6 +138,24 @@ export interface PythonSummary {
    * and fell through to the AI, which guessed. Names only, lower-cased.
    */
   dependencies?: string[];
+  /**
+   * Only what the application needs to run — `[project] dependencies`, not its extras
+   * or dev groups. Installing `pytest` into a runtime container is a slower build and a
+   * wider surface for nothing.
+   */
+  runtimeDependencies?: string[];
+  /**
+   * Scripts at the working directory that create the database the application expects.
+   *
+   * A very common shape: `app.py` opens `todo.db` and a separate `db_create.py` creates
+   * its tables, with the README listing it as an installation step. Skip it and the
+   * application starts perfectly and answers 500 to every request —
+   * `no such table: tasks` — which reads as a broken repository and is a missing step.
+   *
+   * Recognised by name, and only names that mean "create the schema". `setup.py` is a
+   * packaging file and never belongs here; `seed.py` writes data rather than structure.
+   */
+  initScripts?: string[];
   hasPyproject: boolean;
   /**
    * Whether `pip install .` can actually build this project.
@@ -119,7 +186,7 @@ export interface PythonEntry {
    * Absent for a top-level file, whose module is just its name.
    */
   module?: string;
-  framework: 'flask' | 'django' | 'fastapi' | null;
+  framework: 'flask' | 'django' | 'fastapi' | 'streamlit' | 'gradio' | null;
   /** Name of the module-level app object, when one is obvious. */
   appVariable?: string;
 }
@@ -180,6 +247,15 @@ export interface ServiceCandidate {
    * the page makes is refused.
    */
   callsOrigins?: string[];
+
+  /**
+   * A dev-server proxy pointing at an address its own container cannot reach.
+   *
+   * `proxy: { '/api': 'http://localhost:8000' }` is resolved by the dev server process,
+   * which runs inside this service's container — so `localhost` is this service, and
+   * every request the page makes returns 502 through a stack that is otherwise working.
+   */
+  devProxy?: { file: string; target: string };
   /**
    * Environment variables this service names for itself.
    *

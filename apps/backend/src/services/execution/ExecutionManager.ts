@@ -654,11 +654,38 @@ export class ExecutionManager {
         failure: {
           evidence: lastError,
           code: FailureCode.PORT_BOUND_TO_LOCALHOST,
+          observedSocket: diagnosis.socket,
           message:
             `The application is listening on ${diagnosis.socket.address}:${diagnosis.socket.port}, ` +
             'which is reachable only from inside the container. Docker port mapping ' +
             'cannot forward to it. Bind 0.0.0.0 instead.',
           phase: 'start',
+        },
+      };
+    }
+
+    // Open, and on a port nobody expected. The kernel's answer, which beats both the
+    // framework default the plan was built on and any log line claiming otherwise.
+    if (diagnosis.kind === 'other-port') {
+      const { address, port, loopbackOnly } = diagnosis.socket;
+      return {
+        state: ExecutionState.FAILED,
+        diagnosis,
+        failure: {
+          code: loopbackOnly ? FailureCode.PORT_BOUND_TO_LOCALHOST : FailureCode.PORT_NOT_LISTENING,
+          observedSocket: diagnosis.socket,
+          message: loopbackOnly
+            ? `The application is listening on ${address}:${port} — a different port from the ` +
+              `expected ${plan.expectedPort}, and one reachable only from inside the container. ` +
+              'Docker port mapping cannot forward to it.'
+            : `Nothing is listening on port ${plan.expectedPort}, but the application has opened ` +
+              `${address}:${port}. It is running; the plan is watching the wrong port.`,
+          evidence: lastError,
+          phase: 'start',
+          confidence: 'high',
+          remedy: loopbackOnly
+            ? `Bind 0.0.0.0 rather than ${address}, and expose port ${port}.`
+            : undefined,
         },
       };
     }

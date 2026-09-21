@@ -14,8 +14,20 @@ import type {
 import { config } from '../../config/index.js';
 import { readCapped } from './readCapped.js';
 import { parseEnvExample } from './parseEnvExample.js';
-import { backingFromEnvKeys, discoverServices, pyprojectDeps } from './ServiceDiscovery.js';
+import {
+  backingFromEnvKeys,
+  discoverServices,
+  findDeclaredPort,
+  findHardcodedLoopbackBind,
+  pyprojectDepsBySection,
+} from './ServiceDiscovery.js';
 import { readCompose, type ComposeService, type ComposeSummary } from './ComposeFile.js';
+import {
+  driversForConnectionUrls,
+  hardcodedDatabaseUrl,
+  importedDistributions,
+  localImports,
+} from './pythonImports.js';
 
 const LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb'];
 
@@ -64,6 +76,27 @@ export function parsePnpmWorkspace(content: string): string[] {
 
 const ENTRY_FILES = ['app.py', 'main.py', 'wsgi.py', 'asgi.py', 'server.py', 'manage.py'];
 
+/** How many of a repository's own files the import walk will read. Bounded, not exhaustive. */
+const MAX_IMPORT_FILES = 12;
+
+/** How many top-level .py files are read looking for the one that starts the application. */
+const MAX_ENTRY_SCAN = 12;
+
+/** Never the program: packaging, configuration, and the schema scripts read separately. */
+const SKIP_AS_ENTRY = ['setup.py', 'conftest.py', '__init__.py'];
+
+/**
+ * Scripts that create a database schema, by name.
+ *
+ * Deliberately short and literal. `setup.py` is packaging and must never be run this
+ * way; `seed.py` and `migrate.py` write or alter data rather than creating the
+ * structure an application needs before it can answer at all.
+ */
+const DB_INIT_SCRIPTS = [
+  'db_create.py', 'create_db.py', 'createdb.py', 'init_db.py', 'initdb.py',
+  'create_tables.py', 'create_table.py', 'setup_db.py', 'make_db.py',
+];
+
 function detectPythonFramework(source: string): Pick<PythonEntry, 'framework' | 'appVariable'> {
   if (/^\s*from\s+flask\s+import|^\s*import\s+flask/m.test(source)) {
     const app = /^\s*(\w+)\s*=\s*Flask\s*\(/m.exec(source);
@@ -72,6 +105,16 @@ function detectPythonFramework(source: string): Pick<PythonEntry, 'framework' | 
   if (/^\s*from\s+fastapi\s+import|^\s*import\s+fastapi/m.test(source)) {
     const app = /^\s*(\w+)\s*=\s*FastAPI\s*\(/m.exec(source);
     return { framework: 'fastapi', appVariable: app?.[1] };
+  }
+  // Neither has an app object to name: the file itself is the program, which is exactly
+  // why finding *which* file matters. A repository whose dashboard is `dashboard.py` was
+  // started as `streamlit run app.py` — a file that does not exist — because nothing
+  // here recognised Streamlit at all and the planner fell back to a default name.
+  if (/^\s*import\s+streamlit|^\s*from\s+streamlit\s+import/m.test(source)) {
+    return { framework: 'streamlit' };
+  }
+  if (/^\s*import\s+gradio|^\s*from\s+gradio\s+import/m.test(source)) {
+    return { framework: 'gradio' };
   }
   if (/\bdjango\b/.test(source)) return { framework: 'django' };
   return { framework: null };
@@ -94,7 +137,11 @@ export class RepositoryAnalyzer {
 
     const packageJson = await this.readPackageJson(join(base, 'package.json'), warnings);
     if (packageJson) packageJson.entryFiles = await this.findEntryFiles(base, fileNames, packageJson.main);
-    const python = await this.readPython(base, fileNames);
+    const python = await this.readPython(
+      base,
+      fileNames,
+      entries.filter((e) => e.isDirectory()).map((e) => e.name),
+    );
     const envRaw = await readCapped(join(base, '.env.example'));
     const readme = await this.readReadme(base, fileNames);
 
@@ -113,9 +160,36 @@ export class RepositoryAnalyzer {
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,
       ...(await this.readRoutes(base, fileNames, packageJson?.entryFiles ?? [], python?.entryCandidates.map((e) => e.file) ?? [])),
+      ...(await this.readBinding(base, packageJson)),
       workspace: await this.readWorkspace(base, packageJson, fileNames, warnings),
       ...(await this.readServices(base, envRaw ? parseEnvExample(envRaw) : [])),
       warnings,
+    };
+  }
+
+  /**
+   * The address and port this application's own code opens.
+   *
+   * Read for every repository, not only for a service inside a project. The
+   * multi-service path already consulted the source for a declared port, because
+   * siblings refer to a service *by port* and cannot be told a guess. A lone
+   * application has the same problem with nobody to notice: it binds 8017, DevLaunch
+   * watches 3000, and a healthy application is reported as never having started.
+   */
+  private async readBinding(
+    base: string,
+    pkg: PackageJsonSummary | undefined,
+  ): Promise<Pick<RepositoryMetadata, 'declaredPort' | 'hardcodedBind'>> {
+    if (!pkg) return {};
+    const declaredPort = await findDeclaredPort(base, {
+      name: pkg.name,
+      scripts: pkg.scripts,
+      dependencies: pkg.dependencies,
+    });
+    const hardcodedBind = await findHardcodedLoopbackBind(base);
+    return {
+      ...(declaredPort ? { declaredPort } : {}),
+      ...(hardcodedBind ? { hardcodedBind } : {}),
     };
   }
 
@@ -128,18 +202,24 @@ export class RepositoryAnalyzer {
   private async readServices(
     base: string,
     envExample: EnvExampleVar[],
-  ): Promise<Pick<RepositoryMetadata, 'services' | 'backing'>> {
+  ): Promise<Pick<RepositoryMetadata, 'services' | 'soleService' | 'backing'>> {
     // The compose file first, because it is a declaration rather than an inference: it
     // names the directories, the ports and the database image outright. Convention-based
     // discovery then fills in *how* to run what it found — which language, which scripts,
     // which variables — since compose says nothing about that.
     const compose = await readCompose(base);
-    const { services, backing } = await discoverServices(
+    const { services, candidates, backing } = await discoverServices(
       base,
       (compose?.services ?? []).map((c) => c.dir).filter((d): d is string => Boolean(d)),
     );
 
     const declared = composeOverlay(services, compose);
+    // The overlay runs over the candidates too, so a lone service in a subdirectory
+    // carries the port and name its compose file gives it rather than only a path.
+    const sole =
+      services.length === 0 && candidates.length === 1 && candidates[0]!.dir !== '.'
+        ? composeOverlay(candidates, compose)[0]
+        : undefined;
 
     // A repository can name a dependency it never imports — `DATABASE_URL` in
     // .env.example with no driver in the manifest still means a database is expected.
@@ -163,6 +243,7 @@ export class RepositoryAnalyzer {
 
     return {
       ...(declared.length ? { services: declared } : {}),
+      ...(sole ? { soleService: sole } : {}),
       ...(merged.length ? { backing: merged } : {}),
     };
   }
@@ -283,7 +364,18 @@ export class RepositoryAnalyzer {
       for (const m of src.matchAll(/include_router\(\s*(\w+)(?:\.router)?[^)]*?prefix\s*=\s*['"]([^'"]+)['"]/g)) pyMounts.set(m[1]!, m[2]!);
       for (const m of src.matchAll(/register_blueprint\(\s*(\w+)[^)]*?url_prefix\s*=\s*['"]([^'"]+)['"]/g)) pyMounts.set(m[1]!, m[2]!);
     }
-    for (const dir of ['routers', 'routes', 'api', 'blueprints', ...pythonEntries.map((e) => join(dirname(e), 'routers')), ...pythonEntries.map((e) => join(dirname(e), 'routes'))]) {
+    // Beside the entry point, and one level inside a package. `app/routes/` is the
+    // ordinary FastAPI layout and a scan of the working directory walks straight past it.
+    const pkgDirs = (await readdir(base, { withFileTypes: true }).catch(() => []))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !['tests', 'docs', 'node_modules'].includes(e.name))
+      .map((e) => e.name)
+      .slice(0, 6);
+    const routeDirs = ['routers', 'routes', 'api', 'blueprints', 'endpoints', 'views'];
+    for (const dir of [
+      ...routeDirs,
+      ...pythonEntries.flatMap((e) => routeDirs.map((r) => join(dirname(e), r))),
+      ...pkgDirs.flatMap((pkg) => routeDirs.map((r) => `${pkg}/${r}`)),
+    ]) {
       const entries = await readdir(join(base, dir), { withFileTypes: true }).catch(() => []);
       for (const e of entries) if (e.isFile() && e.name.endsWith('.py') && e.name !== '__init__.py') pyFiles.add(`${dir}/${e.name}`);
     }
@@ -300,6 +392,15 @@ export class RepositoryAnalyzer {
         for (const method of methods) add(method, prefix + m[1]!, file);
       }
       for (const m of src.matchAll(/@\w+\.(get|post|put|patch|delete)\(\s*['"]([^'"]+)['"]/g)) add(m[1]!, prefix + m[2]!, file);
+      // Routers built by hand rather than by decorator: `add_api_route` in FastAPI and
+      // `add_url_rule` in Flask. A class-based router registers every route this way and
+      // declares not a single decorator, so a decorator-only reader reports nothing.
+      for (const m of src.matchAll(/\.add_(?:api_route|url_rule)\(\s*['"]([^'"]+)['"][^)]*?methods\s*=\s*[[(]([^\])]*)[\])]/gs)) {
+        for (const x of m[2]!.matchAll(/['"](\w+)['"]/g)) add(x[1]!, prefix + m[1]!, file);
+      }
+      for (const m of src.matchAll(/\.add_(?:api_route|url_rule)\(\s*['"]([^'"]+)['"]((?!methods)[^)])*\)/gs)) {
+        add('GET', prefix + m[1]!, file);
+      }
     }
 
     // --- A request file the author tests with, which lists exactly what to call ---
@@ -314,7 +415,11 @@ export class RepositoryAnalyzer {
     return routes.length ? { httpRoutes: routes } : {};
   }
 
-  private async readPython(base: string, fileNames: string[]): Promise<PythonSummary | undefined> {
+  private async readPython(
+    base: string,
+    fileNames: string[],
+    dirNames: string[] = [],
+  ): Promise<PythonSummary | undefined> {
     const hasRequirements = fileNames.includes('requirements.txt');
     const hasPyproject = fileNames.includes('pyproject.toml');
     const hasPipfile = fileNames.includes('Pipfile');
@@ -333,16 +438,63 @@ export class RepositoryAnalyzer {
       .map((l) => l.trim())
       .filter((l) => l !== '' && !l.startsWith('#'));
 
-    // Only plausible entry points are read, not every .py file in the repository.
-    const candidates = pyFiles
-      .filter((n) => ENTRY_FILES.includes(n))
-      .slice(0, 6);
+    // Scripts whose *name* says they create the schema. Nothing is inferred from their
+    // contents: a name is a claim the author made, and running a file because it looked
+    // like it might set something up is the kind of guess this codebase avoids.
+    const initScripts = pyFiles.filter((n) => DB_INIT_SCRIPTS.includes(n));
+
+    // The conventional names first, then whatever else is at the working directory.
+    //
+    // The list alone was not enough: a Streamlit repository's program is `dashboard.py`,
+    // and no amount of lengthening a list of names catches the next one. Every top-level
+    // .py file is cheap to read and the framework import in it is a declaration. Order is
+    // preserved, so `app.py` still outranks anything found this way.
+    const conventional = pyFiles.filter((n) => ENTRY_FILES.includes(n));
+    const rest = pyFiles.filter((n) => !ENTRY_FILES.includes(n) && !SKIP_AS_ENTRY.includes(n));
+    const candidates = [...conventional, ...rest].slice(0, MAX_ENTRY_SCAN);
 
     const entryCandidates: PythonEntry[] = [];
-    for (const file of candidates) {
+    // Modules the repository itself provides, so its own files are never mistaken for
+    // distributions to install.
+    // Both files and directories: `routers/` is a package this repository provides, and
+    // reading it as a distribution put `pip install routers` — which does not exist — in
+    // the middle of an otherwise correct install command.
+    const local = [...pyFiles.map((n) => n.replace(/\.py$/, '')), ...dirNames];
+    const imported: string[] = [];
+    let hardcodedDb: { file: string; url: string } | undefined;
+
+    // Walked, not merely scanned: a FastAPI tutorial's main.py imports `fastapi` and
+    // `models`, and `models.py` is where `sqlalchemy` appears. Reading the entry file
+    // alone installed two of the three distributions the application needs and the run
+    // died on `No module named 'sqlalchemy'`. Bounded hard — this follows a repository's
+    // own imports, it does not search its tree.
+    const queue = [...candidates];
+    const visited = new Set<string>();
+    while (queue.length > 0 && visited.size < MAX_IMPORT_FILES) {
+      const file = queue.shift()!;
+      if (visited.has(file)) continue;
+      visited.add(file);
       const source = await readCapped(join(base, file));
       if (source === null) continue;
-      entryCandidates.push({ file, ...detectPythonFramework(source) });
+
+      if (candidates.includes(file)) entryCandidates.push({ file, ...detectPythonFramework(source) });
+      for (const dist of importedDistributions(source, local)) {
+        if (!imported.includes(dist)) imported.push(dist);
+      }
+      // A connection URL names its driver in the scheme, and SQLAlchemy loads it by name
+      // at connect time — so nothing imports it and the import scan cannot see it.
+      for (const dist of driversForConnectionUrls(source)) {
+        if (!imported.includes(dist)) imported.push(dist);
+      }
+      if (!hardcodedDb) {
+        const url = hardcodedDatabaseUrl(source);
+        if (url) hardcodedDb = { file, url };
+      }
+      for (const module of localImports(source, local)) {
+        for (const next of await this.filesOfLocalModule(base, module)) {
+          if (!visited.has(next)) queue.push(next);
+        }
+      }
     }
 
     // A packaged project keeps its entry point inside the package — `src/pg_rag/main.py`
@@ -355,13 +507,40 @@ export class RepositoryAnalyzer {
 
     return {
       requirements,
-      ...(pyproject ? { dependencies: pyprojectDeps(pyproject) } : {}),
+      ...(imported.length ? { imports: imported } : {}),
+      ...(hardcodedDb ? { hardcodedDatabaseUrl: hardcodedDb } : {}),
+      ...(pyproject
+        ? {
+            dependencies: pyprojectDepsBySection(pyproject).all,
+            runtimeDependencies: pyprojectDepsBySection(pyproject).runtime,
+          }
+        : {}),
       hasPyproject,
       ...(hasPyproject ? { packageable: await this.isPackageable(base, pyproject ?? '') } : {}),
       hasPipfile,
       hasManagePy,
+      ...(initScripts.length ? { initScripts } : {}),
       entryCandidates,
     };
+  }
+
+  /**
+   * The files behind a local module name: one file, or the modules inside a package.
+   *
+   * A package's `__init__.py` is often empty and the imports that matter live in the
+   * modules beside it — `routers/todos.py` is where a FastAPI project's database
+   * dependencies appear. Bounded to one level, because this follows imports rather than
+   * searching a tree.
+   */
+  private async filesOfLocalModule(base: string, module: string): Promise<string[]> {
+    const single = `${module}.py`;
+    if (await exists(join(base, single))) return [single];
+
+    const entries = await readdir(join(base, module), { withFileTypes: true }).catch(() => []);
+    return entries
+      .filter((e) => e.isFile() && e.name.endsWith('.py'))
+      .slice(0, MAX_IMPORT_FILES)
+      .map((e) => `${module}/${e.name}`);
   }
 
   /**

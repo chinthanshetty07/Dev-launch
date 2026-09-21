@@ -687,6 +687,35 @@ describe('a single service that needs a database', () => {
     await mgr.shutdown();
   });
 
+  it('does not report a ninety-second database wait as checking commands', async () => {
+    // Validation is synchronous and had already finished. Provisioning waits for a
+    // database to accept connections, which on a cold MySQL is most of a minute — and
+    // the dashboard said "Checking the commands against the security allowlist" for all
+    // of it, which is a state lying about what it is doing.
+    const created: string[] = [];
+    const seen: ExecutionState[] = [];
+
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    const docker = fakeDocker(created);
+    let stateWhenProvisioning: ExecutionState | undefined;
+    exec.docker = {
+      ...docker,
+      createBackingContainer: async (o: { image: string }) => {
+        stateWhenProvisioning = seen[seen.length - 1];
+        return docker.createBackingContainer(o);
+      },
+    } as never;
+
+    const mgr = new SessionManager(exec, { analyzer: analyzed as never, planner: planned as never });
+    mgr.on('state', (updated: { state: ExecutionState }) => seen.push(updated.state));
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await settle();
+
+    expect(session.state).toBe(ExecutionState.READY);
+    expect(stateWhenProvisioning).toBe(ExecutionState.STARTING);
+    await mgr.shutdown();
+  });
+
   it('overrules a connection string the plan invented', async () => {
     // Taken from a real run. The AI fallback planned a lone FastAPI service and filled in
     // `DATABASE_URL=postgresql://user:pass@db:5432/dbname` — a host that does not exist,
@@ -886,4 +915,324 @@ describe('a program that is not a server', () => {
     expect(session.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/ran to completion and exited 0/);
     await mgr.shutdown();
   });
+});
+
+describe('repairing a project, not only a lone service', () => {
+  /**
+   * Until this existed a project got no repair at all: a failed service went straight to
+   * FAILED and teardown, so the whole repair architecture served only repositories that
+   * happened to contain one service. A frontend calling an API is the ordinary shape of
+   * a web project, and it was the one shape with no second chance.
+   */
+  const service = (name: string, role: 'web' | 'api', port: number) => ({
+    ...plan(),
+    name,
+    role,
+    expectedPort: port,
+  });
+
+  const projectMeta = {
+    warnings: [],
+    envExample: [],
+    lockfiles: [],
+    frameworkConfigs: [],
+    services: [
+      { name: 'web', dir: 'frontend', role: 'web', language: 'node', scripts: ['dev'], evidence: 'x' },
+      { name: 'api', dir: 'backend', role: 'api', language: 'node', scripts: ['dev'], evidence: 'x' },
+    ],
+  };
+
+  /**
+   * An ExecutionManager whose `api` service opens 9001 rather than the 4000 it was
+   * planned on, and whose `web` service is fine.
+   */
+  function projectExec(opts: { apiRecovers: boolean }) {
+    const launches: { name: string; port: number | null }[] = [];
+    const waits: string[] = [];
+    let apiAttempt = 0;
+
+    const exec = {
+      docker: {
+        networkExists: async () => false,
+        claimedAliases: async () => new Set<string>(),
+      },
+      async launch(o: { plan: { name?: string; expectedPort: number | null }; logs?: LogManager }) {
+        const name = o.plan.name ?? 'single';
+        launches.push({ name, port: o.plan.expectedPort });
+        const isApi = name === 'api';
+        if (isApi) apiAttempt++;
+        const fixed = isApi && opts.apiRecovers && o.plan.expectedPort === 9001;
+        return {
+          logs: o.logs ?? new LogManager(),
+          waitForReady: async (): Promise<ReadyOutcome> => (
+            waits.push(name),
+            !isApi || fixed
+              ? { state: ExecutionState.READY, hostPort: '1234', url: 'http://localhost:1234/', readiness: { ready: true, attempts: 1, elapsedMs: 1 } }
+              : {
+                  state: ExecutionState.FAILED,
+                  hostPort: '1234',
+                  readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                  failure: {
+                    code: FailureCode.PORT_NOT_LISTENING,
+                    message: 'Nothing is listening on port 4000.',
+                    observedSocket: { address: '0.0.0.0', port: 9001, loopbackOnly: false },
+                  },
+                }),
+          clearStartupBudget: () => undefined,
+          cleanup: async () => ({ errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+
+    return { exec, launches, waits, apiAttempts: () => apiAttempt };
+  }
+
+  const deps = (exec: ExecutionManager) =>
+    new SessionManager(exec, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [service('api', 'api', 4000), service('web', 'web', 5173)], planSource: 'rule-based' },
+          skipped: [],
+          warnings: [],
+        }),
+      } as never,
+    });
+
+  it('repairs the one service that failed and leaves its siblings running', async () => {
+    const { exec, launches, waits } = projectExec({ apiRecovers: true });
+    const mgr = deps(exec);
+    const session = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => session.state === ExecutionState.READY || session.state === ExecutionState.FAILED);
+
+    expect(session.state).toBe(ExecutionState.READY);
+    expect(session.repairs?.[0]).toMatchObject({ source: 'deterministic', type: 'PORT_CORRECTION', service: 'api' });
+    // The web service was started once. Repairing a sibling must not cost it its
+    // container and several minutes of install.
+    expect(launches.filter((l) => l.name === 'web')).toHaveLength(1);
+    expect(launches.filter((l) => l.name === 'api').map((l) => l.port)).toEqual([4000, 9001]);
+    // Nor is it waited on again: re-polling a service that is already serving traffic
+    // spends the readiness budget proving what is already known.
+    expect(waits.filter((n) => n === 'web')).toHaveLength(1);
+    await mgr.shutdown();
+  });
+
+  it('still stops at the repair ceiling when the rule does not help', async () => {
+    const { exec, apiAttempts } = projectExec({ apiRecovers: false });
+    const mgr = deps(exec);
+    const session = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => session.state === ExecutionState.FAILED, 8000);
+
+    expect(session.state).toBe(ExecutionState.FAILED);
+    // One repair, then the same proposal again — which the progress check refuses.
+    expect(apiAttempts()).toBeLessThanOrEqual(1 + config.ai.maxRepairAttempts);
+    expect(session.failure?.message).toMatch(/api/);
+    await mgr.shutdown();
+  });
+
+  it('does not ask a model to rewrite one service of a project', async () => {
+    // Its siblings were already told this service's address, and a model rewriting the
+    // plan is exactly what would invalidate that.
+    const { exec } = projectExec({ apiRecovers: false });
+    const calls: number[] = [];
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [service('api', 'api', 4000), service('web', 'web', 5173)], planSource: 'rule-based' },
+          skipped: [],
+          warnings: [],
+        }),
+      } as never,
+      aiRepair: { repair: async () => { calls.push(1); throw new Error('should not be called'); } } as never,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => session.state === ExecutionState.FAILED, 8000);
+
+    expect(calls).toEqual([]);
+    await mgr.shutdown();
+  });
+});
+
+describe('a bind address written into the source', () => {
+  it('refuses to repair it, and says which line to change', async () => {
+    // `app.listen(port, 'localhost')` is not configuration. No variable, flag or
+    // rewritten start command reaches it, so repair can only spend its attempts proving
+    // that — at a full reinstall each.
+    const loopback = (): ReadyOutcome => ({
+      state: ExecutionState.FAILED,
+      hostPort: '1234',
+      readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+      failure: {
+        code: FailureCode.PORT_BOUND_TO_LOCALHOST,
+        message: 'The application is listening on ::1:8017.',
+      } as ReadyOutcome['failure'],
+    });
+    const calls: number[] = [];
+    const mgr = new SessionManager(fakeExec(loopback), {
+      analyzer: {
+        analyze: async () => ({
+          warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+          hardcodedBind: { file: 'src/server.js', line: "const hostname = 'localhost'" },
+        }),
+      } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'express', warnings: [] }) } as never,
+      aiRepair: { repair: async () => { calls.push(1); throw new Error('should not be called'); } } as never,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => session.state === ExecutionState.FAILED);
+
+    expect(calls).toEqual([]);
+    expect(session.repairAttempts ?? []).toEqual([]);
+    expect(session.failure?.remedy).toMatch(/src\/server\.js/);
+    expect(session.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/hardcodes the bind address/);
+    await mgr.shutdown();
+  });
+
+  it('still repairs a loopback bind that is not a literal', async () => {
+    // `--host 127.0.0.1` in a start command is configuration, and configuration is
+    // exactly what a rule can change. Refusing here would stop a repair that works.
+    const loopback = (): ReadyOutcome => ({
+      state: ExecutionState.FAILED,
+      hostPort: '1234',
+      readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+      failure: {
+        code: FailureCode.PORT_BOUND_TO_LOCALHOST,
+        message: 'The application is listening on 127.0.0.1:3000.',
+      } as ReadyOutcome['failure'],
+    });
+    const mgr = new SessionManager(fakeExec(loopback), {
+      analyzer: { analyze: async () => ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [] }) } as never,
+      planner: {
+        planRepository: async () => ({
+          plan: RunPlanSchema.parse({ ...plan(), startCommand: 'npm run dev -- --host 127.0.0.1' }),
+          detected: 'vite',
+          warnings: [],
+        }),
+      } as never,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => session.state === ExecutionState.FAILED);
+
+    expect(session.repairs?.[0]).toMatchObject({ type: 'HOST_BINDING_CORRECTION' });
+    await mgr.shutdown();
+  });
+});
+
+describe('a database image the repository names', () => {
+  /**
+   * The approval check reads the repository name and adopts whatever tag follows, which
+   * is how one compose file's `postgres:15.1-alpine` was started under the hardening
+   * profile — non-root, read-only rootfs, every capability dropped — where its entrypoint
+   * chmods the data directory and exits 1. The application then started, was handed a
+   * connection string, and failed with `could not translate host name "postgres"`,
+   * because the alias belonged to a container that no longer existed.
+   */
+  const analyzed = (image: string) => ({
+    analyze: async () => ({
+      backing: [
+        { kind: 'postgres' as const, evidence: 'docker-compose declares db', image, urlEnvKeys: ['DATABASE_URL'], neededBy: [] },
+      ],
+    }),
+  });
+  const planned = { planRepository: async () => ({ plan: plan(), detected: 'fastapi', warnings: [] }) };
+
+  /** A Docker whose named image never becomes ready, and whose own image does. */
+  function pickyDocker(created: string[], workingImage: string) {
+    let current = '';
+    return {
+      ensureImage: async () => undefined,
+      networkExists: async () => true,
+      createBackingContainer: async (o: { image: string }) => {
+        created.push(o.image);
+        current = o.image;
+        return { id: o.image } as never;
+      },
+      start: async () => undefined,
+      stop: async () => undefined,
+      remove: async () => undefined,
+      logTail: async () => 'chmod: /var/lib/postgresql/data: Operation not permitted',
+      execCapture: async () => (current === workingImage ? 'accepting connections' : ''),
+    };
+  }
+
+  it('falls back to the image DevLaunch verifies when the named one will not start', async () => {
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = pickyDocker(created, 'postgres:16') as never;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: analyzed('postgres:15.1-alpine') as never,
+      planner: planned as never,
+      backingReadyMs: 60,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await until(() => session.state === ExecutionState.READY, 5000);
+
+    expect(created).toEqual(['postgres:15.1-alpine', 'postgres:16']);
+    expect(session.state).toBe(ExecutionState.READY);
+    await mgr.shutdown();
+  }, 120_000);
+
+  it('says why, rather than quietly running something else', async () => {
+    // A repository asking for pgvector and quietly getting plain Postgres fails later on
+    // its first `CREATE EXTENSION`, and deserves to know which it got.
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = pickyDocker(created, 'postgres:16') as never;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: analyzed('postgres:15.1-alpine') as never,
+      planner: planned as never,
+      backingReadyMs: 60,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await until(() => session.state === ExecutionState.READY, 5000);
+
+    const log = session.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(log).toMatch(/did not start under the sandbox profile/);
+    expect(log).toMatch(/Operation not permitted/);
+    expect(log).toMatch(/Falling back to postgres:16/);
+    await mgr.shutdown();
+  }, 120_000);
+
+  it('does not restart its own image when that is the one that failed', async () => {
+    // The fallback exists because a *named* tag is unverified. Re-running the verified
+    // one after it has already failed starts a second container to watch it fail again.
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = pickyDocker(created, 'nothing-works') as never;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => ({ backing: [
+        { kind: 'postgres' as const, evidence: 'depends on psycopg2', urlEnvKeys: ['DATABASE_URL'], neededBy: [] },
+      ] }) } as never,
+      planner: planned as never,
+      backingReadyMs: 60,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await until(() => session.state === ExecutionState.READY, 5000);
+
+    expect(created).toEqual(['postgres:16']);
+    await mgr.shutdown();
+  }, 120_000);
+
+  it('does not start a second container when the named image works', async () => {
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = pickyDocker(created, 'pgvector/pgvector:pg16') as never;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: analyzed('pgvector/pgvector:pg16') as never,
+      planner: planned as never,
+      backingReadyMs: 60,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await until(() => session.state === ExecutionState.READY, 5000);
+
+    expect(created).toEqual(['pgvector/pgvector:pg16']);
+    await mgr.shutdown();
+  }, 120_000);
 });

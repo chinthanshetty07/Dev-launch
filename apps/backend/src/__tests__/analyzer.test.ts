@@ -397,6 +397,27 @@ def add(): return {}`,
     );
   });
 
+  it('finds a class-based router one level inside a package', async () => {
+    // Two misses on one real repository: the routes live in `app/routes/`, which a scan
+    // of the working directory walks past, and they are registered with
+    // `add_api_route` rather than a decorator. A decorator-only reader looking only at
+    // the top level reported no routes at all for a perfectly ordinary FastAPI layout.
+    const dir = await build({
+      'pyproject.toml': '[project]\nname = "svc"\ndependencies = ["fastapi"]\n',
+      'main.py': 'from fastapi import FastAPI\nfrom app.routes import ROUTERS\napp = FastAPI()\nfor r in ROUTERS:\n    app.include_router(r)\n',
+      'app/routes/api_health.py': `from app.routes.base import BaseRoute
+class ApiHealthRoute(BaseRoute):
+    def __init__(self) -> None:
+        super().__init__()
+        self.router.add_api_route("/api_health", self.api_health, methods=["GET"])`,
+      'app/routes/auth.py': `class AuthRoute:
+    def __init__(self) -> None:
+        self.router.add_api_route("/auth/token", self.token, methods=["POST"])`,
+    });
+    const routes = (await analyzer.analyze(dir, '.')).httpRoutes!.map(key);
+    expect(routes).toEqual(expect.arrayContaining(['GET /api_health', 'POST /auth/token']));
+  });
+
   it('reports nothing for a repository that declares nothing', async () => {
     const dir = await build({ 'package.json': JSON.stringify({ name: 'lib', dependencies: {} }), 'index.js': 'module.exports = 1;' });
     expect((await analyzer.analyze(dir, '.')).httpRoutes).toBeUndefined();
@@ -436,5 +457,151 @@ describe('whether pip install . can build the project', () => {
   it('is true for a single package, ignoring the directories setuptools ignores', async () => {
     const root = await build({ 'pyproject.toml': PYPROJECT }, ['app', 'tests', 'docs', 'scripts', '.github']);
     expect((await analyzer.analyze(root, '.')).python?.packageable).toBe(true);
+  });
+});
+
+describe('a schema script the application needs before it can answer', () => {
+  it('is found by name, and setup.py never is', async () => {
+    // Observed: app.py opens todo.db and db_create.py creates its tables. Skipped, the
+    // application starts perfectly and answers 500 to every request with
+    // `no such table: tasks` — which reads as a broken repository and is a missing step.
+    const { mkdtemp, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-init-'));
+    await writeFile(join(dir, 'requirements.txt'), 'Flask==2.2.2\n');
+    await writeFile(join(dir, 'app.py'), 'from flask import Flask\napp = Flask(__name__)\n');
+    await writeFile(join(dir, 'db_create.py'), 'import sqlite3\n');
+    // Packaging, not schema. Running it here would build a wheel, not a database.
+    await writeFile(join(dir, 'setup.py'), 'from setuptools import setup\nsetup()\n');
+    await writeFile(join(dir, 'seed.py'), 'print("data")\n');
+
+    const meta = await analyzer.analyze(dir, '.');
+    expect(meta.python?.initScripts).toEqual(['db_create.py']);
+  });
+});
+
+describe('what a Python project needs, when it declares it only in its imports', () => {
+  /** Build a repository on disk from a path → contents map. */
+  async function pyRepo(files: Record<string, string>): Promise<string> {
+    const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join, dirname: dir } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'devlaunch-pyimp-'));
+    scratch.push(root);
+    for (const [path, contents] of Object.entries(files)) {
+      const full = join(root, path);
+      await mkdir(dir(full), { recursive: true });
+      await writeFile(full, contents);
+    }
+    return root;
+  }
+
+  it('follows the repository\'s own imports to the file that names the dependency', async () => {
+    // A FastAPI tutorial's main.py imports `fastapi` and `models`; `models.py` is where
+    // `sqlalchemy` appears. Reading the entry file alone installed two of the three
+    // distributions the application needs, and the run died on `No module named
+    // 'sqlalchemy'`.
+    const root = await pyRepo({
+      'main.py': 'from fastapi import FastAPI\nimport models\napp = FastAPI()\n',
+      'models.py': 'from sqlalchemy import Column\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.imports).toEqual(['fastapi', 'sqlalchemy']);
+  });
+
+  it('never proposes installing a package the repository provides', async () => {
+    // `routers/` is a directory in this repository. `pip install routers` does not
+    // exist, and one bad name fails the whole install command.
+    const root = await pyRepo({
+      'main.py': 'from fastapi import FastAPI\nfrom routers import todos\n',
+      'routers/__init__.py': '',
+      'routers/todos.py': 'from sqlalchemy.orm import Session\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.imports).not.toContain('routers');
+    expect(meta.python?.imports).toContain('sqlalchemy');
+  });
+
+  it('reads the modules inside a package, not only its __init__', async () => {
+    // A package's __init__.py is usually empty, and the dependencies live beside it.
+    const root = await pyRepo({
+      'main.py': 'from fastapi import FastAPI\nimport api\n',
+      'api/__init__.py': '',
+      'api/auth.py': 'from passlib.context import CryptContext\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.imports).toContain('passlib');
+  });
+
+  it('reports no imports for a project that declares its dependencies properly', async () => {
+    // Nothing is wrong with also reading them, but the planner prefers requirements.txt
+    // and this keeps the two facts distinguishable.
+    const root = await pyRepo({
+      'requirements.txt': 'flask==3.0.0\n',
+      'app.py': 'from flask import Flask\napp = Flask(__name__)\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.requirements).toEqual(['flask==3.0.0']);
+  });
+});
+
+describe('which file starts the application', () => {
+  async function pyDir(files: Record<string, string>): Promise<string> {
+    const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join, dirname: dir } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'devlaunch-entry2-'));
+    scratch.push(root);
+    for (const [path, contents] of Object.entries(files)) {
+      const full = join(root, path);
+      await mkdir(dir(full), { recursive: true });
+      await writeFile(full, contents);
+    }
+    return root;
+  }
+
+  it('finds a Streamlit program that is not called app.py', async () => {
+    // `streamlit run app.py` on a repository whose program is `dashboard.py` fails with
+    // `Invalid value: File does not exist`, and a model then guessed `src/app.py`.
+    const root = await pyDir({
+      'requirements.txt': 'streamlit\npandas\n',
+      'dashboard.py': 'import streamlit as st\nst.title("hi")\n',
+      'config.py': "KEY = ''\n",
+    });
+    const meta = await analyzer.analyze(root);
+    const entry = meta.python?.entryCandidates.find((e) => e.framework === 'streamlit');
+    expect(entry?.file).toBe('dashboard.py');
+  });
+
+  it('still prefers a conventional name when there is one', async () => {
+    const root = await pyDir({
+      'requirements.txt': 'flask\n',
+      'app.py': 'from flask import Flask\napp = Flask(__name__)\n',
+      'helpers.py': 'from flask import request\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.entryCandidates[0]?.file).toBe('app.py');
+  });
+
+  it('never treats setup.py as the program', async () => {
+    // It is packaging, and running it as an application is how a repository gets
+    // installed instead of started.
+    const root = await pyDir({
+      'requirements.txt': 'streamlit\n',
+      'setup.py': 'import streamlit\n',
+      'dashboard.py': 'import streamlit as st\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.entryCandidates.map((e) => e.file)).not.toContain('setup.py');
+  });
+
+  it('recognises Gradio the same way', async () => {
+    const root = await pyDir({
+      'requirements.txt': 'gradio\n',
+      'demo.py': 'import gradio as gr\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.entryCandidates.find((e) => e.framework === 'gradio')?.file).toBe('demo.py');
   });
 });

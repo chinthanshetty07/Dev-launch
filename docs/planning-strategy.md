@@ -423,3 +423,97 @@ decided it — exposed on the session and shown beside the failure.
   test of someone else's service. The invariants worth asserting are ours: either a
   valid plan comes back, or it is rejected for a stated reason. An unsafe command is
   never executable either way.
+
+## The repository is read further than its manifests
+
+Every rule below exists because the deterministic planner declined a repository it had
+enough evidence to plan, and the AI fallback then guessed at what a file already said.
+Each one was found by running real repositories, not by reading the code.
+
+### The application is not always at the root
+
+A repository is not always a project *or* an application at its top level. The third
+shape — and it is common — is an application in `src/` or `backend/` with only
+configuration above it: `build: ./src` in a compose file and nothing else. Planning the
+root found no manifest, declined, and handed the repository to the model, which then
+planned `pip install -r requirements.txt` from a directory that has no requirements.txt.
+
+Discovery already found that directory. It was thrown away by the gate that decides
+whether a repository is multi-service, which requires two. It is now carried as
+`soleService` and planned when the root cannot be.
+
+### A declared port outranks a framework default
+
+`const port = 8017` beside `app.listen(port, hostname)` is a fact. A framework default is
+a prediction, and an application that hardcodes its port ignores the `PORT` DevLaunch
+injects — so planning on the default watches a port nothing will ever open and reports a
+healthy application as never having started.
+
+The declared port wins only where DevLaunch cannot force one. Vite is told `--port` on
+the command line and obeys, so its default stands; Express is not told anything, so what
+the source says is the only number that matters.
+
+### A manifest can declare several frameworks, and the scripts say which one runs
+
+A MERN repository declares `express` and `react-scripts` side by side, because one
+`package.json` holds both halves. The detector table is walked in order, most specific
+first, and that order picks the browser tool — which is usually not what the start script
+runs. This one runs `node ./bin/www`.
+
+The script body settles it, because the script body is the author saying what starts. It
+is not cosmetic: the two frameworks differ in default port and in argument style, so a
+Vite-shaped guess appends `--host 0.0.0.0 --port 5173` to a command that is really
+`node server.js`, and then watches a port nothing will open.
+
+Frameworks are recognised by different evidence depending on how they start. A build tool
+is invoked by name (`vite`, `react-scripts start`); a server framework is imported by a
+file handed to `node`. `startedBy` in the detector table records which.
+
+### Imports are a declaration
+
+A lone `app.py` with no requirements.txt is the commonest shape of tutorial repository on
+GitHub, and every one of them was declined — "No requirements.txt or pyproject.toml
+found" — and handed to the model, which read the imports and installed them.
+`import flask_sqlalchemy` is a declaration, not a hint.
+
+Three things keep this from guessing:
+
+- **The standard library is excluded by name.** `pip install os` fails, and it fails the
+  whole command with it. The list is long and deliberately so: every name missing from it
+  becomes an install of something that does not exist.
+- **The repository's own modules are excluded**, files and package directories both.
+  `routers/` is a directory this repository provides; `pip install routers` is not a
+  thing.
+- **The walk follows the repository's own imports**, bounded to twelve files. A FastAPI
+  tutorial's `main.py` imports `fastapi` and `models`, and `models.py` is where
+  `sqlalchemy` appears. Reading the entry file alone installed two of three and the run
+  died on `No module named 'sqlalchemy'`.
+
+A requirements.txt or pyproject.toml always wins. This is the last resort, and it says so
+in a warning: the versions are not pinned, because the repository pinned none.
+
+### The variable a service reads its connection string from
+
+The alias list — `MONGO_URI`, `MONGODB_URI`, `MONGO_URL`, `MONGODB_URL` — can be
+lengthened for ever and will keep losing this race. One real repository passes
+`process.env.CONNECTION_STRING` to `mongoose.connect`, so a provisioned, healthy MongoDB
+was injected under four names it never read and it crashed at boot with
+`The uri parameter to openUri() must be a string, got "undefined"`.
+
+What the service's own source says it reads cannot lose that race. Two conditions keep it
+from guessing: the name has to be shaped like a connection string rather than like a
+setting (and `CLIENT_URL`, `WEBHOOK_URL` and their kind are excluded by name — writing a
+database address into one would break a working application to fix one that is not
+broken), and it has to be attributable, either by naming its kind outright or by there
+being exactly one kind to attribute it to.
+
+### Django migrates before it serves
+
+Every Django README says to run `manage.py migrate` before the server, and it is the same
+command for every Django project there has ever been. Without it the server starts,
+prints `You have N unapplied migration(s)` into a log nobody reads, and returns 500 from
+the first page that touches the database — which reads as DevLaunch having broken the
+project rather than having skipped a step.
+
+A schema script the repository names outright still wins: it knows this repository, where
+`manage.py migrate` knows Django.

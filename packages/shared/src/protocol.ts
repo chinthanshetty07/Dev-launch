@@ -95,4 +95,13 @@ export interface ReadinessView {
   path: string;
   status?: number;
   healthHintOk?: boolean;
+  /** What the server replied, when it did not reply with a success. */
+  body?: string;
+  /**
+   * The application's own last error, from its log.
+   *
+   * An error page says "Internal Server Error". The traceback behind it says
+   * `no such table: tasks`, and only one of those can be acted on.
+   */
+  logError?: string;
 }

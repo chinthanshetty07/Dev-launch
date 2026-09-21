@@ -141,3 +141,48 @@ export function progressOf(
   if (phase === 'install' || phase === 'build') return 'BUILDING';
   return furthestOf(observed, impliedProgress(view));
 }
+
+/**
+ * What a session is doing, in a sentence a person who did not build this would follow.
+ *
+ * Lives beside the projection above and for the same reason: the state names are
+ * internal vocabulary — `WAITING_FOR_READY` is precise and tells a first-time user
+ * nothing about why they are staring at a spinner. Every client should say the same
+ * thing, so it is decided once rather than re-invented in each one.
+ */
+export function describeState(state: ExecutionState | 'IDLE'): string {
+  switch (state) {
+    case 'IDLE':
+      return 'Nothing running.';
+    case 'QUEUED':
+      return 'Queued, waiting for a free slot.';
+    case 'CLONING':
+      return 'Downloading the repository from GitHub.';
+    case 'ANALYZING':
+      return 'Reading its manifests to work out how it is put together.';
+    case 'PLANNING':
+      return 'Deciding how to install and start it.';
+    case 'VALIDATING':
+      return 'Checking the commands against the security allowlist.';
+    case 'AWAITING_INPUT':
+      return 'Waiting for you — this project needs something only you can supply.';
+    case 'BUILDING':
+      return 'Installing dependencies inside the container. This is usually the slowest step.';
+    case 'STARTING':
+      return 'Starting containers — any database this project needs, then installing its dependencies.';
+    case 'WAITING_FOR_READY':
+      return 'Started — waiting for it to open its port and answer.';
+    case 'READY':
+      return 'Running and answering requests.';
+    case 'REPAIRING':
+      return 'That did not work. Trying a corrected plan.';
+    case 'CLEANING_UP':
+      return 'Removing containers.';
+    case 'COMPLETED':
+      return 'Ran to completion and exited cleanly.';
+    case 'FAILED':
+      return 'Stopped. The diagnosis is below.';
+    case 'CANCELLED':
+      return 'Stopped at your request.';
+  }
+}

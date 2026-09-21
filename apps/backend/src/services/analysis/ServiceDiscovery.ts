@@ -74,17 +74,33 @@ const BACKING_RULES: readonly BackingRule[] = [
 
 /** Source files worth scanning for a hardcoded API origin. Bounded on purpose. */
 const SOURCE_DIRS = ['src', 'app', 'lib', 'source'];
-const SOURCE_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx', '.vue', '.svelte'];
+// `.py` because the scan already looks for `os.environ[...]` and never had a Python
+// file to find it in; `.mjs`/`.cjs` because a repository that picked one of them is
+// otherwise read as having no source at all.
+const SOURCE_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.mjs', '.cjs', '.py'];
 const MAX_SOURCE_FILES = 60;
 
-interface Manifest {
+export interface Manifest {
   name?: string;
   scripts: Record<string, string>;
   dependencies: Record<string, string>;
+  /** Create React App's dev-server proxy, declared in the manifest rather than a config. */
+  proxy?: string;
 }
 
 export interface DiscoveryResult {
+  /** Runnable parts, only when there are several. A lone one is not a "project". */
   services: ServiceCandidate[];
+  /**
+   * Every runnable part found, including the case of exactly one.
+   *
+   * `services` is gated at two on purpose — one service is the ordinary case and must
+   * not be routed down the multi-service path. But the gate threw the single candidate
+   * away entirely, and with it the only record of *where* it lives: a repository whose
+   * whole application sits in `src/`, declared by its own compose file, was planned at
+   * the root, found no manifest there, and fell through to the model.
+   */
+  candidates: ServiceCandidate[];
   backing: BackingService[];
 }
 
@@ -157,10 +173,13 @@ export async function discoverServices(
 
   // One service is the ordinary case and needs none of this. Reporting it as a
   // multi-service repository would route it down a path built for a problem it does
-  // not have.
-  if (services.length < 2) return { services: [], backing: [...backing.values()] };
+  // not have. It is still carried as a candidate: where it lives is worth knowing.
+  if (services.length < 2) {
+    return { services: [], candidates: services, backing: [...backing.values()] };
+  }
 
-  return { services: sortByRole(services), backing: [...backing.values()] };
+  const sorted = sortByRole(services);
+  return { services: sorted, candidates: sorted, backing: [...backing.values()] };
 }
 
 /**
@@ -239,6 +258,8 @@ async function inspectDir(
     if (role === 'web') {
       const origins = await findCalledOrigins(base);
       if (origins.length) candidate.callsOrigins = origins;
+      const proxy = await findDevServerProxy(base, manifest);
+      if (proxy) candidate.devProxy = proxy;
     }
     return { candidate, backing: backingFor(Object.keys(manifest.dependencies), envKeys) };
   }
@@ -302,23 +323,89 @@ function classifyNode(dir: string, manifest: Manifest): { role: ServiceRole; evi
  * costs nothing, and guessing wrong costs the whole run.
  */
 function backingFor(deps: string[], declaredKeys: string[]): Omit<BackingService, 'neededBy'>[] {
-  const out: Omit<BackingService, 'neededBy'>[] = [];
-  for (const rule of BACKING_RULES) {
-    const dep = rule.deps.find((d) => deps.includes(d));
-    if (!dep) continue;
-    const declared = rule.envKeys.filter((k) => declaredKeys.includes(k));
-    out.push({
+  const matched = BACKING_RULES.map((rule) => ({
+    rule,
+    dep: rule.deps.find((d) => deps.includes(d)),
+  })).filter((m): m is { rule: BackingRule; dep: string } => m.dep !== undefined);
+
+  const kinds = matched.map((m) => m.rule.kind);
+
+  return matched.map(({ rule, dep }) => {
+    const known = rule.envKeys.filter((k) => declaredKeys.includes(k));
+    const custom = customConnectionKeys(declaredKeys, rule, kinds);
+    // The service's own name first: it is a fact about this repository, where the alias
+    // list is only a prediction about repositories in general.
+    const declared = [...custom, ...known];
+    return {
       kind: rule.kind,
-      evidence: `depends on ${dep}`,
+      evidence: custom.length ? `depends on ${dep} and reads ${custom[0]}` : `depends on ${dep}`,
       // The matched dependency *is* the driver. Carried forward because the connection
       // string has to name it: a repository depending on asyncpg needs
       // `postgresql+asyncpg://`, and the plain scheme sends SQLAlchemy to psycopg2.
       driver: dep,
       urlEnvKey: declared[0],
-      urlEnvKeys: declared.length ? declared : [...rule.envKeys],
-    });
-  }
-  return out;
+      // Every alias as well, even when the service named its own: they cost nothing
+      // unread, and a repository can read one name in code and another in a config file
+      // the scan did not reach.
+      urlEnvKeys: [...new Set([...declared, ...rule.envKeys])],
+    };
+  });
+}
+
+/**
+ * Variables this service reads a connection string from under a name nobody predicted.
+ *
+ * `process.env.CONNECTION_STRING` is what one real repository passes to
+ * `mongoose.connect`. It is not `MONGO_URI`, so a provisioned, healthy MongoDB was
+ * injected under four names the application never read, and it crashed at boot with
+ * `The uri parameter to openUri() must be a string, got "undefined"`. The alias list can
+ * be lengthened forever and will keep losing this race; what the service's own source
+ * says it reads cannot.
+ *
+ * Two things keep this from guessing. The name has to be shaped like a connection
+ * string rather than like a setting, and it has to be attributable: either it names the
+ * kind outright, or exactly one kind was detected and there is nothing to confuse it
+ * with. A repository needing both Postgres and Redis and reading a bare `DATABASE_URL`
+ * gets nothing from here, which is correct — the alias lists already cover it.
+ */
+function customConnectionKeys(
+  declaredKeys: readonly string[],
+  rule: BackingRule,
+  allKinds: readonly BackingService['kind'][],
+): string[] {
+  const known = new Set(BACKING_RULES.flatMap((r) => r.envKeys));
+  const onlyKind = allKinds.length === 1;
+
+  return declaredKeys.filter((key) => {
+    if (known.has(key) || !looksLikeConnectionString(key)) return false;
+    const named = KIND_TOKENS[rule.kind].test(key);
+    if (named) return true;
+    // Unattributable unless it cannot be confused with a sibling's.
+    return onlyKind && !BACKING_RULES.some((r) => r.kind !== rule.kind && KIND_TOKENS[r.kind].test(key));
+  });
+}
+
+/** What a variable of this kind is called, wherever a repository names one explicitly. */
+const KIND_TOKENS: Record<BackingService['kind'], RegExp> = {
+  mongodb: /MONGO/,
+  postgres: /POSTGRE|POSTGRES|\bPG_|_PG_/,
+  mysql: /MYSQL|MARIA/,
+  redis: /REDIS/,
+};
+
+/**
+ * Whether a variable name carries a connection string rather than an ordinary setting.
+ *
+ * The suffix is the signal, and the exclusions are what stop it being a menace: plenty
+ * of variables end in `_URL` and point at a frontend, a callback or a webhook. Writing a
+ * database's address into `CLIENT_URL` would break a working application to fix one that
+ * was not broken.
+ */
+export function looksLikeConnectionString(key: string): boolean {
+  if (!/(?:_URL|_URI|_DSN|CONNECTION_?STRING|^DSN$|^DATABASE$)$/.test(key)) return false;
+  return !/^(?:API|CLIENT|FRONTEND|WEB|APP|CORS|ORIGIN|CALLBACK|REDIRECT|WEBHOOK|BASE|SITE|PUBLIC|NEXT_PUBLIC|VITE|REACT_APP|SERVER|HOST)_/.test(
+    key,
+  );
 }
 
 /**
@@ -393,20 +480,63 @@ export function backingFromEnvKeys(keys: string[]): Omit<BackingService, 'needed
  * `process.env.PORT || 5000` is the near-universal shape, and the literal is the number
  * that matters: it is what the service binds when nothing overrides it.
  */
-async function findDeclaredPort(base: string, manifest: Manifest): Promise<number | undefined> {
-  const entryFiles = ['server.js', 'index.js', 'app.js', 'main.js', 'server.ts', 'index.ts', 'app.ts'];
+export async function findDeclaredPort(
+  base: string,
+  manifest: Manifest,
+): Promise<number | undefined> {
   const fromScript = /--port[= ](\d{2,5})/.exec(Object.values(manifest.scripts).join(' '));
   if (fromScript) return Number(fromScript[1]);
 
-  for (const file of entryFiles) {
+  for (const file of NODE_ENTRY_FILES) {
     for (const candidate of [file, join('src', file)]) {
       const raw = await readCapped(join(base, candidate));
       if (raw === null) continue;
       const match =
         /process\.env\.PORT\s*\|\|\s*(\d{2,5})/.exec(raw) ??
         /\.listen\(\s*(\d{2,5})/.exec(raw) ??
-        /PORT\s*=\s*(\d{2,5})/.exec(raw);
+        // `const port = 8017`, then `app.listen(port, hostname)`. Lower case, because
+        // that is how it is written in ordinary JavaScript — the pattern here was
+        // anchored to upper case and matched only the environment-variable spelling, so
+        // a repository that hardcodes its port declared nothing and was planned on the
+        // framework default it does not use.
+        /\b(?:const|let|var)\s+port\s*=\s*(\d{2,5})\b/i.exec(raw) ??
+        /\bPORT\s*=\s*(\d{2,5})\b/.exec(raw);
       if (match) return Number(match[1]);
+    }
+  }
+  return undefined;
+}
+
+const NODE_ENTRY_FILES = [
+  'server.js', 'index.js', 'app.js', 'main.js',
+  'server.ts', 'index.ts', 'app.ts', 'server.mjs', 'index.mjs',
+];
+
+/**
+ * A bind address written into the source as a literal, with the line that proves it.
+ *
+ * `app.listen(port, 'localhost')` cannot be changed by any environment variable, any
+ * flag, or any plan. Knowing that *before* repair runs is the difference between one
+ * honest failure naming the line to change and two attempts that could never have
+ * worked — a rule forcing HOST, then a model rewriting the start command.
+ */
+export async function findHardcodedLoopbackBind(
+  base: string,
+): Promise<{ file: string; line: string } | undefined> {
+  for (const file of NODE_ENTRY_FILES) {
+    for (const candidate of [file, join('src', file)]) {
+      const raw = await readCapped(join(base, candidate));
+      if (raw === null) continue;
+
+      // Either the literal in the call itself, or a constant the call is given. Both
+      // are the same fact; only the spelling differs.
+      const direct = /\.listen\s*\([^)]*['"](localhost|127\.0\.0\.1|::1)['"]/.exec(raw);
+      if (direct) return { file: candidate, line: direct[0].slice(0, 120) };
+
+      const named = /\b(?:const|let|var)\s+(host|hostname)\s*=\s*['"](localhost|127\.0\.0\.1|::1)['"]/i.exec(raw);
+      if (named && new RegExp(`\\.listen\\s*\\([^)]*\\b${named[1]}\\b`).test(raw)) {
+        return { file: candidate, line: named[0].slice(0, 120) };
+      }
     }
   }
   return undefined;
@@ -452,8 +582,12 @@ async function collectSourceFiles(base: string, budget = MAX_SOURCE_FILES): Prom
   };
 
   for (const dir of SOURCE_DIRS) await walk(join(base, dir), 0);
-  // Some projects keep sources at the root of the service directory.
-  if (out.length === 0) await walk(base, 3);
+  // Some projects keep sources at the root of the service directory, in directories
+  // named for what they hold rather than for being source: `config/`, `routes/`,
+  // `models/`. This walked from depth 3, one below the limit, so it read the root's own
+  // files and descended into none of them — and a repository whose entire database
+  // configuration lives in `config/dbConnection.js` was read as declaring nothing.
+  if (out.length === 0) await walk(base, 0);
   return out;
 }
 
@@ -466,6 +600,7 @@ async function readManifest(path: string): Promise<Manifest | null> {
       name: typeof parsed.name === 'string' ? parsed.name : undefined,
       scripts: asRecord(parsed.scripts),
       dependencies: { ...asRecord(parsed.dependencies), ...asRecord(parsed.devDependencies) },
+      ...(typeof parsed.proxy === 'string' ? { proxy: parsed.proxy } : {}),
     };
   } catch {
     // An unreadable manifest is the analyzer's business to report; here it simply means
@@ -513,13 +648,31 @@ const requirementNames = (raw: string): string[] =>
  * format and being wrong in ways nobody can see.
  */
 export function pyprojectDeps(raw: string): string[] {
+  return pyprojectDepsBySection(raw).all;
+}
+
+/**
+ * The same read, split by what the dependency is *for*.
+ *
+ * Detection wants everything declared — a database driver in a dev group still means a
+ * database. Installing wants only what the application needs to run: `pytest` and
+ * `httpx` in a runtime container are a slower build and a wider attack surface for
+ * nothing.
+ */
+export function pyprojectDepsBySection(raw: string): { all: string[]; runtime: string[] } {
   const names: string[] = [];
+  const runtime: string[] = [];
   let section = '';
   // Buffer for an array that spans lines, which is how nearly all of them are written.
   let pending: string | null = null;
 
+  let intoRuntime = false;
   const takeArray = (text: string): void => {
-    for (const m of text.matchAll(/["']([^"']+)["']/g)) names.push(requirementName(m[1]!));
+    for (const m of text.matchAll(/["']([^"']+)["']/g)) {
+      const name = requirementName(m[1]!);
+      names.push(name);
+      if (intoRuntime) runtime.push(name);
+    }
   };
 
   for (const rawLine of raw.split('\n')) {
@@ -550,6 +703,9 @@ export function pyprojectDeps(raw: string): string[] {
       section === 'dependency-groups';
 
     if (isArraySection && line.includes('=')) {
+      // `[project] dependencies` is what the application needs to run. Its optional
+      // extras and PEP 735 groups are not.
+      intoRuntime = section === 'project';
       const value = line.slice(line.indexOf('=') + 1).trim();
       if (!value.startsWith('[')) continue;
       if (bracketDepth(value) > 0) pending = value;
@@ -561,11 +717,15 @@ export function pyprojectDeps(raw: string): string[] {
     if (/^tool\.poetry(\.group\.[^.]+)?\.dependencies$/.test(section)) {
       const key = /^([A-Za-z0-9._-]+)\s*=/.exec(line);
       // `python` is the interpreter constraint, not a package.
-      if (key && key[1]!.toLowerCase() !== 'python') names.push(key[1]!.toLowerCase());
+      if (key && key[1]!.toLowerCase() !== 'python') {
+        names.push(key[1]!.toLowerCase());
+        // Poetry's own group tables are dev; the bare table is runtime.
+        if (section === 'tool.poetry.dependencies') runtime.push(key[1]!.toLowerCase());
+      }
     }
   }
 
-  return names.filter(Boolean);
+  return { all: names.filter(Boolean), runtime: runtime.filter(Boolean) };
 }
 
 /** Unclosed `[` outside of quoted strings, which is what ends a dependency array. */
@@ -600,3 +760,46 @@ function sortByRole(services: ServiceCandidate[]): ServiceCandidate[] {
   const rank: Record<ServiceRole, number> = { web: 0, api: 1, worker: 2 };
   return [...services].sort((a, b) => rank[a.role] - rank[b.role] || a.dir.localeCompare(b.dir));
 }
+
+/**
+ * A dev server told to forward some paths to an address the container cannot reach.
+ *
+ * `server: { proxy: { '/api': 'http://localhost:8000' } }` in vite.config.js, or
+ * `"proxy": "http://localhost:5000"` in a Create React App manifest. Both are resolved
+ * by the *dev server process*, which runs inside the frontend's own container — so
+ * `localhost` is the frontend, not the API, and every request the page makes returns
+ * 502 through a stack that is otherwise working perfectly.
+ *
+ * Nothing here fixes it: the target is a literal in the repository's own file, and
+ * DevLaunch does not edit a repository to make it run. What this does is find it, so the
+ * dashboard can name the file, the line and the one-word change, instead of leaving a
+ * person to work out why a READY project answers nothing.
+ */
+export async function findDevServerProxy(
+  base: string,
+  manifest: Manifest & { proxy?: unknown },
+): Promise<{ file: string; target: string } | undefined> {
+  if (typeof manifest.proxy === 'string' && LOOPBACK_URL.test(manifest.proxy)) {
+    return { file: 'package.json', target: manifest.proxy };
+  }
+
+  for (const name of VITE_CONFIGS) {
+    const raw = await readCapped(join(base, name));
+    if (raw === null) continue;
+    // Only inside a proxy block: an origin in a comment or a CORS list is not a target
+    // the dev server will forward to.
+    const block = /proxy\s*:\s*\{[\s\S]{0,600}/.exec(raw);
+    if (!block) continue;
+    const target = /target\s*:\s*['"`](https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?)['"`]/.exec(block[0])
+      ?? /['"`][^'"`]*['"`]\s*:\s*['"`](https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?)['"`]/.exec(block[0]);
+    if (target) return { file: name, target: target[1]! };
+  }
+  return undefined;
+}
+
+const VITE_CONFIGS = [
+  'vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'vite.config.cjs',
+  'vue.config.js', 'next.config.js',
+];
+
+const LOOPBACK_URL = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?\/?$/;

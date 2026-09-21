@@ -61,6 +61,8 @@ export class BackingProvisioner {
     backing: readonly BackingService[];
     repoName?: string;
     logs: LogSink;
+    /** Overridable so a database that never starts can be tested without waiting 90s. */
+    readyMs?: number;
   }): Promise<ProvisionResult> {
     // The name the repository expects, when its compose file states one. A connection
     // string DevLaunch invents points at a database the application's own migrations
@@ -86,7 +88,7 @@ export class BackingProvisioner {
 
     try {
       for (const need of opts.backing) {
-        const run = await this.startOne(opts.sessionId, need, database, opts.logs);
+        const run = await this.startOne(opts.sessionId, need, database, opts.logs, opts.readyMs);
         if (run) runs.push(run);
       }
     } catch (err) {
@@ -111,6 +113,7 @@ export class BackingProvisioner {
     need: BackingService,
     database: string,
     logs: LogSink,
+    readyMs?: number,
   ): Promise<BackingRun | null> {
     const spec = BACKING_SPECS[need.kind];
     if (!spec) return null;
@@ -133,32 +136,69 @@ export class BackingProvisioner {
       }
     }
 
-    logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${spec.alias} from ${image}...`);
-    await docker.ensureImage(image);
-
     const networkName = (await docker.networkExists(config.docker.networkName))
       ? config.docker.networkName
       : undefined;
 
-    const container = await docker.createBackingContainer({
-      image,
-      alias: spec.alias,
-      user: spec.user,
-      env: spec.env(database),
-      labels: buildLabels(sessionId),
-      dataPaths: spec.dataPaths,
-      networkName,
-    });
+    const attempt = async (from: string): Promise<BackingRun> => {
+      logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${spec.alias} from ${from}...`);
+      await docker.ensureImage(from);
+      const container = await docker.createBackingContainer({
+        image: from,
+        alias: spec.alias,
+        user: spec.user,
+        env: spec.env(database),
+        labels: buildLabels(sessionId),
+        dataPaths: spec.dataPaths,
+        networkName,
+      });
+      await docker.start(container);
+      const ready = await this.waitForReady(docker, container, spec.readyCheck, readyMs);
+      return { kind: need.kind, alias: spec.alias, container, ready };
+    };
 
-    await docker.start(container);
-    const ready = await this.waitForReady(docker, container, spec.readyCheck);
+    let run = await attempt(image);
 
-    if (!ready) {
-      logs.write('stderr', `${need.kind} did not become ready; the project will fail.`);
+    // A tag the repository named is a preference, not a promise that it runs here.
+    //
+    // The approval check reads the repository name and adopts whatever tag follows,
+    // which is how one compose file's `postgres:15.1-alpine` was started under the
+    // hardening profile the runner images get — non-root, read-only rootfs, all
+    // capabilities dropped — where its entrypoint chmods the data directory and exits 1.
+    // The application then started, was handed a connection string, and failed with
+    // `could not translate host name "postgres"`, because the alias belonged to a
+    // container that no longer existed. Neither message named the cause.
+    //
+    // The image DevLaunch ships is verified against that profile, so falling back to it
+    // is the one thing known to work. Once, and said out loud: a repository asking for
+    // pgvector and quietly getting plain Postgres would fail later on its first
+    // `CREATE EXTENSION`, and it deserves to know which it got.
+    if (!run.ready && image !== spec.image) {
+      const why = await docker.logTail(run.container, 12);
+      logs.write(
+        'stderr',
+        `${image} did not start under the sandbox profile${why ? `: ${lastLineOf(why)}` : '.'}`,
+      );
+      logs.write('stdout', `Falling back to ${spec.image}, which DevLaunch verifies against it.`);
+      try {
+        await docker.stop(run.container);
+        await docker.remove(run.container);
+      } catch {
+        /* a container that will not release must not block the replacement */
+      }
+      run = await attempt(spec.image);
+    }
+
+    if (!run.ready) {
+      const why = await docker.logTail(run.container, 12);
+      logs.write(
+        'stderr',
+        `${need.kind} did not become ready; the project will fail${why ? `. It said: ${lastLineOf(why)}` : '.'}`,
+      );
     } else {
       logs.write('stdout', `${need.kind} is accepting connections at ${connectionUrl(need, database)}`);
     }
-    return { kind: need.kind, alias: spec.alias, container, ready };
+    return run;
   }
 
   /** Poll the image's own health command until it succeeds, or the budget runs out. */
@@ -182,4 +222,10 @@ export class BackingProvisioner {
     }
     return false;
   }
+}
+
+/** The last non-empty line of a log tail — the reason, where a stack of them is noise. */
+function lastLineOf(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l !== '');
+  return (lines[lines.length - 1] ?? '').slice(0, 200);
 }

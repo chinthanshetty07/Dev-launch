@@ -72,7 +72,18 @@ export class FailureClassifier {
       };
     }
 
-    return { ...input.fallback, confidence: input.fallback.confidence ?? 'low' };
+    // No signature matched, so there is no diagnosis — but there is nearly always an
+    // explanation, and it is the last thing the application said before it stopped.
+    // Without this the report was `Start command exited with code 1.` and nothing else,
+    // on a run whose log ends `RuntimeError: Working outside of application context.`
+    // The verdict stays low-confidence: quoting the log is not the same as understanding
+    // it, and saying otherwise would be inventing a diagnosis.
+    const said = input.fallback.evidence ?? lastMeaningfulLine(lines);
+    return {
+      ...input.fallback,
+      ...(said ? { evidence: said.slice(0, 500) } : {}),
+      confidence: input.fallback.confidence ?? 'low',
+    };
   }
 
   /** The last matching line wins: errors accumulate, and the final one is the cause. */
@@ -89,4 +100,35 @@ export class FailureClassifier {
     const confidence = detail.confidence === 'low' ? ' (uncertain)' : '';
     return `${detail.code}${confidence}: ${detail.message}`;
   }
+}
+
+/** `RuntimeError: ...`, `sqlalchemy.exc.OperationalError: ...`, `TypeError: ...`. */
+const EXCEPTION_LINE = /^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Failure)\b[^\s]*:\s\S/;
+
+/**
+ * The last line worth showing a person.
+ *
+ * A traceback's final line is the exception; the lines above it are the frames that got
+ * there, and the lines below are usually a runner's own epilogue. Walking backwards past
+ * the noise finds the sentence that names the problem.
+ */
+function lastMeaningfulLine(lines: readonly string[]): string | undefined {
+  // An exception line first, wherever it is. Several runtimes print an explanation
+  // *after* the exception — Flask's ends "See the documentation for more information."
+  // — and the last line of that is true, unhelpful, and not the name of the problem.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (EXCEPTION_LINE.test(line)) return line;
+  }
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (line === '') continue;
+    // Stack frames, and the shell's own accounting of what it ran.
+    if (/^(?:at |File "|\s{2,}\^+\s*$|\.{3}|\[nodemon\]|npm ERR! A complete log)/.test(line)) continue;
+    if (/^(?:Traceback \(most recent call last\)|During handling of)/.test(line)) continue;
+    if (line.length < 8) continue;
+    return line;
+  }
+  return undefined;
 }

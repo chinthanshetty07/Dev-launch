@@ -377,7 +377,7 @@ describe('installing a project that is not a package', () => {
     // `pip install .` failed with setuptools' flat-layout refusal, and repair then
     // guessed `pip install -r requirements.txt` on a repository that has no such file.
     // The dependencies were declared the whole time.
-    const out = planner.plan(py2({ packageable: false, dependencies: ['fastapi', 'uvicorn', 'sqlalchemy'] }));
+    const out = planner.plan(py2({ packageable: false, dependencies: ['fastapi', 'uvicorn', 'sqlalchemy'], runtimeDependencies: ['fastapi', 'uvicorn', 'sqlalchemy'] }));
     expect(out.plan?.installCommand).toBe('pip install fastapi uvicorn sqlalchemy');
     expect(out.warnings.join(' ')).toMatch(/several top-level directories/);
   });
@@ -399,5 +399,355 @@ describe('installing a project that is not a package', () => {
     // it in the first place is the cheaper place to stop.
     const out = planner.plan(py2({ packageable: false, dependencies: ['fastapi', 'evil; rm -rf /', '--index-url=http://x'] }));
     expect(out.plan?.installCommand).toBe('pip install fastapi');
+  });
+});
+
+describe('which declared dependencies reach the container', () => {
+  it('installs the runtime set, not the dev groups', () => {
+    // A real repository declared httpx and pytest in [dependency-groups]; both were
+    // being installed into the runtime container to run a web server.
+    const out = planner.plan(meta({ python: {
+      requirements: [], hasPyproject: true, hasPipfile: false, hasManagePy: false, packageable: false,
+      entryCandidates: [{ file: 'main.py', framework: 'fastapi', appVariable: 'app' }],
+      dependencies: ['fastapi', 'uvicorn', 'httpx', 'pytest'],
+      runtimeDependencies: ['fastapi', 'uvicorn'],
+    } as never }));
+    expect(out.plan?.installCommand).toBe('pip install fastapi uvicorn');
+  });
+});
+
+describe('the step between installing and starting', () => {
+  it('runs a schema script the repository ships', () => {
+    const out = planner.plan(meta({ python: {
+      requirements: ['Flask==2.2.2'], hasPyproject: false, hasPipfile: false, hasManagePy: false,
+      entryCandidates: [{ file: 'app.py', framework: 'flask', appVariable: 'app' }],
+      initScripts: ['db_create.py'],
+    } as never }));
+    expect(out.plan?.buildCommand).toBe('python db_create.py');
+    expect(out.warnings.join(' ')).toMatch(/creates the database schema/);
+  });
+
+  it('leaves the build step empty when there is no such script', () => {
+    const out = planner.plan(meta({ python: {
+      requirements: ['Flask==2.2.2'], hasPyproject: false, hasPipfile: false, hasManagePy: false,
+      entryCandidates: [{ file: 'app.py', framework: 'flask', appVariable: 'app' }],
+    } as never }));
+    expect(out.plan?.buildCommand).toBeNull();
+  });
+
+  it('never runs the entry point as its own setup step', () => {
+    const out = planner.plan(meta({ python: {
+      requirements: ['Flask==2.2.2'], hasPyproject: false, hasPipfile: false, hasManagePy: false,
+      entryCandidates: [{ file: 'init_db.py', framework: 'flask', appVariable: 'app' }],
+      initScripts: ['init_db.py'],
+    } as never }));
+    expect(out.plan?.buildCommand).toBeNull();
+  });
+});
+
+describe('which framework a manifest declaring several is actually running', () => {
+  it('reads the script body when a manifest holds both a server and a browser app', () => {
+    // A MERN repository declares express and react-scripts side by side, because one
+    // package.json holds both halves. Table order alone picks the browser tool, and the
+    // start script here runs `node ./bin/www` — the API.
+    const out = planner.plan(
+      node(
+        { express: '^4', react: '^16', 'react-scripts': '1.0.14' },
+        { start: 'node ./bin/www', build: 'react-scripts build' },
+      ),
+    );
+    expect(out.detected).toBe('express');
+  });
+
+  it('still picks the browser tool when the script really invokes it', () => {
+    const out = planner.plan(
+      node({ express: '^4', 'react-scripts': '5' }, { start: 'react-scripts start' }),
+    );
+    expect(out.detected).toBe('cra');
+  });
+
+  it('does not append dev-server flags to a command that runs node', () => {
+    // The consequence, and the reason this is worth detecting: vite takes
+    // `--host 0.0.0.0 --port 5173`, and `node server.js` does not. Guessing wrong
+    // produces a start command the application cannot parse and a port nothing opens.
+    const out = planner.plan(
+      node({ express: '^4', vite: '^5' }, { dev: 'node server.js' }),
+    );
+    expect(out.plan?.startCommand).toBe('npm run dev');
+    expect(out.plan?.startCommand).not.toContain('--port');
+  });
+});
+
+describe('the port an application says it opens', () => {
+  it('prefers the port the source declares over a framework default', () => {
+    // `app.listen(8017)` ignores the PORT DevLaunch injects, so planning on the default
+    // watches a port nothing will ever open.
+    const out = planner.plan(
+      node({ express: '^4' }, { start: 'node server.js' }, { declaredPort: 8017 }),
+    );
+    expect(out.plan?.expectedPort).toBe(8017);
+    expect(out.plan?.environmentVariables.find((v) => v.key === 'PORT')?.value).toBe('8017');
+  });
+
+  it('keeps the framework default when the framework takes the port as a flag', () => {
+    // Vite is told `--port 5173` on the command line and obeys. A number read out of a
+    // config file does not outrank an argument we are about to pass.
+    const out = planner.plan(
+      node({ vite: '^5' }, { dev: 'vite' }, { declaredPort: 4000 }),
+    );
+    expect(out.plan?.expectedPort).toBe(5173);
+  });
+
+  it('warns before the run when the bind address is a literal in the source', () => {
+    const out = planner.plan(
+      node({ express: '^4' }, { start: 'node server.js' }, {
+        hardcodedBind: { file: 'src/server.js', line: "const hostname = 'localhost'" },
+      }),
+    );
+    expect(out.warnings.join(' ')).toMatch(/src\/server\.js/);
+    expect(out.warnings.join(' ')).toMatch(/0\.0\.0\.0/);
+  });
+});
+
+describe('a Python project that declares nothing in a manifest', () => {
+  const py = (over: Record<string, unknown>): RepositoryMetadata =>
+    meta({
+      python: {
+        requirements: [],
+        hasPyproject: false,
+        hasPipfile: false,
+        hasManagePy: false,
+        entryCandidates: [{ file: 'app.py', framework: 'flask', appVariable: 'app' }],
+        ...over,
+      },
+    } as Partial<RepositoryMetadata>);
+
+  it('installs what its entry file imports', () => {
+    // A lone app.py with no requirements.txt is the commonest shape of tutorial
+    // repository on GitHub, and every one of them used to be handed to the model.
+    const out = planner.plan(py({ imports: ['flask', 'flask_sqlalchemy'] }));
+    expect(out.detected).toBe('flask');
+    expect(out.plan?.installCommand).toBe('pip install flask flask_sqlalchemy');
+    expect(out.plan?.planSource).toBe('rule-based');
+  });
+
+  it('says so, because unpinned versions are a fact worth stating', () => {
+    const out = planner.plan(py({ imports: ['flask'] }));
+    expect(out.warnings.join(' ')).toMatch(/not pinned/i);
+  });
+
+  it('installs the server its start command needs, which nothing imports', () => {
+    // `uvicorn main:app` is run by uvicorn, and no FastAPI project's source imports it.
+    // The install was otherwise complete and the run died on `uvicorn: not found` —
+    // then a model rewrote the list and misspelled one of the packages.
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: [],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: false,
+          imports: ['fastapi', 'sqlalchemy'],
+          entryCandidates: [{ file: 'main.py', framework: 'fastapi', appVariable: 'app' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.plan?.installCommand).toBe('pip install fastapi sqlalchemy uvicorn');
+  });
+
+  it('does not install the runner twice when the source already imports it', () => {
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: [],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: false,
+          imports: ['fastapi', 'uvicorn'],
+          entryCandidates: [{ file: 'main.py', framework: 'fastapi', appVariable: 'app' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.plan?.installCommand).toBe('pip install fastapi uvicorn');
+  });
+
+  it('adds no runner for a framework that is its own', () => {
+    // Flask ships the `flask` CLI; there is nothing extra to fetch.
+    const out = planner.plan(py({ imports: ['flask'] }));
+    expect(out.plan?.installCommand).toBe('pip install flask');
+  });
+
+  it('still declines when nothing third-party is imported either', () => {
+    // Nothing was declared and nothing was imported: there is no evidence to plan from,
+    // and inventing an install list is what a rule must not do.
+    const out = planner.plan(py({ imports: [], entryCandidates: [] }));
+    expect(out.plan).toBeNull();
+  });
+
+  it('prefers a declared requirements file over imports', () => {
+    const out = planner.plan(
+      py({ requirements: ['flask==3.0.0'], imports: ['flask', 'requests'] }),
+    );
+    expect(out.plan?.installCommand).toBe('pip install -r requirements.txt');
+  });
+});
+
+describe('the step a framework needs between installing and starting', () => {
+  it('migrates a Django project before serving it', () => {
+    // Without it the server starts, prints "You have N unapplied migration(s)" into a
+    // log nobody reads, and returns 500 from the first page that touches the database.
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: ['django'],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: true,
+          entryCandidates: [{ file: 'manage.py', framework: 'django' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.plan?.buildCommand).toBe('python manage.py migrate --noinput');
+  });
+
+  it('prefers a schema script the repository names over the framework default', () => {
+    // The author's own script knows this repository; `manage.py migrate` knows Django.
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: ['django'],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: true,
+          initScripts: ['init_db.py'],
+          entryCandidates: [{ file: 'manage.py', framework: 'django' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.plan?.buildCommand).toBe('python init_db.py');
+  });
+
+  it('leaves a Flask project with no build step', () => {
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: ['flask'],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: false,
+          entryCandidates: [{ file: 'app.py', framework: 'flask', appVariable: 'app' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.plan?.buildCommand).toBeNull();
+  });
+});
+
+describe('a Python framework the source names rather than the manifest', () => {
+  it('starts the file that imports Streamlit, not a conventional default', () => {
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: ['streamlit', 'pandas'],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: false,
+          entryCandidates: [{ file: 'dashboard.py', framework: 'streamlit' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.detected).toBe('streamlit');
+    expect(out.plan?.startCommand).toContain('streamlit run dashboard.py');
+  });
+
+  it('lets the imported framework outrank one the requirements only mention', () => {
+    // A repository can depend on Flask — as a transitive need, or for a script — and be
+    // started by Streamlit. The import is what runs.
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: ['flask', 'streamlit'],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: false,
+          entryCandidates: [{ file: 'dashboard.py', framework: 'streamlit' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.detected).toBe('streamlit');
+  });
+
+  it('still lets manage.py settle it, whatever anything imports', () => {
+    const out = planner.plan(
+      meta({
+        python: {
+          requirements: ['django'],
+          hasPyproject: false,
+          hasPipfile: false,
+          hasManagePy: true,
+          entryCandidates: [{ file: 'dashboard.py', framework: 'streamlit' }],
+        },
+      } as Partial<RepositoryMetadata>),
+    );
+    expect(out.detected).toBe('django');
+  });
+});
+
+describe('a package that is not an application', () => {
+  it('says a library is a library rather than declining into a model call', () => {
+    // A library has no server to start, so a model asked to find one invents a command —
+    // `node dist/main.js` against a build that never ran — and the run fails several
+    // minutes later with a diagnosis about the invention rather than the repository.
+    const out = planner.plan(
+      meta({
+        packageJson: {
+          name: 'nestjs-mongoose-crud',
+          scripts: { build: 'tsc', test: 'jest', serve: 'tsc --watch' },
+          dependencies: {},
+          devDependencies: { '@nestjs/core': '^8', typescript: '^4' },
+          main: 'dist/main.js',
+        },
+      }),
+    );
+    expect(out.plan).toBeNull();
+    expect(out.unrunnable).toBe(true);
+    expect(out.reason).toMatch(/library/i);
+  });
+
+  it('does not call an application a library because its script is named serve', () => {
+    // The name is not the evidence; the body is. `serve: vite preview` starts a server
+    // and `serve: tsc --watch` compiles.
+    const out = planner.plan(
+      node({ vite: '^5' }, { serve: 'vite preview' }, { packageJson: {
+        name: 'app', scripts: { serve: 'vite preview' }, dependencies: { vite: '^5' },
+        devDependencies: {}, main: 'dist/index.js',
+      } }),
+    );
+    expect(out.unrunnable).toBeUndefined();
+  });
+
+  it('does not call an application a library because it declares main', () => {
+    // Plenty of applications do. What settles it is having no way to start.
+    const out = planner.plan(
+      node({ express: '^4' }, { start: 'node server.js' }, { packageJson: {
+        name: 'api', scripts: { start: 'node server.js' }, dependencies: { express: '^4' },
+        devDependencies: {}, main: 'dist/index.js',
+      } }),
+    );
+    expect(out.plan?.startCommand).toBe('npm run start');
+    expect(out.unrunnable).toBeUndefined();
+  });
+
+  it('leaves a package with runtime dependencies alone', () => {
+    // A library does not ship its own runtime dependency tree; an application does.
+    const out = planner.plan(
+      meta({
+        packageJson: {
+          name: 'thing', scripts: { build: 'tsc' }, dependencies: { express: '^4' },
+          devDependencies: {}, main: 'dist/index.js',
+        },
+      }),
+    );
+    expect(out.unrunnable).toBeUndefined();
   });
 });

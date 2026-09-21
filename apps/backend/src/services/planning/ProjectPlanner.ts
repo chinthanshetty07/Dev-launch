@@ -70,6 +70,24 @@ export class ProjectPlanner {
         continue;
       }
 
+      // Named before the run, because it is the one way a project can reach READY and
+      // still answer nothing. The dev server resolves this target itself, inside this
+      // service's own container, so `localhost` is this service — not the API beside it.
+      // DevLaunch does not edit a repository to make it run, so the honest thing is to
+      // say exactly which line to change and what to change it to.
+      if (candidate.devProxy) {
+        const api = candidates.find((c) => c.role === 'api' && c !== candidate);
+        const suggestion = api
+          ? `http://${api.name}:${api.declaredPort ?? 'PORT'}`
+          : 'the API service\'s name on the container network';
+        warnings.push(
+          `${candidate.name}: ${candidate.devProxy.file} proxies to ` +
+            `${candidate.devProxy.target}, which inside this container is this service ` +
+            `itself — every request the page makes will fail. Point it at ${suggestion} ` +
+            'instead; services reach each other by name here.',
+        );
+      }
+
       const port = candidate.declaredPort ?? outcome.plan.expectedPort;
       services.push({
         ...outcome.plan,

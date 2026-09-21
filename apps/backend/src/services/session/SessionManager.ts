@@ -32,6 +32,7 @@ import {
   requiredConfigurationForSingle,
 } from '../planning/RequiredConfiguration.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
+import { lastErrorLine } from '../execution/ExecutionManager.js';
 import { BackingProvisioner, type ProvisionResult } from '../execution/BackingProvisioner.js';
 import { ProjectExecutor, type ProjectRun } from '../execution/ProjectExecutor.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
@@ -74,6 +75,17 @@ export interface Session {
   /** Set instead of `plan` when the repository needs several services running together. */
   project?: ProjectPlan;
   planWarnings?: string[];
+  /**
+   * Metadata of the directory the plan actually runs in, when that is not the root.
+   *
+   * `metadata` describes the repository: its compose file, its databases, the services
+   * it contains. That is the right thing for provisioning and for the configuration
+   * gate, and the wrong thing for repair — a plan running in `src/` is repaired against
+   * `src/requirements.txt` and `src/package.json`, and reading the root's found neither.
+   * One real repository's whole application lives in `src/`, and every rule that needed
+   * a manifest silently had none.
+   */
+  planMetadata?: RepositoryMetadata;
   pending?: PendingInput;
 
   readyAt?: number;
@@ -157,6 +169,8 @@ export interface SessionManagerDeps {
   livenessIntervalMs?: number;
   /** Overridable so the never-became-ready backstop can be tested without waiting. */
   startupBoundMs?: number;
+  /** Overridable so a database that never starts can be tested without waiting 90s. */
+  backingReadyMs?: number;
 }
 
 /**
@@ -370,8 +384,11 @@ export class SessionManager extends EventEmitter {
     if (!outcome.plan) {
       const reason = outcome.reason ?? 'No deterministic plan could be produced.';
 
-      // The one place the fallback planner runs: the deterministic path declined.
-      if (this.deps.aiPlanner) {
+      // The one place the fallback planner runs: the deterministic path declined *and*
+      // could not say the repository is unrunnable. A library has no server to start, so
+      // a model asked to find one invents a command and the run fails minutes later with
+      // a diagnosis about the invention rather than about the repository.
+      if (this.deps.aiPlanner && !outcome.unrunnable) {
         session.logs.buffer.push(
           'stdout',
           `No known pattern matched (${reason}) — asking the fallback planner.`,
@@ -400,9 +417,14 @@ export class SessionManager extends EventEmitter {
         this.fail(session, {
           code: FailureCode.UNSUPPORTED_PROJECT,
           message: reason,
-          remedy:
-            'The rule-based planner recognised no known pattern, and no AI fallback is ' +
-            'configured. Set GROQ_API_KEY to enable it.',
+          // Two different situations, and offering the wrong remedy for either one sends
+          // a person after a problem they do not have. A repository that is not an
+          // application is not waiting for a better planner.
+          remedy: outcome.unrunnable
+            ? 'Nothing here starts a server. If one of its packages does, point DevLaunch ' +
+              'at that directory; otherwise this repository is not something to run.'
+            : 'The rule-based planner recognised no known pattern, and no AI fallback is ' +
+              'configured. Set GROQ_API_KEY to enable it.',
           confidence: 'high',
         });
         await this.teardown(session);
@@ -412,6 +434,13 @@ export class SessionManager extends EventEmitter {
       session.plan = outcome.plan;
       session.logs.buffer.push('stdout', `Detected ${outcome.detected} (plan source: rule-based)`);
     }
+
+    // The plan may run somewhere other than the root — a workspace package, or the one
+    // service a repository keeps in a subdirectory. Read that directory now, while the
+    // analyzer is to hand, so repair does not have to guess which manifest is its own.
+    const runsIn = session.plan?.workingDirectory ?? '.';
+    session.planMetadata =
+      runsIn === '.' ? undefined : await analyzer.analyze(session.sourceDir ?? dir, runsIn);
 
     // Pre-flight gate: ask for configuration before building a container that would
     // only crash for want of it.
@@ -515,21 +544,153 @@ export class SessionManager extends EventEmitter {
     });
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
-    const outcome = await executor.waitForReady(session.run, req.readinessTimeoutMs);
+    await this.verifyProject(session, executor, sourceDir, req);
+  }
+
+  /**
+   * Wait for every service, repairing the one that fails, until it is ready or out of
+   * attempts.
+   *
+   * Until this existed a project got no repair at all: `startProject` went from a
+   * failed service straight to FAILED and teardown, so the entire repair architecture —
+   * policy, evidence-backed rules, the bounded model call — served only repositories
+   * that happened to contain one service. A frontend calling an API is the ordinary
+   * shape of a web project and it was the one shape that got no second chance.
+   *
+   * One service is repaired and restarted at a time. The others are already serving
+   * traffic; tearing them down to re-run a corrected plan for a sibling would throw away
+   * working containers and several minutes of install to fix something unrelated to them.
+   */
+  private async verifyProject(
+    session: Session,
+    executor: ProjectExecutor,
+    sourceDir: string,
+    req: LaunchRequest,
+  ): Promise<void> {
+    const outcome = await executor.waitForReady(session.run!, req.readinessTimeoutMs);
 
     if (outcome.state === ExecutionState.READY) {
       session.readyAt = Date.now();
       session.url = outcome.url;
       session.failure = undefined;
-      for (const service of session.run.services) service.handle.clearStartupBudget?.();
+      for (const service of session.run!.services) service.handle.clearStartupBudget?.();
       this.setState(session, ExecutionState.READY);
       this.armLifetime(session);
       return;
     }
 
-    session.failure = outcome.failure;
+    // Keep the first diagnosis, for the same reason the single-service path does: it
+    // describes the repository as its author wrote it, and every later one describes a
+    // plan that was rewritten in response.
+    const failing = session.run?.services.find((sv) => sv.state !== ExecutionState.READY);
+    const original = (session.failure ??= withBindRemedy(
+      outcome.failure,
+      failing ? await this.analyseService(sourceDir, failing) : undefined,
+    ));
+
+    if (await this.tryRepairService(session, executor, sourceDir, req)) return;
+
+    const attempts = session.repairAttempts?.length ?? 0;
+    const kept = original ?? outcome.failure;
+    session.failure = kept && attempts > 0 ? { ...kept, repairAttemptsAfter: attempts } : kept;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
+  }
+
+  /**
+   * Repair the one service that is not ready, and start it again.
+   *
+   * The same policy, the same rules and the same ceiling as a lone plan gets — the only
+   * thing that differs is which plan is rewritten and what has to be restarted. The
+   * service's *own* log is what the rules read: a project's aggregated stream carries
+   * four applications' output interleaved, and a rule looking for "the port this
+   * application opened" would happily find a sibling's.
+   */
+  private async tryRepairService(
+    session: Session,
+    executor: ProjectExecutor,
+    sourceDir: string,
+    req: LaunchRequest,
+  ): Promise<boolean> {
+    const service = session.run?.services.find((s) => s.state !== ExecutionState.READY);
+    const failure = service?.failure;
+    if (!service || !failure || !this.deps.analyzer) return false;
+
+    const metadata = (await this.analyseService(sourceDir, service))!;
+    if (this.refuseHardcodedBind(session, failure, metadata)) return false;
+
+    const policy = repairPolicyFor(failure.code);
+    if (policy.repairability === 'NON_REPAIRABLE') {
+      session.logs.buffer.push(
+        'stdout',
+        `Not repairing ${service.name} (${failure.code}): ${policy.reason}.`,
+      );
+      return false;
+    }
+
+    const previous = session.repairAttempts ?? [];
+    if (previous.length >= MAX_REPAIR_ATTEMPTS) {
+      session.logs.buffer.push('stderr', `Repair limit of ${MAX_REPAIR_ATTEMPTS} reached.`);
+      return false;
+    }
+
+    const logs = service.logs.buffer.all().map((l) => l.text).join('\n');
+
+    const deterministic =
+      policy.repairability === 'DETERMINISTIC'
+        ? tryDeterministicRepair({
+            plan: service.plan,
+            failure,
+            metadata,
+            logs,
+            previousAttempts: previous,
+          })
+        : null;
+
+    if (!deterministic) {
+      // No model call here, deliberately. A model rewriting one service's plan cannot
+      // see what its siblings were told about it, and the addresses and ports they were
+      // wired with are precisely what it would change. A rule cannot: every rule is
+      // evidence-backed and none of them touches the service's name or published port.
+      session.logs.buffer.push(
+        'stdout',
+        `No rule applies to ${service.name} (${failure.code}), and a project's services ` +
+          'are not repaired by a model: its siblings were already told this one\'s ' +
+          'address, and a rewritten plan would invalidate that.',
+      );
+      return false;
+    }
+
+    this.setState(session, ExecutionState.REPAIRING);
+    session.logs.buffer.push(
+      'stdout',
+      `Attempting repair ${previous.length + 1}/${MAX_REPAIR_ATTEMPTS} for ${service.name} ` +
+        `(${failure.code}) (rule: ${deterministic.record.type}): ` +
+        deterministic.record.evidence.join('; '),
+    );
+
+    session.repairAttempts = [...previous, service.plan];
+    session.repairs = [
+      ...(session.repairs ?? []),
+      { ...deterministic.record, service: service.name },
+    ];
+    // In place, so the service's own restart re-runs the corrected plan rather than the
+    // one it was launched with.
+    service.plan = { ...service.plan, ...deterministic.plan, name: service.name, role: service.role };
+
+    try {
+      await service.restart();
+    } catch (err) {
+      session.logs.buffer.push(
+        'stderr',
+        `Could not restart ${service.name}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+
+    this.setState(session, ExecutionState.WAITING_FOR_READY);
+    await this.verifyProject(session, executor, sourceDir, req);
+    return true;
   }
 
   private async startAndVerify(
@@ -551,9 +712,12 @@ export class SessionManager extends EventEmitter {
     // its remaining attempts installing drivers to satisfy a URL that could not connect.
     // Re-read: provisioning rewrites the plan to carry the connection string, and the
     // local `plan` above was captured before that happened.
-    const resolved = await this.provisionBacking(session);
-
+    // Moved ahead of provisioning, which waits for a database to accept connections and
+    // can take ninety seconds. Reported as VALIDATING, that wait told a person DevLaunch
+    // was "checking the commands against the security allowlist" — a step that is
+    // synchronous, took no time at all, and had already finished.
     this.setState(session, ExecutionState.STARTING);
+    const resolved = await this.provisionBacking(session);
     const handle = await this.exec.launch({
       sessionId: session.id,
       plan: resolved,
@@ -580,10 +744,16 @@ export class SessionManager extends EventEmitter {
       // What was seen at the health path travels with the URL. A 404 at `/` is not a
       // failure, but it is the fact a person needs before they open an API's root and
       // conclude the run is broken.
+      // An error page says "Internal Server Error"; the traceback behind it says
+      // `no such table: tasks`. The application wrote the second one to its own log a
+      // moment ago, and it is the only one a person can act on.
+      const said = outcome.readiness.healthHintOk === false ? lastErrorLine(session.logs) : undefined;
       session.readiness = {
         path: resolved.healthCheck.path,
         status: outcome.readiness.status,
         healthHintOk: outcome.readiness.healthHintOk,
+        ...(outcome.readiness.body ? { body: outcome.readiness.body } : {}),
+        ...(said ? { logError: said } : {}),
       };
       // A repaired session carries the diagnosis of the attempt that failed. Once it is
       // ready that diagnosis is history, and leaving it set would show an error against
@@ -617,7 +787,10 @@ export class SessionManager extends EventEmitter {
     // later one describes a plan the model invented. Overwriting it answers a question
     // nobody asked — and makes the reported cause depend on model output, which is why
     // an application that plainly binds loopback could be reported as failing to start.
-    const original = (session.failure ??= outcome.failure);
+    const original = (session.failure ??= withBindRemedy(
+      outcome.failure,
+      session.planMetadata ?? session.metadata,
+    ));
 
     if (await this.tryRepair(session, outcome.failure, sourceDir, req)) return;
 
@@ -667,6 +840,7 @@ export class SessionManager extends EventEmitter {
           backing: needed,
           repoName: repoNameFromUrl(session.repoUrl ?? session.sourceDir),
           logs: { write: (stream, line) => session.logs.buffer.push(stream, line) },
+          ...(this.deps.backingReadyMs ? { readyMs: this.deps.backingReadyMs } : {}),
         });
       } catch (err) {
         // A database that will not start is worth saying plainly, but it is not worth
@@ -712,6 +886,10 @@ export class SessionManager extends EventEmitter {
   ): Promise<boolean> {
     if (!failure || !session.plan || !session.metadata) return false;
 
+    // The plan's own directory, when it has one. Every rule here reads a manifest.
+    const metadata = session.planMetadata ?? session.metadata;
+    if (this.refuseHardcodedBind(session, failure, metadata)) return false;
+
     const policy = repairPolicyFor(failure.code);
     if (policy.repairability === 'NON_REPAIRABLE') {
       // Saying why is the whole point: a session that stops here stops with a reason a
@@ -732,7 +910,7 @@ export class SessionManager extends EventEmitter {
     // failure worse — and when it applies, the retry costs no model call at all.
     const deterministic =
       policy.repairability === 'DETERMINISTIC'
-        ? tryDeterministicRepair({ plan: session.plan, failure, metadata: session.metadata, logs, previousAttempts: previous })
+        ? tryDeterministicRepair({ plan: session.plan, failure, metadata, logs, previousAttempts: previous })
         : null;
 
     if (deterministic) {
@@ -802,6 +980,48 @@ export class SessionManager extends EventEmitter {
       );
       return false;
     }
+  }
+
+  /**
+   * The metadata of one service's own directory.
+   *
+   * The root metadata describes the repository, not the package in `frontend/`, and a
+   * rule that corrects a start script by reading `scripts` would read the wrong manifest
+   * entirely.
+   */
+  private async analyseService(
+    sourceDir: string,
+    service: { plan: { workingDirectory: string } },
+  ): Promise<RepositoryMetadata | undefined> {
+    if (!this.deps.analyzer) return undefined;
+    return this.deps.analyzer.analyze(sourceDir, service.plan.workingDirectory);
+  }
+
+  /**
+   * Stop before repairing a bind address that is a literal in the repository's source.
+   *
+   * `app.listen(port, 'localhost')` is not configuration. No variable, flag or rewritten
+   * start command reaches it, so the repair loop can only spend its attempts proving
+   * that — first a rule forcing `HOST=0.0.0.0` the application never reads, then a model
+   * inventing a start command, each costing a full reinstall. Returning the diagnosis
+   * with the line to change is the honest answer and it arrives minutes sooner.
+   *
+   * Returns true when repair should not be attempted.
+   */
+  private refuseHardcodedBind(
+    session: Session,
+    failure: FailureDetail,
+    metadata: RepositoryMetadata | undefined,
+  ): boolean {
+    const bind = metadata?.hardcodedBind;
+    if (!bind || failure.code !== FailureCode.PORT_BOUND_TO_LOCALHOST) return false;
+
+    session.logs.buffer.push(
+      'stdout',
+      `Not repairing ${failure.code}: ${bind.file} hardcodes the bind address ` +
+        `(${bind.line}). No plan can change a literal in the source.`,
+    );
+    return true;
   }
 
   /** Announce an attempt and release the previous container, so two never overlap. */
@@ -1264,4 +1484,28 @@ function lastLogLine(session: Session): string | undefined {
     if (text) return text.slice(0, 500);
   }
   return undefined;
+}
+
+/**
+ * The diagnosis, with the line to change named when there is one.
+ *
+ * Attached where the diagnosis is taken rather than where repair declines, because the
+ * two are answers to different questions and only the first survives: the reported
+ * failure is deliberately the *first* one, so anything added later to a copy of it is
+ * discarded when the original is restored.
+ */
+function withBindRemedy(
+  failure: FailureDetail | undefined,
+  metadata: RepositoryMetadata | undefined,
+): FailureDetail | undefined {
+  const bind = metadata?.hardcodedBind;
+  if (!failure || !bind || failure.code !== FailureCode.PORT_BOUND_TO_LOCALHOST) return failure;
+  return {
+    ...failure,
+    confidence: 'high',
+    remedy:
+      `${bind.file} binds a loopback address in its own source (\`${bind.line}\`), so no ` +
+      'environment variable or command-line flag can change it. Edit that line to bind ' +
+      '0.0.0.0 — inside a container it is the only address Docker can forward to.',
+  };
 }

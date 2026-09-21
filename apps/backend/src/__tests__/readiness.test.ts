@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { HealthCheckSchema } from '@devlaunch/shared';
-import { parseProcNetTcp } from '../services/ports/PortManager.js';
+import { parseProcNetTcp, PortManager } from '../services/ports/PortManager.js';
 import { ReadinessChecker, backoffDelays } from '../services/readiness/ReadinessChecker.js';
 
 const HEADER = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
@@ -140,4 +140,103 @@ describe('ReadinessChecker', () => {
     expect(r.ready).toBe(true);
     expect(r.attempts).toBeGreaterThan(1);
   }, 30_000);
+});
+
+describe('what an error page is worth quoting', () => {
+  it('reads a framework error page rather than its doctype', async () => {
+    // The first line of an HTML error page is `<!doctype html>`, which was exactly what
+    // this reported for a Flask 500 — true, and useless.
+    const { createServer } = await import('node:http');
+    const server = createServer((_req, res) => {
+      res.writeHead(500, { 'content-type': 'text/html' });
+      res.end(`<!doctype html>
+<html lang=en>
+<head><title>500 Internal Server Error</title></head>
+<body><h1>Internal Server Error</h1>
+<p>The server encountered an internal error and was unable to complete your request.</p>
+</body></html>`);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const out = await new ReadinessChecker().waitForReady({
+        port: String(port),
+        healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200] },
+        timeoutMs: 5_000,
+      });
+      expect(out.ready).toBe(true);
+      expect(out.status).toBe(500);
+      expect(out.healthHintOk).toBe(false);
+      expect(out.body).toMatch(/500 Internal Server Error/);
+      expect(out.body).not.toMatch(/doctype/i);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('says nothing about the body of a success', async () => {
+    const { createServer } = await import('node:http');
+    const server = createServer((_req, res) => { res.writeHead(200); res.end('ok'); });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const out = await new ReadinessChecker().waitForReady({
+        port: String(port), healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200] }, timeoutMs: 5_000,
+      });
+      expect(out.healthHintOk).toBe(true);
+      expect(out.body).toBeUndefined();
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+describe('explaining a port that is not where the plan expects it', () => {
+  const HDR = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
+  /** A PortManager over a container whose /proc/net/tcp says exactly this. */
+  const managerFor = (v4: string, v6 = '') =>
+    new PortManager({
+      execCapture: async (_c: unknown, argv: string[]) =>
+        argv[1] === '/proc/net/tcp' ? `${HDR}\n${v4}` : `${HDR}\n${v6}`,
+    } as never);
+
+  /** 0.0.0.0:8017 listening. */
+  const wildcard8017 = '   0: 00000000:1F51 00000000:0000 0A 0 0 0 0 0 0 0';
+  /** 127.0.0.11:36213 — Docker's embedded DNS, present in every container. */
+  const dockerDns = '   1: 0B00007F:8D75 00000000:0000 0A 0 0 0 0 0 0 0';
+  /** 127.0.0.1:8017 listening. */
+  const loopback8017 = '   0: 0100007F:1F51 00000000:0000 0A 0 0 0 0 0 0 0';
+
+  it('names the port the application actually opened', async () => {
+    // "Nothing is listening on port 3000" was true and useless: the process had opened
+    // 8017 and the only responder that noticed was a model guessing at a start command.
+    const out = await managerFor(`${wildcard8017}\n${dockerDns}`).diagnose({} as never, 3000);
+    expect(out.kind).toBe('other-port');
+    expect(out.kind === 'other-port' && out.socket.port).toBe(8017);
+  });
+
+  it('does not count Docker\'s own resolver as the application', async () => {
+    // It listens in every container on a user-defined network. Counting it turns "one
+    // socket, on the wrong port" — an answer — into "several", which is not one.
+    const out = await managerFor(dockerDns).diagnose({} as never, 3000);
+    expect(out.kind).toBe('not-listening');
+  });
+
+  it('reports a loopback bind on another port as a loopback bind', async () => {
+    const out = await managerFor(`${loopback8017}\n${dockerDns}`).diagnose({} as never, 3000);
+    expect(out.kind).toBe('other-port');
+    expect(out.kind === 'other-port' && out.socket.loopbackOnly).toBe(true);
+  });
+
+  it('stays silent when several ports are open and none is the expected one', async () => {
+    // One socket is an answer; two are a guess about which of them is the application.
+    const other = '   2: 00000000:1F52 00000000:0000 0A 0 0 0 0 0 0 0';
+    const out = await managerFor(`${wildcard8017}\n${other}`).diagnose({} as never, 3000);
+    expect(out.kind).toBe('not-listening');
+  });
+
+  it('still reports a reachable socket on the expected port as listening', async () => {
+    const out = await managerFor(`${wildcard8017}\n${dockerDns}`).diagnose({} as never, 8017);
+    expect(out.kind).toBe('listening');
+  });
 });

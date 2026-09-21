@@ -80,6 +80,16 @@ export interface FailureDetail {
    * retries rather than reads.
    */
   repairAttemptsAfter?: number;
+  /**
+   * The socket the application actually opened, read from the container's own
+   * `/proc/net/tcp`.
+   *
+   * Carried as a field rather than left in the prose so a repair rule can act on it
+   * without parsing English. It is the strongest evidence available about a port: not
+   * what a framework defaults to, not what a log line claims, but what the kernel says
+   * the process bound.
+   */
+  observedSocket?: { address: string; port: number; loopbackOnly: boolean };
 }
 
 /**
@@ -117,4 +127,12 @@ export interface RepairRecord {
   confidence: 'high' | 'medium' | 'low';
   /** The model's own account, when a model decided. Displayed, never acted on. */
   note?: string;
+  /**
+   * Which service was repaired, in a project that runs several.
+   *
+   * Absent for a single-service run, where there is nothing to disambiguate. Present
+   * otherwise because "the start command was corrected" says nothing useful when four
+   * applications are running and three of them were already working.
+   */
+  service?: string;
 }

@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import type { ServiceStats } from '@devlaunch/shared';
 import { api, ConflictError } from './api';
 import { useSession } from './useSession';
-import { RepoLauncher } from './components/RepoLauncher';
+import { LaunchView } from './components/LaunchView';
+import { RunHeader } from './components/RunHeader';
+import { ResultHero, CompletedHero } from './components/ResultHero';
 import { PipelineStrip } from './components/PipelineStrip';
 import { ServicePanel } from './components/ServicePanel';
 import { EndpointsPanel } from './components/EndpointsPanel';
@@ -9,14 +12,27 @@ import { PlanPanel } from './components/PlanPanel';
 import { InputGate } from './components/InputGate';
 import { FailurePanel } from './components/FailurePanel';
 import { LogTerminal } from './components/LogTerminal';
+import { Collapsible } from './components/Collapsible';
 
-const RUNNING = ['QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING', 'AWAITING_INPUT', 'BUILDING', 'STARTING', 'WAITING_FOR_READY', 'READY'];
+const RUNNING = [
+  'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING',
+  'AWAITING_INPUT', 'BUILDING', 'STARTING', 'WAITING_FOR_READY', 'REPAIRING', 'READY',
+];
 
+/**
+ * One session, presented as the three things a person is actually doing: choosing what
+ * to run, watching it run, and reading the result.
+ *
+ * Every panel used to render at once in a fixed stack, whatever the session was doing —
+ * so a run that had not started yet showed empty panels, and a run that had finished
+ * buried its URL under a plan, a warning list and several hundred lines of install
+ * output. Nothing is hidden that was not, but what leads changes with what happened.
+ */
 export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [stats, setStats] = useState<Record<string, import('@devlaunch/shared').ServiceStats>>({});
+  const [stats, setStats] = useState<Record<string, ServiceStats>>({});
   /** A session blocking a launch, so it can be stopped from here rather than hunted for. */
   const [blockedBy, setBlockedBy] = useState<string | null>(null);
 
@@ -40,6 +56,7 @@ export default function App() {
     // Only on mount: afterwards this component owns the session it started.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   const { state, furthest, lines, session, connected, refresh } = useSession(sessionId);
 
   const launch = useCallback(async (body: { repoUrl?: string; fixture?: string }) => {
@@ -123,105 +140,142 @@ export default function App() {
     };
   }, [sessionId, running, hasServices]);
 
+  const errorBanner = error && (
+    <div className="flex items-center gap-3 border-b border-bad/50 bg-panel px-4 py-2 text-[13px] text-bad">
+      <span>{error}</span>
+      {blockedBy && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.cancel(blockedBy);
+              setBlockedBy(null);
+              setError(null);
+              setSessionId(null);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+          className="rounded-md border border-bad px-2 py-0.5 text-[11px] hover:bg-bad/10"
+        >
+          Stop it
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => setError(null)}
+        className="ml-auto text-[11px] text-muted hover:text-fg"
+      >
+        dismiss
+      </button>
+    </div>
+  );
+
+  if (!sessionId) {
+    return (
+      <div className="flex h-full flex-col overflow-auto">
+        {errorBanner}
+        <LaunchView busy={busy} onLaunch={launch} onOpenSession={setSessionId} />
+      </div>
+    );
+  }
+
+  const awaiting = state === 'AWAITING_INPUT' && session?.pending;
+  const warnings = session?.planWarnings ?? [];
+
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-edge bg-panel">
-        <div className="flex items-baseline gap-4 px-4 pt-3">
-          <h1 className="text-[13px] font-semibold uppercase tracking-[0.2em]">DevLaunch</h1>
-          <p className="text-[13px] text-muted">Run any supported GitHub project locally.</p>
-          <span className="ml-auto text-[11px] text-muted">
-            {state === 'IDLE' ? 'idle' : state.toLowerCase().replace(/_/g, ' ')}
-          </span>
-        </div>
-        <RepoLauncher busy={busy} onLaunch={launch} onStop={stop} canStop={running} />
-      </header>
-
-      {error && (
-        <div className="flex items-center gap-3 border-b border-bad/50 bg-panel px-4 py-2 text-[13px] text-bad">
-          <span>{error}</span>
-          {blockedBy && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await api.cancel(blockedBy);
-                  setBlockedBy(null);
-                  setError(null);
-                  setSessionId(null);
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : String(err));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              className="rounded-md border border-bad px-2 py-0.5 text-[11px] hover:bg-bad/10 disabled:opacity-40"
-            >
-              stop it
-            </button>
-          )}
-        </div>
-      )}
-
-      <PipelineStrip
+      <RunHeader
         state={state}
-        furthest={furthest}
-        planSource={session?.plan?.planSource}
-        detected={session?.detected}
+        repoUrl={session?.repoUrl}
+        startedAt={session?.createdAt}
+        readyAt={session?.readyAt}
+        busy={busy}
+        onStop={stop}
+        onNew={() => {
+          setSessionId(null);
+          setError(null);
+          setStats({});
+        }}
       />
 
-      {/* A single-service session has no service table but can still have a database,
-          and a database running unannounced is exactly the kind of thing a person finds
-          later in `docker ps` and cannot account for. */}
-      {((session?.services?.length ?? 0) > 0 || (session?.backing?.length ?? 0) > 0) && (
-        <ServicePanel
-          services={session?.services ?? []}
-          backing={session?.backing}
-          stats={stats}
-          onRestart={restart}
-          busy={busy}
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+        {errorBanner}
+
+        {/* The result leads, because it is what the pipeline exists to produce. A
+            question the session is blocked on leads for the same reason: nothing else
+            on the page can happen until it is answered. */}
+        {awaiting && (
+          <InputGate
+            pending={session.pending!}
+            busy={busy}
+            onSubmitEnv={(env) => resolve({ env })}
+            onChoose={(workspaceDir) => resolve({ workspaceDir })}
+          />
+        )}
+
+        {state === 'READY' && session?.url && (
+          <ResultHero url={session.url} services={session.services} />
+        )}
+        {state === 'COMPLETED' && <CompletedHero reason={session?.endedReason} />}
+        {state === 'FAILED' && <FailurePanel failure={session?.failure} repairs={session?.repairs} />}
+
+        {state === 'READY' && (
+          <EndpointsPanel url={session?.url} routes={session?.routes} readiness={session?.readiness} />
+        )}
+
+        {((session?.services?.length ?? 0) > 0 || (session?.backing?.length ?? 0) > 0) && (
+          <ServicePanel
+            services={session?.services ?? []}
+            backing={session?.backing}
+            stats={stats}
+            onRestart={restart}
+            busy={busy}
+          />
+        )}
+
+        <PipelineStrip
+          state={state}
+          furthest={furthest}
+          planSource={session?.plan?.planSource}
+          detected={session?.detected}
         />
-      )}
 
-      {session?.state === 'AWAITING_INPUT' && session.pending && (
-        <InputGate
-          pending={session.pending}
-          busy={busy}
-          onSubmitEnv={(env) => resolve({ env })}
-          onChoose={(workspaceDir) => resolve({ workspaceDir })}
-        />
-      )}
+        {/* A failure that is not the headline still belongs on the page: a session can
+            be CANCELLED or READY-after-repair and carry one worth reading. */}
+        {state !== 'FAILED' && session?.failure && (
+          <FailurePanel failure={session.failure} repairs={session.repairs} />
+        )}
 
-      {session?.url && state === 'READY' && (
-        <section className="flex items-center gap-4 border-b border-ok/40 bg-panel px-4 py-3">
-          <span className="text-[13px] text-muted">Application</span>
-          <a
-            href={session.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[13px] text-link underline-offset-4 hover:underline"
+        {warnings.length > 0 && (
+          <Collapsible
+            title="Planning warnings"
+            tone="warn"
+            badge={`${warnings.length}`}
+            defaultOpen={state === 'FAILED'}
           >
-            {session.url}
-          </a>
-          <a
-            href={session.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="ml-auto rounded-md border border-ok/60 px-3 py-1.5 text-[13px] text-ok hover:bg-ok/10"
-          >
-            Open Application
-          </a>
-        </section>
-      )}
+            <ul className="space-y-1 bg-panel px-4 py-3 text-[13px]">
+              {warnings.map((w) => (
+                <li key={w} className="text-warn">
+                  {w}
+                </li>
+              ))}
+            </ul>
+          </Collapsible>
+        )}
 
-      {state === 'READY' && (
-        <EndpointsPanel url={session?.url} routes={session?.routes} readiness={session?.readiness} />
-      )}
+        {session?.plan && (
+          <Collapsible title="Run plan" badge={session.plan.planSource}>
+            <PlanPanel plan={session.plan} />
+          </Collapsible>
+        )}
 
-      <FailurePanel failure={session?.failure} repairs={session?.repairs} />
-      <PlanPanel plan={session?.plan} warnings={session?.planWarnings} />
-      <LogTerminal lines={lines} connected={connected} />
+        <LogTerminal lines={lines} connected={connected} grow={state !== 'READY'} />
+      </div>
     </div>
   );
 }

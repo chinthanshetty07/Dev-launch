@@ -26,6 +26,13 @@ export interface ReadinessResult {
    */
   healthHintOk?: boolean;
   lastError?: string;
+  /**
+   * The start of the body, when the status was not one the plan expected.
+   *
+   * Bounded and read only on an unexpected status: a body is untrusted application
+   * output, and the point is a line a person can read, not a payload to process.
+   */
+  body?: string;
   /** True when polling stopped because the container had already exited. */
   abortedEarly?: boolean;
 }
@@ -86,12 +93,17 @@ export class ReadinessChecker {
           signal: AbortSignal.timeout(Math.min(10_000, remaining)),
         });
 
+        const healthHintOk = opts.healthCheck.expectedStatusCodes.includes(res.status);
         return {
           ready: true,
           attempts,
           elapsedMs: now() - started,
           status: res.status,
-          healthHintOk: opts.healthCheck.expectedStatusCodes.includes(res.status),
+          healthHintOk,
+          // Only when the answer is not a success, and only the first line of it. A 403
+          // is inscrutable on its own; `{"detail":"HTTPS is required for all requests."}`
+          // is the whole explanation, and the server volunteered it.
+          ...(healthHintOk ? {} : { body: await firstLine(res) }),
         };
       } catch (err) {
         lastError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -104,5 +116,36 @@ export class ReadinessChecker {
       }
       await sleep(wait);
     }
+  }
+}
+
+/**
+ * The part of a response a person can read, bounded. Never throws: this is a hint.
+ *
+ * The first line of an HTML error page is `<!doctype html>`, which is what this
+ * returned at first and tells nobody anything. A framework's error page states the
+ * problem in its title and its body text, so tags are stripped and the first real
+ * sentence is taken.
+ */
+async function firstLine(res: Response): Promise<string | undefined> {
+  try {
+    const text = (await res.text()).slice(0, 4000);
+    if (!/^\s*<(?:!doctype|html)/i.test(text)) {
+      return text.split('\n').map((l) => l.trim()).find((l) => l.length > 0)?.slice(0, 200);
+    }
+
+    const title = /<title[^>]*>([^<]+)<\/title>/i.exec(text)?.[1]?.trim();
+    const body = text
+      .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<head[\s\S]*?<\/head>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&(?:nbsp|amp|lt|gt|quot|#39);/g, ' ')
+      .split(/\n|\.\s/)
+      .map((l) => l.replace(/\s+/g, ' ').trim())
+      .filter((l) => l.length > 3);
+
+    const sentence = body.find((l) => l !== title);
+    return [title, sentence].filter(Boolean).join(' — ').slice(0, 200) || undefined;
+  } catch {
+    return undefined;
   }
 }

@@ -197,6 +197,60 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     describe: (e) => `The project cannot be installed as a package: ${e.trim().slice(0, 160)}`,
   },
   {
+    // Before the generic native-build rule, because the error names its own remedy: the
+    // source distribution needs Postgres' development headers, and the project publishes
+    // a prebuilt wheel under a different name for exactly this case.
+    id: 'psycopg2-needs-pg-config',
+    code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+    phases: ['install', 'build'],
+    patterns: [/pg_config executable not found/i, /pg_config is required to build psycopg2/i],
+    remedy:
+      '`psycopg2` builds from source and needs the PostgreSQL client headers, which the ' +
+      'runner image does not carry. Its own maintainers publish `psycopg2-binary` as a ' +
+      'prebuilt wheel for this; DevLaunch substitutes it.',
+    describe: () => 'psycopg2 cannot be built from source: pg_config is not on PATH.',
+  },
+  {
+    // A dependency whose build script predates the Python it is being built on. Pip
+    // reaches for a source distribution only when no wheel matches the interpreter, so
+    // this is what an old pin looks like on 3.12: the sdist's own setup.py fails.
+    //
+    // There is no repair. `--only-binary` cannot help — pip would have taken a wheel if
+    // one existed — and no rewritten install command changes which interpreter is
+    // present. Saying so costs one classification instead of a model call and a second
+    // full reinstall.
+    id: 'sdist-build-unsupported-on-python',
+    code: FailureCode.WRONG_RUNTIME_VERSION,
+    phases: ['install', 'build'],
+    patterns: [
+      /ModuleNotFoundError: No module named 'pkg_resources'/,
+      /'build_ext' object has no attribute 'cython_sources'/,
+      /Cannot import 'setuptools\.build_meta'/,
+    ],
+    remedy:
+      'A pinned dependency has no wheel for Python 3.12, and its source build does not ' +
+      'work there either. DevLaunch provides only Python 3.12. Loosen that pin to a ' +
+      'version that publishes a 3.12 wheel, or run this project on the Python it was ' +
+      'written for.',
+    describe: (e) =>
+      `A dependency could not be built for Python 3.12: ${e.trim().slice(0, 160)}`,
+  },
+  {
+    // A dependency written for a Python that still had these modules. Not a repository
+    // problem, not a plan problem, and nothing a different install command reaches.
+    id: 'removed-stdlib-module',
+    code: FailureCode.WRONG_RUNTIME_VERSION,
+    patterns: [
+      /ModuleNotFoundError: No module named '(?:imp|distutils|asynchat|asyncore|smtpd|cgi|cgitb)'/,
+    ],
+    remedy:
+      'A dependency imports a module the standard library removed in Python 3.12, which ' +
+      'is the only Python DevLaunch provides. Upgrade that dependency to a version that ' +
+      'supports 3.12, or run this project on an older Python.',
+    describe: (e) =>
+      `A dependency uses a standard-library module removed in Python 3.12: ${e.trim().slice(0, 160)}`,
+  },
+  {
     // Before the generic native-build rule, because it names the cause exactly: the
     // module's own Makefile called a bare `python` and the image had only `python3`.
     // node-gyp's toolchain check passed moments earlier, so the generic remedy —
@@ -245,10 +299,20 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       /network timeout at:/i,
       /SSL:\s*CERTIFICATE_VERIFY_FAILED/,
       /ECONNRESET.*registry\./i,
+      // A registry's TLS handshake failing is a property of the network and the image's
+      // certificate store, not of the repository. It was classified as a dependency
+      // install failure and repaired — twice, each attempt re-running the same download
+      // against the same certificate.
+      /certificate has expired/i,
+      /unable to (?:get|verify) local issuer certificate/i,
+      /self[- ]signed certificate in certificate chain/i,
+      /There appears to be trouble with your network connection/i,
     ],
     remedy:
       'The container could not reach a package registry. Check connectivity, and that ' +
-      'the egress policy has not blocked more than intended.',
+      'the egress policy has not blocked more than intended. A certificate error here ' +
+      'is usually the runner image\'s CA bundle being older than the registry\'s ' +
+      'certificate — rebuild it (scripts/build-runner-images.sh).',
     describe: () => 'A network operation failed while reaching an external service.',
   },
 

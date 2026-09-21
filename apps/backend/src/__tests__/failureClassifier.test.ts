@@ -107,10 +107,61 @@ describe('FailureClassifier — behaviour', () => {
   });
 
   it('admits when it has no diagnosis instead of inventing one', () => {
+    // The original form of this test also required `evidence` to be undefined, on the
+    // reading that anything in that field amounts to a claim. That conflated two
+    // different things. Withholding a verdict is honesty; withholding what the program
+    // said is silence — and it produced reports that read, in full, `Start command
+    // exited with code 1.` on a run whose log ends `RuntimeError: Working outside of
+    // application context.`
+    //
+    // What must not be invented is the *verdict*: the code stays the coarse fallback,
+    // the confidence stays low, and no remedy is offered for a cause nobody identified.
     const out = classify('some entirely unremarkable output');
     expect(out.code).toBe(fallback.code);
     expect(out.confidence).toBe('low');
-    expect(out.evidence).toBeUndefined();
+    expect(out.remedy).toBeUndefined();
+  });
+
+  it('quotes the last thing the application said, even with no diagnosis', () => {
+    const out = classify(
+      'Traceback (most recent call last):\n' +
+        '  File "/workspace/app.py", line 25, in <module>\n' +
+        '    db.create_all()\n' +
+        'RuntimeError: Working outside of application context.',
+    );
+    expect(out.confidence).toBe('low');
+    expect(out.evidence).toBe('RuntimeError: Working outside of application context.');
+  });
+
+  it('prefers the exception over the paragraph a runtime prints after it', () => {
+    // Flask's message continues for three lines past the exception, and the last of them
+    // — "See the documentation for more information." — is true and says nothing.
+    const out = classify(
+      'RuntimeError: Working outside of application context.\n' +
+        'This typically means that you attempted to use functionality that needed\n' +
+        'the current application. To solve this, set up an application context\n' +
+        'with app.app_context(). See the documentation for more information.',
+    );
+    expect(out.evidence).toBe('RuntimeError: Working outside of application context.');
+  });
+
+  it('recognises a dotted exception name', () => {
+    // `sqlalchemy.exc.IntegrityError`, `django.core.exceptions.ImproperlyConfigured`:
+    // the module path is part of the name, and an anchored `^Word:` pattern misses them.
+    const out = classify(
+      'sqlalchemy.exc.IntegrityError: duplicate key value violates a unique constraint\n' +
+        'Some trailing note from the runner.',
+    );
+    expect(out.evidence).toMatch(/IntegrityError/);
+  });
+
+  it('walks past the stack frames to the line that names the problem', () => {
+    // A traceback's final line is the exception; the frames above it are how it got
+    // there, and quoting one of those says nothing.
+    const out = classify(
+      'ValueError: bad thing happened\n  File "/workspace/x.py", line 3, in <module>\n    at Object.<anonymous>',
+    );
+    expect(out.evidence).toBe('ValueError: bad thing happened');
   });
 
   it('respects the phase a signature applies to', () => {

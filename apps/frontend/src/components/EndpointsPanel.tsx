@@ -26,20 +26,18 @@ export function EndpointsPanel({
   readiness?: ReadinessView;
 }) {
   const list = routes ?? [];
-  const rootMissing = readiness?.status === 404;
-  if (list.length === 0 && !rootMissing) return null;
+  // Any answer that is not a success, not just 404. A 403 is more alarming and less
+  // self-explanatory than a missing page, and special-casing one status left the other
+  // showing a bare URL that refuses every request a browser makes.
+  const unexpected = readiness?.healthHintOk === false ? readiness : undefined;
+  if (list.length === 0 && !unexpected) return null;
 
   const base = (url ?? '').replace(/\/+$/, '');
   const openable = (r: HttpRoute): boolean => r.method === 'GET' && !/[:{}<>*]/.test(r.path);
 
   return (
     <section className="border-b border-edge bg-panel px-4 py-3 text-[13px]">
-      {rootMissing && (
-        <p className="mb-2 text-muted">
-          The root path <code>{readiness?.path ?? '/'}</code> returned 404: this application has no
-          page there. It is running{list.length > 0 ? ' — these are the routes it declares.' : '.'}
-        </p>
-      )}
+      {unexpected && <RootNotice readiness={unexpected} hasRoutes={list.length > 0} />}
       {list.length > 0 && (
         <>
           <h2 className="mb-1 text-[11px] uppercase tracking-[0.15em] text-muted">Endpoints</h2>
@@ -62,5 +60,47 @@ export function EndpointsPanel({
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * Why the URL does not answer the way a person expects.
+ *
+ * The application is running — readiness only reports a status because something
+ * answered. What it said is the useful part, and it is nearly always self-explanatory
+ * once shown: an API has no page at `/`, or it refuses plain HTTP and says so in the
+ * body. Neither reads as "working" behind a bare link.
+ */
+function RootNotice({ readiness, hasRoutes }: { readiness: ReadinessView; hasRoutes: boolean }) {
+  const { status, path, body, logError } = readiness;
+  const httpsOnly = status === 403 && /https/i.test(body ?? '');
+
+  return (
+    <div className="mb-2 text-muted">
+      <p>
+        <code>{path}</code> answered <span className="text-warn">{status}</span>
+        {status === 404
+          ? ': this application has no page there.'
+          : httpsOnly
+            ? ': this application refuses plain HTTP.'
+            : ', which is not a success.'}{' '}
+        It is running{hasRoutes ? ' — these are the routes it declares.' : '.'}
+      </p>
+      {body && <pre className="mt-1 overflow-x-auto rounded border border-edge bg-ink p-2">{body}</pre>}
+      {/* The page says "Internal Server Error"; the log says which table is missing. */}
+      {logError && (
+        <p className="mt-1">
+          <span className="text-muted">its log says: </span>
+          <code className="text-warn">{logError}</code>
+        </p>
+      )}
+      {httpsOnly && (
+        <p className="mt-1">
+          DevLaunch publishes over HTTP, so every request is refused — including the browser&apos;s.
+          A repository that enforces HTTPS usually ships a certificate and expects to be started
+          with one (for uvicorn, <code>--ssl-keyfile</code> and <code>--ssl-certfile</code>).
+        </p>
+      )}
+    </div>
   );
 }

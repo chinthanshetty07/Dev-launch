@@ -22,6 +22,15 @@ export interface PlanningOutcome {
   detected: string | null;
   /** Why no plan could be produced. Present only when plan is null. */
   reason?: string;
+  /**
+   * This repository is not an application, and no plan would make it one.
+   *
+   * Distinct from "no rule matched". A library has no server to start, so a model asked
+   * to find one will invent a command — `node dist/main.js` against a build that never
+   * ran — and the run fails several minutes later with a diagnosis about the invention
+   * rather than about the repository. Saying so at once is both faster and true.
+   */
+  unrunnable?: boolean;
   /** Several runnable packages: a person picks, rather than a model guessing. */
   choices?: WorkspacePackage[];
   warnings: string[];
@@ -70,6 +79,27 @@ function nodeVersionWarning(engineNode: string | undefined): string | undefined 
   return lower.some((v) => v <= ours) ? undefined : warn;
 }
 
+/**
+ * Whether this package exists to be imported rather than run.
+ *
+ * Three facts together, because none of them alone is enough: a package can legitimately
+ * have no runtime dependencies, and plenty of applications declare `main`. What settles
+ * it is that every script it does have is a build or a check, and `main` names something
+ * inside a build directory — which is a promise to a consumer, not a way to start.
+ */
+function looksLikeALibrary(pkg: PackageJsonSummary): boolean {
+  const scripts = Object.entries(pkg.scripts);
+  if (scripts.length === 0) return false;
+  // The name is not enough. This package's `serve` is `tsc --watch`, which compiles and
+  // watches and never listens — reading the name alone called a library an application.
+  const startsSomething = scripts.some(
+    ([name, body]) => /^(?:dev|start|serve|develop)/.test(name) && SERVER_RUNNERS.test(body),
+  );
+  if (startsSomething) return false;
+  if (Object.keys(pkg.dependencies).length > 0) return false;
+  return /^(?:\.\/)?(?:dist|lib|build|es|esm|cjs|out)\//.test(pkg.main ?? '');
+}
+
 function pickScript(pkg: PackageJsonSummary, candidates: string[]): string | undefined {
   return candidates.find((name) => typeof pkg.scripts[name] === 'string');
 }
@@ -81,10 +111,66 @@ function matchNodeFramework(
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
   // Walked in table order, which places meta-frameworks before the build tools they
   // are themselves built on.
-  return NODE_FRAMEWORKS.find(
+  const matches = NODE_FRAMEWORKS.filter(
     (fw) => deps[fw.dep] !== undefined || (fw.configFile && configs.includes(fw.configFile)),
   );
+  if (matches.length <= 1) return matches[0];
+
+  // Several frameworks in one manifest, which is ordinary: a MERN repository declares
+  // `express` and `react-scripts` side by side because one manifest holds both halves.
+  // Table order alone picks the browser tool, and the browser tool is usually not what
+  // the start script runs — this one runs `node ./bin/www`, the API.
+  //
+  // The script body settles it, because the script body is the author saying what
+  // starts. Getting it wrong is not cosmetic: the frameworks differ in default port and
+  // in argument style, so a Vite-shaped guess appends `--host 0.0.0.0 --port 5173` to a
+  // command that is really `node server.js` and then watches a port nothing will open.
+  const started = matches.find((fw) => {
+    const script = pickScript(pkg, fw.scripts);
+    return script !== undefined && scriptRuns(pkg.scripts[script]!, fw);
+  });
+  return started ?? matches[0];
 }
+
+/**
+ * Commands that start something that listens.
+ *
+ * Deliberately not "anything in a script called `dev`": a compiler in watch mode is a
+ * build step with a long life, not a server, and telling the two apart is what
+ * distinguishes a library from an application.
+ */
+const SERVER_RUNNERS =
+  /(?:^|&&|;|\s|\/)(?:node|nodemon|ts-node|tsx|babel-node|next|nuxt|vite|astro|remix|gatsby|ng|vue-cli-service|react-scripts|nest|docusaurus|parcel|webpack-dev-server|serve|http-server|live-server|concurrently)\b/;
+
+/** Runners that mean "this script starts a plain Node server", not a framework's CLI. */
+const NODE_RUNNERS = /(?:^|&&|;|\s)(?:node|nodemon|ts-node|tsx|babel-node)\b/;
+
+/**
+ * Whether this script body actually starts the given framework.
+ *
+ * A build tool is invoked by name — `vite`, `next dev`, `react-scripts start`. A server
+ * framework is not: it is imported by a file that `node` runs. So the two are recognised
+ * by different evidence, which is what the script body actually contains in each case.
+ */
+function scriptRuns(body: string, fw: NodeFramework): boolean {
+  if (fw.startedBy === 'node') return NODE_RUNNERS.test(body);
+  // The tool's own binary, or the package manager delegating to it.
+  return new RegExp(`(?:^|&&|;|\\s|/)${escapeRegExp(toolNameFor(fw))}\\b`).test(body);
+}
+
+/** The binary a framework is started by, where it differs from its package name. */
+function toolNameFor(fw: NodeFramework): string {
+  if (fw.id === 'cra') return 'react-scripts';
+  if (fw.id === 'angular') return 'ng';
+  if (fw.id === 'vue-cli') return 'vue-cli-service';
+  if (fw.id === 'docusaurus') return 'docusaurus';
+  if (fw.id === 'webpack-dev-server') return 'webpack';
+  if (fw.id === 'remix') return 'remix';
+  if (fw.id === 'sveltekit') return 'vite';
+  return fw.id;
+}
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * Deterministic plan generation.
@@ -125,7 +211,26 @@ export class RuleBasedPlanner {
       return { ...outcome, warnings: [...rootMeta.warnings, ...outcome.warnings] };
     }
 
-    return this.plan(rootMeta);
+    const atRoot = this.plan(rootMeta);
+    if (atRoot.plan || atRoot.unrunnable || !rootMeta.soleService) return atRoot;
+
+    // The root holds configuration and the application holds a directory. Discovery
+    // already found it — often because the repository's own compose file named it
+    // outright — so declining here and asking a model to read the tree would be asking
+    // for an answer already in hand.
+    const sole = rootMeta.soleService;
+    const subMeta = await this.analyzer.analyze(root, sole.dir);
+    const outcome = this.plan(subMeta, sole.dir);
+    if (!outcome.plan) return atRoot;
+
+    return {
+      ...outcome,
+      warnings: [
+        ...rootMeta.warnings,
+        `Nothing runnable at the repository root; running ${sole.dir} instead (${sole.evidence}).`,
+        ...outcome.warnings,
+      ],
+    };
   }
 
   /** Pure: metadata in, plan out. No filesystem access, so every branch is unit-testable. */
@@ -162,14 +267,44 @@ export class RuleBasedPlanner {
     const versionWarning = nodeVersionWarning(pkg.engineNode);
     if (versionWarning) warnings.push(versionWarning);
 
+    // Said before the run rather than after it fails. A literal bind address is the one
+    // problem DevLaunch can see coming and can do nothing about, so the earliest useful
+    // moment to say so is while the plan is still on screen.
+    if (meta.hardcodedBind) {
+      warnings.push(
+        `${meta.hardcodedBind.file} binds a loopback address in its own source ` +
+          `(\`${meta.hardcodedBind.line}\`). Nothing outside the container can reach that, ` +
+          'and no environment variable overrides it — edit the line to bind 0.0.0.0.',
+      );
+    }
+
     const framework = matchNodeFramework(pkg, meta.frameworkConfigs);
     const script = framework
       ? pickScript(pkg, framework.scripts)
       : pickScript(pkg, ['dev', 'start', 'serve']);
 
     if (!script) {
-      if (!framework) return null;
       const entry = pkg.entryFiles?.[0];
+
+      // A package that builds something for other packages to import. Its scripts
+      // compile and test; none of them starts anything, and there is no entry file to
+      // start either. `main: dist/index.js` is the giveaway — it names an artefact that
+      // does not exist until a build runs, for a consumer rather than for a person.
+      if (!entry && looksLikeALibrary(pkg)) {
+        return {
+          plan: null,
+          detected: null,
+          unrunnable: true,
+          reason:
+            `This package is a library, not an application: its scripts are ` +
+            `${Object.keys(pkg.scripts).join(', ') || 'absent'}, none of which starts a ` +
+            `server, and \`main\` points at ${pkg.main} — a build artefact for another ` +
+            'package to import. There is nothing here to open in a browser.',
+          warnings,
+        };
+      }
+
+      if (!framework) return null;
       if (!entry) {
         warnings.push(
           `Detected ${framework.id} but found none of its expected scripts ` +
@@ -184,7 +319,7 @@ export class RuleBasedPlanner {
         `Detected ${framework.id} with no ${framework.scripts.join('/')} script; ` +
           `starting its entry file ${entry} directly.`,
       );
-      const port = framework.defaultPort;
+      const port = portFor(framework, meta);
       return {
         detected: framework.id,
         warnings,
@@ -209,7 +344,7 @@ export class RuleBasedPlanner {
       };
     }
 
-    const port = framework?.defaultPort ?? 3000;
+    const port = portFor(framework, meta);
     const args = framework ? bindingArgs(framework, port) : [];
     // `--` is what forwards arguments through the package manager to the script itself.
     const startCommand = `${pm} run ${script}${args.length > 0 ? ` -- ${args.join(' ')}` : ''}`;
@@ -253,7 +388,12 @@ export class RuleBasedPlanner {
     // "Nothing to install" and "no idea how to install" are different answers, and
     // collapsing them threw away a plannable project: a pyproject that declares no
     // dependencies still says how to start, and there is simply nothing to fetch first.
-    if (py.requirements.length === 0 && !py.hasPyproject) {
+    // Declaring nothing is not the same as being unplannable. A project whose entry file
+    // imports Flask has said what it needs; it simply said it in Python rather than in a
+    // manifest. Only a project that declares nothing *and* imports nothing third-party
+    // is genuinely beyond a rule here.
+    const fromImports = declarableImports(py);
+    if (py.requirements.length === 0 && !py.hasPyproject && fromImports.length === 0) {
       warnings.push(
         py.hasPipfile
           ? 'Pipfile-only projects are not supported by the rule-based planner.'
@@ -262,8 +402,16 @@ export class RuleBasedPlanner {
       return null;
     }
 
-    const install =
-      py.requirements.length > 0 ? 'pip install -r requirements.txt' : pyprojectInstall(py, warnings);
+    let install: string | null;
+    let installFromImports = false;
+    if (py.requirements.length > 0) {
+      install = 'pip install -r requirements.txt';
+    } else if (py.hasPyproject) {
+      install = pyprojectInstall(py, warnings);
+    } else {
+      installFromImports = true;
+      install = null; // Filled in below, once the framework — and its runner — are known.
+    }
 
     // Both manifests, because a packaged project declares its framework only in
     // pyproject.toml — and read from requirements.txt alone it declared nothing, planned
@@ -271,13 +419,15 @@ export class RuleBasedPlanner {
     const requirementNames = [
       ...py.requirements.map((r) => r.split(/[<>=!~[\s]/)[0]!.trim().toLowerCase()),
       ...(py.dependencies ?? []),
+      ...fromImports.map((d) => d.toLowerCase()),
     ].filter(Boolean);
     const signal = Object.keys(PYTHON_REQUIREMENT_SIGNALS).find((k) => requirementNames.includes(k));
 
     // manage.py is definitive and outranks anything requirements.txt merely mentions.
-    const kind = py.hasManagePy
-      ? 'django'
-      : (signal ?? py.entryCandidates.find((e) => e.framework)?.framework ?? null);
+    // Otherwise a file that imports the framework outranks a dependency list that only
+    // mentions it: a repository can depend on Flask and be started by Streamlit.
+    const imported = py.entryCandidates.find((e) => e.framework)?.framework ?? null;
+    const kind = py.hasManagePy ? 'django' : (imported ?? signal ?? null);
 
     if (!kind) return null;
 
@@ -285,18 +435,63 @@ export class RuleBasedPlanner {
     if (!fw) return null;
     if (fw.note) warnings.push(fw.note);
 
+    // Said before the run, like a hardcoded bind address and for the same reason: there
+    // is nothing DevLaunch can set, and the failure it produces — `connection to server
+    // at "localhost" (::1), port 5432 failed` — is accurate and explains nothing.
+    if (py.hardcodedDatabaseUrl) {
+      warnings.push(
+        `${py.hardcodedDatabaseUrl.file} hardcodes a database URL pointing at localhost ` +
+          `(\`${py.hardcodedDatabaseUrl.url.slice(0, 80)}\`). Inside a container that is ` +
+          'this application, not a database. Read the URL from an environment variable ' +
+          'and DevLaunch will provision one and fill it in.',
+      );
+    }
+
+    // The framework is known now, so the install list can include the thing that starts
+    // it. `uvicorn main:app` is run by uvicorn, and nothing in a FastAPI project's source
+    // imports it: the install was otherwise complete and the run died on
+    // `sh: 1: uvicorn: not found`.
+    if (installFromImports) {
+      const packages = [...fromImports];
+      if (fw.runner && !packages.some((d) => d.toLowerCase() === fw.runner)) {
+        packages.push(fw.runner);
+      }
+      install = `pip install ${packages.join(' ')}`;
+      warnings.push(
+        `No requirements.txt or pyproject.toml, so the ${packages.length} distribution(s) ` +
+          `its source imports are installed instead: ${packages.join(', ')}. ` +
+          'Versions are not pinned, because the repository pinned none.',
+      );
+    }
+
     const entry = py.entryCandidates.find((e) => e.framework === kind)
       ?? py.entryCandidates.find((e) => e.file !== 'manage.py');
     // Inside a package the file path is not the import path: `src/pg_rag/main.py` runs
     // as `pg_rag.main` once installed, and only as that.
     const moduleName = entry?.module ?? entry?.file.replace(/\.py$/, '');
 
+    // The step between installing and starting. A schema-creation script the author
+    // documented is exactly what this slot is for, and without it the application runs
+    // and answers 500 to everything.
+    const initScript = (py.initScripts ?? []).find((f) => f !== entry?.file);
+    if (initScript) {
+      warnings.push(`Running ${initScript} before start: it creates the database schema this application expects.`);
+    }
+
     const env: EnvVar[] = [];
     let startCommand: string;
+    // The step between installing and starting, when the framework has one of its own.
+    let frameworkBuild: string | null = null;
 
     switch (kind) {
       case 'django':
         startCommand = `python manage.py runserver 0.0.0.0:${fw.defaultPort}`;
+        // Every Django README says to run this before the server, and it is the same
+        // command for every Django project there has ever been. Without it the server
+        // starts, prints "You have N unapplied migration(s)" to a log nobody reads, and
+        // then returns 500 from the first page that touches the database — which reads
+        // as DevLaunch having broken the project rather than having skipped a step.
+        frameworkBuild = 'python manage.py migrate --noinput';
         break;
 
       case 'flask': {
@@ -315,6 +510,9 @@ export class RuleBasedPlanner {
       }
 
       case 'streamlit': {
+        // The file that imports streamlit, not a conventional name. One repository's
+        // program is `dashboard.py`; `streamlit run app.py` failed with
+        // `Invalid value: File does not exist`, and a model then guessed `src/app.py`.
         const file = entry?.file ?? 'app.py';
         // --server.headless suppresses the first-run email prompt, which would
         // otherwise block forever and surface as a readiness timeout.
@@ -347,7 +545,10 @@ export class RuleBasedPlanner {
         runtime: { language: 'python', version: PYTHON_IMAGE_VERSION },
         packageManager: 'pip',
         installCommand: install,
-        buildCommand: null,
+        // A schema script the author named beats the framework's own step: it is
+        // specific to this repository, where `manage.py migrate` is specific to Django.
+        // Only one can run, and the repository's own is the more informed of the two.
+        buildCommand: initScript ? `python ${initScript}` : frameworkBuild,
         startCommand,
         workingDirectory,
         expectedPort: fw.defaultPort,
@@ -368,6 +569,25 @@ export class RuleBasedPlanner {
  * already tolerates that; but a check that hits a real route sees a real answer, and
  * reports a mismatch only when there is one.
  */
+/**
+ * Which port to watch.
+ *
+ * A framework whose flags settle the question keeps its default: DevLaunch passes
+ * `--port` on the command line and the application obeys, so the number it was given is
+ * the number it opens. A framework that binds through the environment cannot be made to
+ * obey — `app.listen(8017)` ignores `PORT` entirely — so what the source says wins
+ * there, and a repository that hardcodes its port is planned on the port it hardcodes
+ * rather than on a default it will never use.
+ */
+export function portFor(
+  framework: NodeFramework | undefined,
+  meta: RepositoryMetadata,
+): number {
+  const fallback = framework?.defaultPort ?? 3000;
+  if (framework && framework.argStyle !== 'env') return fallback;
+  return meta.declaredPort ?? fallback;
+}
+
 export function healthPathFor(meta: RepositoryMetadata): string {
   const routes = meta.httpRoutes ?? [];
   if (routes.length === 0) return '/';
@@ -389,10 +609,23 @@ export function healthPathFor(meta: RepositoryMetadata): string {
  * `>` or `[`: `fastapi[standard]>=0.115` cannot be written as a command argument at all.
  * The constraint is worth stating plainly rather than silently resolving to latest.
  */
+/**
+ * Imports safe to hand to `pip install`.
+ *
+ * Names only, and only well-formed ones: the command allowlist permits no quotes or
+ * comparison operators, so anything unusual cannot be written as an argument at all.
+ * The cap is there because a plan that installs forty packages read out of a script is
+ * no longer a plan, it is a guess with a long tail.
+ */
+function declarableImports(py: PythonSummary): string[] {
+  return (py.imports ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d)).slice(0, 12);
+}
+
 function pyprojectInstall(py: PythonSummary, warnings: string[]): string | null {
   if (py.packageable !== false) return 'pip install .';
 
-  const deps = (py.dependencies ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
+  const declared = py.runtimeDependencies ?? py.dependencies ?? [];
+  const deps = declared.filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
   if (deps.length === 0) {
     warnings.push(
       'pyproject.toml declares no dependencies and the project is not a buildable ' +

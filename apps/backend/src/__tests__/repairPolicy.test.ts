@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { FailureCode } from '@devlaunch/shared';
 import { REPAIRABLE_FAILURES, repairPolicyFor } from '../services/failures/RepairPolicy.js';
+import { APPROVED_IMAGES } from '../services/security/ImageAllowlist.js';
 
 describe('what repair is allowed to do about a failure', () => {
   it('never spends a model call on a failure no plan can fix', () => {
@@ -37,6 +38,20 @@ describe('what repair is allowed to do about a failure', () => {
 
   it('asks a model at most once per failure class', () => {
     for (const code of Object.values(FailureCode)) expect(repairPolicyFor(code).aiCalls).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps the runtime-version policy in step with the image allowlist', () => {
+    // WRONG_RUNTIME_VERSION is non-repairable only because `runtime.version` has
+    // nowhere else to point: the allowlist carries one image per language. Approving a
+    // second version would make a rewritten plan able to satisfy the manifest, and this
+    // is the test that says so rather than leaving the policy quietly wrong.
+    const perLanguage = new Map<string, number>();
+    for (const image of Object.values(APPROVED_IMAGES)) {
+      perLanguage.set(image.language, (perLanguage.get(image.language) ?? 0) + 1);
+    }
+    const onlyOneEach = [...perLanguage.values()].every((n) => n === 1);
+    expect(onlyOneEach).toBe(true);
+    expect(repairPolicyFor(FailureCode.WRONG_RUNTIME_VERSION).repairability).toBe('NON_REPAIRABLE');
   });
 
   it('derives the repairable list from the policy, so there is one truth', () => {

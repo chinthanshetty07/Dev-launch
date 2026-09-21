@@ -57,6 +57,9 @@ export function FailurePanel({ failure, repairs }: { failure?: FailureDetail; re
               >
                 {r.source === 'deterministic' ? 'rule' : 'model'}
               </span>
+              {/* Which service. "The start command was corrected" says nothing useful
+                  when four applications are running and three were already working. */}
+              {r.service && <span className="mr-2 font-medium">{r.service}</span>}
               <span className="text-muted">{r.type.toLowerCase().replace(/_/g, ' ')}: </span>
               {Object.entries(r.after)
                 .map(([k, v]) => `${k} → ${String(v)}`)

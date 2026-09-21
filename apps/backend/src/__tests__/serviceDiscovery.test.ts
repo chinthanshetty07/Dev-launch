@@ -484,3 +484,248 @@ describe('a compose port the dev server cannot use', () => {
     expect(api.declaredPort).toBe(8000);
   });
 });
+
+describe('what to install versus what to detect from', () => {
+  it('installs only what the application needs to run', async () => {
+    // Detection wants everything declared: a database driver in a dev group still means
+    // a database. Installing wants only the runtime set — `pytest` and `httpx` in a
+    // runtime container are a slower build and a wider surface for nothing.
+    const { pyprojectDepsBySection } = await import('../services/analysis/ServiceDiscovery.js');
+    const out = pyprojectDepsBySection(`
+[project]
+name = "svc"
+dependencies = [
+    "fastapi>=0.135.2",
+    "uvicorn>=0.42.0",
+]
+
+[project.optional-dependencies]
+lint = ["ruff>=0.6"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.2",
+]
+`);
+    expect(out.runtime).toEqual(['fastapi', 'uvicorn']);
+    expect(out.all).toEqual(expect.arrayContaining(['fastapi', 'uvicorn', 'ruff', 'httpx', 'pytest']));
+  });
+
+  it('separates Poetry groups the same way', async () => {
+    const { pyprojectDepsBySection } = await import('../services/analysis/ServiceDiscovery.js');
+    const out = pyprojectDepsBySection(`
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.115"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+`);
+    expect(out.runtime).toEqual(['fastapi']);
+    expect(out.all).toEqual(expect.arrayContaining(['fastapi', 'pytest']));
+  });
+});
+
+describe('the variable a service reads its connection string from', () => {
+  it('finds a connection variable the alias list never predicted', async () => {
+    // A real repository passes `process.env.CONNECTION_STRING` to mongoose.connect. It
+    // is not MONGO_URI, so a provisioned, healthy MongoDB was injected under four names
+    // the application never read and it crashed at boot with
+    // `The uri parameter to openUri() must be a string, got "undefined"`.
+    const root = await repo({
+      'package.json': pkg('api', { start: 'node server.js' }, { mongoose: '^6' }),
+      'config/dbConnection.js': 'mongoose.connect(process.env.CONNECTION_STRING);',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    const mongo = meta.backing?.find((b) => b.kind === 'mongodb');
+    expect(mongo?.urlEnvKey).toBe('CONNECTION_STRING');
+    // The aliases stay too: unread, they cost nothing, and a config file the scan did
+    // not reach may use one of them.
+    expect(mongo?.urlEnvKeys).toContain('MONGODB_URI');
+  });
+
+  it('reads source in subdirectories, not only at the service root', async () => {
+    // The fallback walk started one level below its own depth limit, so it read the
+    // root's files and descended into none of them — and a repository whose entire
+    // database configuration lives in `config/` was read as declaring nothing.
+    const root = await repo({
+      'package.json': pkg('api', { start: 'node server.js' }, { mongoose: '^6' }),
+      'lib/deep/db.js': 'mongoose.connect(process.env.DB_CONNECTION_URI);',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.backing?.[0]?.urlEnvKey).toBe('DB_CONNECTION_URI');
+  });
+
+  it('refuses a variable that ends in URL but names something else', async () => {
+    // Writing a database address into CLIENT_URL would break a working application to
+    // fix one that is not broken.
+    const root = await repo({
+      'package.json': pkg('api', { start: 'node server.js' }, { mongoose: '^6' }),
+      'server.js': 'const a = process.env.CLIENT_URL; const b = process.env.WEBHOOK_URL;',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.backing?.[0]?.urlEnvKey).not.toBe('CLIENT_URL');
+    expect(meta.backing?.[0]?.urlEnvKeys).not.toContain('WEBHOOK_URL');
+  });
+
+  it('will not attribute an unnamed variable when two kinds could claim it', async () => {
+    // `DATA_URI` names neither, and guessing which server it points at is how a cache
+    // URL ends up in a database driver.
+    const root = await repo({
+      'package.json': pkg('api', { start: 'node s.js' }, { mongoose: '^6', redis: '^4' }),
+      's.js': 'const x = process.env.DATA_URI;',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    for (const b of meta.backing ?? []) expect(b.urlEnvKeys).not.toContain('DATA_URI');
+  });
+
+  it('attributes a variable that names its kind even when two are present', async () => {
+    const root = await repo({
+      'package.json': pkg('api', { start: 'node s.js' }, { mongoose: '^6', redis: '^4' }),
+      's.js': 'const x = process.env.MONGO_CONNECTION_STRING;',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.backing?.find((b) => b.kind === 'mongodb')?.urlEnvKey).toBe('MONGO_CONNECTION_STRING');
+    expect(meta.backing?.find((b) => b.kind === 'redis')?.urlEnvKeys).not.toContain('MONGO_CONNECTION_STRING');
+  });
+});
+
+describe('what the application says about its own address', () => {
+  it('reads a port the source hardcodes', async () => {
+    // `const port = 8017` beside `app.listen(port, ...)`. Lower case, which the previous
+    // pattern — anchored to the environment-variable spelling — never matched.
+    const root = await repo({
+      'package.json': pkg('api', { dev: 'node server.js' }, { express: '^4' }),
+      'server.js': "const port = 8017\nconst hostname = 'localhost'\napp.listen(port, hostname)",
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.declaredPort).toBe(8017);
+  });
+
+  it('names the file and line when a loopback bind is a literal', async () => {
+    const root = await repo({
+      'package.json': pkg('api', { dev: 'node server.js' }, { express: '^4' }),
+      'server.js': "const port = 8017\nconst hostname = 'localhost'\napp.listen(port, hostname)",
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.hardcodedBind?.file).toBe('server.js');
+    expect(meta.hardcodedBind?.line).toContain('localhost');
+  });
+
+  it('reports no hardcoded bind when the address is a variable', async () => {
+    // `process.env.HOST` is configuration, and configuration is exactly what DevLaunch
+    // can set. Reporting it as unfixable would stop a repair that works.
+    const root = await repo({
+      'package.json': pkg('api', { dev: 'node server.js' }, { express: '^4' }),
+      'server.js': 'app.listen(process.env.PORT, process.env.HOST)',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.hardcodedBind).toBeUndefined();
+  });
+
+  it('ignores a loopback literal that is not given to listen', async () => {
+    const root = await repo({
+      'package.json': pkg('api', { dev: 'node server.js' }, { express: '^4' }),
+      'server.js': "const docs = 'http://localhost:3000/docs'\napp.listen(3000)",
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.hardcodedBind).toBeUndefined();
+  });
+});
+
+describe('a repository whose only application is in a subdirectory', () => {
+  it('reports the sole service when the root holds only configuration', async () => {
+    const root = await repo({
+      'docker-compose.yml': 'services:\n  web:\n    build: ./src\n    ports:\n      - 8003:8000\n',
+      'src/requirements.txt': 'fastapi\nuvicorn\n',
+      'src/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.soleService?.dir).toBe('src');
+    // Still not a multi-service project: there is one of it.
+    expect(meta.services).toBeUndefined();
+  });
+
+  it('reports no sole service when the application is at the root', async () => {
+    // The ordinary case, and re-planning the root as if it were a subdirectory would be
+    // the same analysis twice.
+    const root = await repo({
+      'package.json': pkg('api', { start: 'node s.js' }, { express: '^4' }),
+      's.js': 'app.listen(3000)',
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.soleService).toBeUndefined();
+  });
+
+  it('reports no sole service when there are two', async () => {
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '^18', vite: '^5' }),
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '^4' }),
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.soleService).toBeUndefined();
+    expect(meta.services).toHaveLength(2);
+  });
+});
+
+describe('a dev server proxying to an address its own container cannot reach', () => {
+  it('finds a Vite proxy target pointing at localhost', async () => {
+    // The dev server resolves this itself, inside the frontend's container, so
+    // `localhost` is the frontend. Every request the page makes returns 502 through a
+    // stack that is otherwise working perfectly.
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '^18', vite: '^5' }),
+      'frontend/vite.config.js':
+        "export default { server: { proxy: { '/api': { target: 'http://localhost:8000' } } } }",
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '^4' }),
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    const web = meta.services?.find((s) => s.role === 'web');
+    expect(web?.devProxy).toMatchObject({ file: 'vite.config.js', target: 'http://localhost:8000' });
+  });
+
+  it('finds the shorthand form as well', async () => {
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '^18', vite: '^5' }),
+      'frontend/vite.config.js': "export default { server: { proxy: { '/api': 'http://localhost:8000' } } }",
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '^4' }),
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.services?.find((s) => s.role === 'web')?.devProxy?.target).toBe('http://localhost:8000');
+  });
+
+  it('finds a Create React App proxy declared in the manifest', async () => {
+    const root = await repo({
+      'frontend/package.json': { ...pkg('web', { start: 'react-scripts start' }, { 'react-scripts': '^5' }), proxy: 'http://localhost:5000' },
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '^4' }),
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.services?.find((s) => s.role === 'web')?.devProxy?.target).toBe('http://localhost:5000');
+  });
+
+  it('ignores a proxy that already points at a reachable host', async () => {
+    // `http://api:8000` is what the fix looks like. Warning about it would be noise.
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '^18', vite: '^5' }),
+      'frontend/vite.config.js': "export default { server: { proxy: { '/api': 'http://api:8000' } } }",
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '^4' }),
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.services?.find((s) => s.role === 'web')?.devProxy).toBeUndefined();
+  });
+
+  it('ignores a localhost URL that is not a proxy target', async () => {
+    // A build-time constant, not something the dev server forwards. There is no proxy
+    // here at all, so naming a line to change would send someone after a problem they
+    // do not have.
+    const root = await repo({
+      'frontend/package.json': pkg('web', { dev: 'vite' }, { react: '^18', vite: '^5' }),
+      'frontend/vite.config.js':
+        "export default { define: { 'API_BASE': 'http://localhost:8000' }, server: { port: 5173 } }",
+      'backend/package.json': pkg('api', { start: 'node s.js' }, { express: '^4' }),
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.services?.find((s) => s.role === 'web')?.devProxy).toBeUndefined();
+  });
+});

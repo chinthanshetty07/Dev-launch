@@ -327,6 +327,109 @@ The analyzer reads the routes the application declares: `app.get('/states/')`, a
 router's paths under the mount it is registered on (`/users/:id` in `routes/users.js`
 is `/api/users/:id` to a client, and the bare form is a wrong answer), Flask routes with
 their methods, FastAPI routers under `include_router`'s prefix, and any `.http` request
-file the author tests with. The dashboard says the root has no page and lists them, GET
-routes as links. Readiness checks a declared concrete GET route when `/` is not one, so
+file the author tests with. Routes are read from the entry point, from route packages one level inside the project
+(`app/routes/` is the ordinary FastAPI layout, and a scan of the working directory walks
+past it), and from routers built by hand with `add_api_route` or `add_url_rule` rather
+than by decorator — a class-based router declares no decorators at all.
+
+The dashboard explains any answer that is not a success, not only a missing page. A 403
+is more alarming and less self-explanatory than a 404: one real repository enforces
+HTTPS in middleware and answers every plain-HTTP request with
+`{"detail":"HTTPS is required for all requests."}`, so the link DevLaunch hands over
+refuses the browser too. The body is shown, because the server has usually already
+explained itself. It lists the routes with GET links. Readiness checks a declared concrete GET route when `/` is not one, so
 a mismatch there means something.
+
+## The step between installing and starting
+
+A Flask application opens `todo.db`; a separate `db_create.py` creates its tables, and
+the README lists it as installation step 3. Run without it, the application starts
+perfectly and answers 500 to every request — `no such table: tasks`. That reads as a
+broken repository and is a missing step, and the plan already has a slot for it.
+
+Schema scripts are recognised by *name*, not by reading them: a name is a claim the
+author made, and running a file because its contents looked like setup is the kind of
+guess this codebase avoids. `setup.py` is packaging and is never run this way; `seed.py`
+and `migrate.py` write or alter data rather than creating the structure an application
+needs before it can answer at all.
+
+When a running application answers with an error anyway, two things are quoted: the
+readable part of its error page, and its own last error line from the log. The page says
+*Internal Server Error*; the log says `no such table: tasks`. Only one of those can be
+acted on — and the first line of an HTML error page is `<!doctype html>`, which is what
+this reported before tags were stripped.
+
+## A project gets repaired too
+
+`startProject` went from a failed service straight to `FAILED` and teardown. The entire
+repair architecture — the policy, the evidence-backed rules, the bounded model call —
+served only repositories that happened to contain one service. A frontend calling an API
+is the ordinary shape of a web project, and it was the one shape with no second chance.
+
+`verifyProject` now runs the same loop, with three differences that follow from there
+being several of everything:
+
+- **One service is repaired at a time**, and only that service restarts. The others are
+  already serving traffic; tearing them down to re-run a corrected plan for a sibling
+  would throw away working containers and several minutes of install. `waitForReady`
+  skips a service that is already `READY` for the same reason.
+- **The service's own log is what the rules read.** A project's aggregated stream carries
+  four applications' output interleaved, and a rule looking for "the port this application
+  opened" would happily find a sibling's.
+- **No model call.** A model rewriting one service's plan cannot see what its siblings
+  were told about it, and the addresses and ports they were wired with are precisely what
+  it would change. Every deterministic rule is evidence-backed and none of them touches a
+  service's name or published port, so rules are safe here and a rewrite is not.
+
+The repaired plan is written back to `ServiceRun.plan`, and the restart closure reads that
+field rather than the plan it was built with — otherwise a restart silently undoes the
+repair and re-runs the failure it just corrected. It is the *resolved* plan that is
+rewritten, the one carrying the injected database URL and sibling addresses; re-deriving
+one from the planner would drop them.
+
+Each `RepairRecord` carries the service it applied to. "The start command was corrected"
+says nothing useful when four applications are running and three of them were working.
+
+## A dev server's proxy is resolved inside its own container
+
+`server: { proxy: { '/api': 'http://localhost:8000' } }` in a Vite config, or
+`"proxy": "http://localhost:5000"` in a Create React App manifest, is forwarded by the dev
+server *process*. That process runs inside the frontend's container, so `localhost` is the
+frontend — not the API beside it — and every request the page makes returns 502 through a
+stack that is otherwise working perfectly. It is the one way a project can reach `READY`
+and still answer nothing.
+
+DevLaunch does not edit a repository to make it run, and there is no environment variable
+or flag that reaches a literal in a config file. So this is detected and named: the file,
+the target, and the exact replacement — `http://<api-service>:<port>`, since services
+reach each other by name on the container network. It is reported as a planning warning,
+before the run rather than after it.
+
+Where the config reads the target from a variable instead — `process.env.VITE_PROXY_TARGET
+|| 'http://localhost:8000'` — nothing is needed here: the source scan already finds that
+key, and cross-service wiring already sets it.
+
+## A database image the repository names is a preference, not a promise
+
+The approval check reads a backing image's *repository* name and adopts whatever tag
+follows. That is what makes `pgvector/pgvector:pg16` work — a project needing it gets it,
+where plain Postgres would start happily and fail the application's first
+`CREATE EXTENSION vector`.
+
+It is also how one compose file's `postgres:15.1-alpine` came to be started under the
+sandbox profile the runner images get: non-root, read-only rootfs, every capability
+dropped. The Alpine entrypoint chmods its data directory and needs a writable temp on the
+rootfs, so it exits 1 within a second. The application then started normally, was handed
+a connection string, and failed with `could not translate host name "postgres"` — because
+the alias belonged to a container that no longer existed. Neither message named the
+cause, and no repair could have reached it.
+
+Stock images are safe here for one measured reason, which `BackingServices` states: they
+run as the non-root user the image already defines, so the entrypoint never needs to
+chown a data directory or switch user. That is a property of the images DevLaunch pins,
+verified against the profile — not of every tag those repositories publish.
+
+So a named image is tried, and if it does not accept connections the run falls back once
+to the pinned image, quoting the container's own last line. Said out loud, because a
+repository that asked for pgvector and quietly got plain Postgres would fail later on its
+first `CREATE EXTENSION` and deserves to know which it got.

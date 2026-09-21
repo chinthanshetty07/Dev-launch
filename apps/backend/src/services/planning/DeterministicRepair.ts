@@ -60,7 +60,10 @@ const LISTENING = [
   /Uvicorn running on https?:\/\/[\w.:-]+:(\d{2,5})/i,
   /Running on https?:\/\/[\w.:-]+:(\d{2,5})/i, // Flask
   /Local:\s+https?:\/\/[\w.:-]+:(\d{2,5})/i, // Vite, CRA, Next
-  /(?:listening|started|running) (?:on|at) (?:port )?(?:https?:\/\/[\w.:-]+:)?(\d{2,5})\b/i,
+  // The host part is optional *and* may be bare. `running at localhost:8017/` is what
+  // one real repository prints, and requiring `http://` in front of the host meant no
+  // pattern matched it at all.
+  /(?:listening|started|running) (?:on|at) (?:port\s+)?(?:https?:\/\/)?(?:[\w.-]+:)?(\d{2,5})\b/i,
   /listening on port (\d{2,5})/i,
 ];
 
@@ -139,7 +142,8 @@ const RULES: readonly Rule[] = [
 
       // The dependencies are declared; only the project is unbuildable. Names only:
       // the command allowlist permits no `>` or quotes, so a specifier cannot be written.
-      const deps = (metadata.python?.dependencies ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
+      const py = metadata.python;
+      const deps = (py?.runtimeDependencies ?? py?.dependencies ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
       if (deps.length === 0) return null;
 
       const installCommand = `pip install ${deps.join(' ')}`;
@@ -154,6 +158,72 @@ const RULES: readonly Rule[] = [
           evidence: [
             found[0].slice(0, 160),
             `pyproject.toml declares ${deps.length} dependencies, which install without building the project`,
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
+
+  // --- psycopg2 cannot build; its maintainers publish a wheel under another name ------
+  //
+  // The error states the remedy itself: "If you prefer to avoid building psycopg2 from
+  // source, please install the PyPI 'psycopg2-binary' package instead." Nothing is
+  // inferred here beyond acting on a sentence the tool printed.
+  {
+    applies: (c) => c === FailureCode.DEPENDENCY_INSTALL_FAILED,
+    propose: ({ plan, failure, logs, metadata }) => {
+      const needsConfig = /pg_config executable not found/i;
+      const found = [failure.evidence ?? '', failure.message, logs.slice(-6000)].some((t) =>
+        needsConfig.test(t),
+      );
+      if (!found) return null;
+      if (!/^pip install\s+-r\s+requirements\.txt\s*$/.test((plan.installCommand ?? '').trim())) {
+        return null;
+      }
+
+      const requirements = metadata.python?.requirements ?? [];
+      const args = requirementsAsArguments(requirements, { psycopg2: 'psycopg2-binary' });
+      if (!args) return null;
+
+      const evidence = [
+        'pip: `pg_config is required to build psycopg2 from source`, and its own error ' +
+          'recommends the `psycopg2-binary` wheel instead',
+      ];
+
+      // The substitution is not always the whole story. One repository already declares
+      // `psycopg2-binary==2.9.5` — and 2.9.5 predates Python 3.12, so no wheel matches,
+      // pip falls back to the source distribution, and the same `pg_config` error
+      // appears. There the pin is the cause, and unpinning that one package is the only
+      // change that reaches it.
+      const stuck = pinnedButUnbuildable(args, logs, failure);
+      const finalArgs = stuck ? args.map((a) => (a === stuck.pinned ? stuck.name : a)) : args;
+      if (stuck) {
+        evidence.push(
+          `${stuck.pinned} has no wheel for this interpreter, so pip built it from ` +
+            `source; installing ${stuck.name} unpinned instead`,
+        );
+      }
+
+      // Installing the same list under a different spelling is not a repair: it re-runs
+      // the identical resolution and fails identically, having spent one of two attempts.
+      const unchanged = requirementsAsArguments(requirements, {});
+      if (!stuck && unchanged?.join(' ') === finalArgs.join(' ')) return null;
+
+      const installCommand = `pip install ${finalArgs.join(' ')}`;
+      if (installCommand === plan.installCommand) return null;
+
+      return {
+        plan: { ...plan, installCommand },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: FailureCode.DEPENDENCY_INSTALL_FAILED,
+          before: { installCommand: plan.installCommand },
+          after: { installCommand },
+          evidence: [
+            ...evidence,
+            `requirements.txt installed by name (${finalArgs.length} packages)`,
           ],
           confidence: 'high',
         },
@@ -183,6 +253,51 @@ const RULES: readonly Rule[] = [
           evidence: [
             evidence ? evidence.match(notFound)![0].slice(0, 160) : `exit code 127: ${first} is not on PATH`,
             `${first} is installed as a module and runs as python -m ${first}`,
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
+
+  // --- the kernel says which port it opened ---------------------------------------------
+  //
+  // Placed before the log-reading rule because it is better evidence of the same fact.
+  // A log line is what the application *claims*; `/proc/net/tcp` inside its own
+  // container is what it did. One real repository prints `I am running at
+  // localhost:8017/`, which no listening pattern matches and which a model was asked to
+  // interpret — twice, wrongly. The socket table needs no interpretation.
+  {
+    applies: (c) => c === FailureCode.PORT_NOT_LISTENING || c === FailureCode.PORT_BOUND_TO_LOCALHOST,
+    propose: ({ plan, failure }) => {
+      const socket = failure.observedSocket;
+      if (!socket || socket.port === plan.expectedPort) return null;
+      if (!Number.isInteger(socket.port) || socket.port < 1 || socket.port > 65535) return null;
+
+      // Both facts at once when both are true. Correcting the port and leaving the
+      // loopback bind spends the second of two attempts rediscovering a problem this
+      // one already had the evidence for.
+      const environmentVariables = [
+        ...plan.environmentVariables.filter((v) => v.key !== 'PORT' && v.key !== 'HOST'),
+        { key: 'PORT', value: String(socket.port), required: false },
+        { key: 'HOST', value: '0.0.0.0', required: false },
+      ];
+      const startCommand = plan.startCommand
+        .replace(/(--port[= ])(\d{2,5})/i, `$1${socket.port}`)
+        .replace(/(-p )(\d{2,5})/, `$1${socket.port}`)
+        .replace(/(--host[= ]|-H )(127\.0\.0\.1|localhost)\b/i, '$10.0.0.0');
+
+      return {
+        plan: { ...plan, startCommand, expectedPort: socket.port, environmentVariables, hostBinding: 'forced' },
+        record: {
+          source: 'deterministic',
+          type: 'PORT_CORRECTION',
+          failureCode: failure.code,
+          before: { expectedPort: plan.expectedPort, startCommand: plan.startCommand },
+          after: { expectedPort: socket.port, startCommand },
+          evidence: [
+            `the container's socket table shows ${socket.address}:${socket.port} listening, ` +
+              `not ${plan.expectedPort}`,
           ],
           confidence: 'high',
         },
@@ -276,3 +391,84 @@ const RULES: readonly Rule[] = [
     },
   },
 ];
+
+/**
+ * A requirements file rewritten as arguments to `pip install`, with substitutions.
+ *
+ * Needed because a substitution cannot be made any other way: the file is the
+ * repository's, and `-r requirements.txt` will always install what it says. Installing
+ * the same list by name is the same install with one entry changed.
+ *
+ * Returns null rather than an approximation whenever a line cannot be reproduced
+ * faithfully — a URL, a VCS reference, an `-e .`, another `-r`, an environment marker.
+ * Dropping one of those silently would install a different set of packages than the
+ * repository asked for and call it a repair.
+ *
+ * `==` survives because the command allowlist permits it. `>=` and `<` do not, so a
+ * range collapses to the bare name, which is stated in the caller's evidence rather
+ * than hidden.
+ */
+export function requirementsAsArguments(
+  requirements: readonly string[],
+  substitutions: Readonly<Record<string, string>>,
+): string[] | null {
+  const out: string[] = [];
+
+  for (const raw of requirements) {
+    const line = raw.split(/\s+#/)[0]!.trim();
+    if (line === '') continue;
+    // Flags, includes, editable installs, direct URLs and markers: not reproducible.
+    if (/^-|[;@]|:\/\//.test(line)) return null;
+
+    const parsed = /^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]+\])?\s*(.*)$/.exec(line);
+    if (!parsed) return null;
+    // An extra cannot be written at all: the allowlist permits no brackets.
+    if (parsed[2]) return null;
+
+    const name = substitutions[parsed[1]!.toLowerCase()] ?? parsed[1]!;
+    const rest = parsed[3]!.trim();
+    const pinned = /^==\s*([A-Za-z0-9][A-Za-z0-9._+-]*)$/.exec(rest);
+
+    // A pin is only carried over when the distribution itself is unchanged: psycopg2's
+    // versions are not psycopg2-binary's to assume.
+    if (pinned && name === parsed[1]) out.push(`${name}==${pinned[1]}`);
+    else out.push(name);
+  }
+
+  return out.length > 0 ? out : null;
+}
+
+/**
+ * A pinned requirement that pip had to build from source, and the pin that forced it.
+ *
+ * Pip prefers a wheel and only builds when none matches the interpreter, so a source
+ * build of a pinned package means the pinned version predates this Python. Unpinning
+ * that one package is the only change that reaches it — and it is a change with a
+ * consequence, so the caller states it rather than making it quietly.
+ *
+ * The distribution is read out of pip's own output rather than guessed at, and it has to
+ * appear in the repository's requirements for the match to count. No name, no repair.
+ */
+function pinnedButUnbuildable(
+  args: readonly string[],
+  logs: string,
+  failure: FailureDetail,
+): { name: string; pinned: string } | null {
+  const text = `${failure.evidence ?? ''}\n${failure.message}\n${logs.slice(-12_000)}`;
+  const named =
+    /Could not build wheels for ([A-Za-z0-9][A-Za-z0-9._-]*)/i.exec(text) ??
+    /Building wheel for ([A-Za-z0-9][A-Za-z0-9._-]*)/i.exec(text) ??
+    /writing ([A-Za-z0-9][A-Za-z0-9._-]*)\.egg-info/i.exec(text);
+  if (!named) return null;
+
+  // `psycopg2_binary.egg-info` is `psycopg2-binary` on PyPI; setuptools writes the
+  // normalised form with underscores.
+  const wanted = named[1]!.toLowerCase().replace(/_/g, '-');
+  const pinned = args.find((a) => {
+    const [name, version] = a.split('==');
+    return version !== undefined && name!.toLowerCase().replace(/_/g, '-') === wanted;
+  });
+  if (!pinned) return null;
+
+  return { name: pinned.split('==')[0]!, pinned };
+}

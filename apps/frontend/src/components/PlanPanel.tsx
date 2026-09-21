@@ -17,14 +17,13 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
  * DevLaunch composes, not what a repository's own scripts do, so showing exactly what
  * will run turns that boundary into informed consent rather than a hidden assumption.
  */
-export function PlanPanel({ plan, warnings }: { plan?: RunPlan; warnings?: string[] }) {
+export function PlanPanel({ plan }: { plan?: RunPlan }) {
   if (!plan) return null;
 
   const required = plan.environmentVariables.filter((v) => v.required);
 
   return (
-    <section className="border-b border-edge bg-panel px-4 py-3 text-[13px]">
-      <h2 className="mb-2 text-[11px] uppercase tracking-[0.15em] text-muted">Run Plan</h2>
+    <section className="bg-panel px-4 py-3 text-[13px]">
       <dl>
         <Row label="runtime" value={`${plan.runtime.language} ${plan.runtime.version}`} />
         <Row label="package manager" value={plan.packageManager} />
@@ -55,15 +54,6 @@ export function PlanPanel({ plan, warnings }: { plan?: RunPlan; warnings?: strin
         <Row label="required" value={required.length > 0 ? required.map((v) => v.key).join(', ') : null} />
       </dl>
 
-      {warnings && warnings.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {warnings.map((w) => (
-            <li key={w} className="text-warn">
-              warning: {w}
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
   );
 }
