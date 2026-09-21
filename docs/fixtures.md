@@ -16,9 +16,9 @@ They are deliberately not in the automated suite.
 | `node-exit-ok` | A process that completes and exits 0. Through the readiness path — which watches for a port that is never going to open — this was reported as `UNKNOWN_RUNTIME_ERROR`; it is `COMPLETED` |
 | `node-vite-app` | Vite detection, lockfile → npm, `engines.node`, framework config — and it actually serves. Its `tsconfig.json` was a zero-byte file for a long time and no test noticed, because planning and measuring a repository never parse it; the first run that started it died on `Unexpected end of file in JSON` |
 | `python-flask-basic` | Flask detection, entry point and app variable, required env vars |
-| `python-django-basic` | Django detection from `manage.py` |
+| `python-django-basic` | Django detection from `manage.py`, and a server that answers. Its `DJANGO_SETTINGS_MODULE` pointed at `site.settings` with no `site/` directory — and `site` is a standard-library module, so every run failed with `'site' is not a package`. Analysis and planning read `manage.py` without importing anything, so no test saw it |
 | `node-monorepo` | Workspace with exactly one runnable package |
-| `node-monorepo-ambiguous` | Two runnable packages → the user is asked which |
+| `node-monorepo-ambiguous` | Two runnable packages. The single-service planner asks which; through the ordinary path service discovery now finds both first and the project planner runs them together, which is a better answer than a question |
 | `unrecognized-app` | No known framework and a non-approved script name, so only the AI fallback can plan it. Its README carries a live prompt injection, used to prove the allowlist rejects the payload |
 
 ## Failure paths
@@ -69,3 +69,17 @@ would only prove what we asked for; the probe proves what is actually in force.
   is the exception to the zero-dependency rule, deliberately: the failure it exists for
   — a synchronous driver behind an async engine — happens at connect time, so a fixture
   that merely started would have passed while the defect was still there.
+
+## Running them is not the same as planning them
+
+Three fixtures were correct to every test that touched them and broken the moment they
+ran: `node-vite-app` (a zero-byte `tsconfig.json`), `python-django-basic` (a settings
+module that could never be imported), and `node-monorepo`'s web package (no page to
+serve). Analysis and planning read manifests; they do not execute anything, so a fixture
+that is only ever analysed can stay broken indefinitely.
+
+The full sweep is what found them — every fixture launched through `SessionManager`
+against real Docker, to a terminal state, with its URL fetched. `node-install-fail` and
+`python-slow-install` are the deliberate exceptions: both are driven with an explicit
+plan by their own tests, and through the ordinary rule-based path the first installs
+cleanly and the second is correctly `UNSUPPORTED_PROJECT`.

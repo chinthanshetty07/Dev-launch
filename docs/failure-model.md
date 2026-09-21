@@ -254,3 +254,22 @@ watching a socket, did not.
 A clean exit before readiness is now `COMPLETED`. The session says what happened — it
 ran, it finished, it never opened a port, and that is the expected shape for a script —
 and no repair is attempted, because there is nothing wrong to repair.
+
+## A pyproject.toml is not a promise of a buildable package
+
+`pip install .` failed with setuptools' own refusal — *Multiple top-level packages
+discovered in a flat-layout: ['app', 'certs', 'resources']* — and repair then guessed
+`pip install -r requirements.txt` on a repository that has no such file. Two failed
+installs, and the dependencies had been declared in pyproject.toml the whole time.
+
+That layout is an ordinary application: code beside its certificates and its assets.
+Setuptools will not guess which directory is the distribution, and it is right not to.
+The project is not a package; its dependencies are still installable.
+
+Packageability is predicted, not discovered by failing, because setuptools' rule is
+short and documented: explicit `packages`/`py-modules` configuration settles it, a
+`src/` layout settles it, and otherwise auto-discovery fails when more than one
+top-level directory survives its exclusion list. When the answer is no, the declared
+dependencies are installed by name — without version specifiers, because the command
+allowlist permits no `>` or quotes, and saying so beats resolving to latest silently. A
+deterministic repair rule catches the variants prediction misses, at no model call.

@@ -90,6 +90,17 @@ export interface PythonSummary {
    */
   dependencies?: string[];
   hasPyproject: boolean;
+  /**
+   * Whether `pip install .` can actually build this project.
+   *
+   * A pyproject.toml does not mean a buildable package. Setuptools' flat-layout
+   * discovery refuses outright when a project has several top-level directories and no
+   * explicit package configuration — `Multiple top-level packages discovered in a
+   * flat-layout: ['app', 'certs', 'resources']` — and that is an ordinary application
+   * layout, not a mistake. The dependencies are still declared and still installable;
+   * the project itself simply is not a distribution.
+   */
+  packageable?: boolean;
   hasPipfile: boolean;
   /** manage.py at the root is the definitive Django signal. */
   hasManagePy: boolean;

@@ -127,6 +127,40 @@ const RULES: readonly Rule[] = [
     },
   },
 
+  // --- pip was asked to build a project that is not a package ------------------------
+  {
+    applies: (c) => c === FailureCode.DEPENDENCY_INSTALL_FAILED,
+    propose: ({ plan, failure, logs, metadata }) => {
+      const refusal = /Multiple top-level (?:packages|modules) discovered in a flat-layout[^\n]*/i;
+      const found = [failure.evidence ?? '', failure.message, logs.slice(-4000)]
+        .map((t) => refusal.exec(t))
+        .find((m): m is RegExpExecArray => m !== null);
+      if (!found || !/pip install\s+(?:-e\s+)?\.\s*$/.test(plan.installCommand ?? '')) return null;
+
+      // The dependencies are declared; only the project is unbuildable. Names only:
+      // the command allowlist permits no `>` or quotes, so a specifier cannot be written.
+      const deps = (metadata.python?.dependencies ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
+      if (deps.length === 0) return null;
+
+      const installCommand = `pip install ${deps.join(' ')}`;
+      return {
+        plan: { ...plan, installCommand },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: FailureCode.DEPENDENCY_INSTALL_FAILED,
+          before: { installCommand: plan.installCommand },
+          after: { installCommand },
+          evidence: [
+            found[0].slice(0, 160),
+            `pyproject.toml declares ${deps.length} dependencies, which install without building the project`,
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
+
   // --- a Python console script is not on PATH; the module is -------------------------
   {
     applies: (c) => c === FailureCode.START_COMMAND_FAILED,

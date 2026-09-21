@@ -402,3 +402,39 @@ def add(): return {}`,
     expect((await analyzer.analyze(dir, '.')).httpRoutes).toBeUndefined();
   });
 });
+
+describe('whether pip install . can build the project', () => {
+  const build = async (files: Record<string, string>, dirs: string[] = []) => {
+    const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+    const { join, dirname } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const root = await mkdtemp(join(tmpdir(), 'devlaunch-pkg-'));
+    for (const d of dirs) await mkdir(join(root, d), { recursive: true });
+    for (const [rel, body] of Object.entries(files)) {
+      await mkdir(dirname(join(root, rel)), { recursive: true });
+      await writeFile(join(root, rel), body);
+    }
+    return root;
+  };
+  const PYPROJECT = '[project]\nname = "svc"\ndependencies = ["fastapi", "uvicorn"]\n';
+
+  it('is false for an ordinary application laid out flat', async () => {
+    // Taken from a real run: setuptools refused with `Multiple top-level packages
+    // discovered in a flat-layout: ['app', 'certs', 'resources']`. The layout is
+    // correct for an application; it is simply not a distribution.
+    const root = await build({ 'pyproject.toml': PYPROJECT, 'main.py': 'x = 1\n' }, ['app', 'certs', 'resources']);
+    expect((await analyzer.analyze(root, '.')).python?.packageable).toBe(false);
+  });
+
+  it('is true when the project says where its code is, or uses a src layout', async () => {
+    const explicit = await build({ 'pyproject.toml': PYPROJECT + '\n[tool.setuptools]\npackages = ["app"]\n' }, ['app', 'certs']);
+    expect((await analyzer.analyze(explicit, '.')).python?.packageable).toBe(true);
+    const src = await build({ 'pyproject.toml': PYPROJECT }, ['src', 'certs', 'resources']);
+    expect((await analyzer.analyze(src, '.')).python?.packageable).toBe(true);
+  });
+
+  it('is true for a single package, ignoring the directories setuptools ignores', async () => {
+    const root = await build({ 'pyproject.toml': PYPROJECT }, ['app', 'tests', 'docs', 'scripts', '.github']);
+    expect((await analyzer.analyze(root, '.')).python?.packageable).toBe(true);
+  });
+});

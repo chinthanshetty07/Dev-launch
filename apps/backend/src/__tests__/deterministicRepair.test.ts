@@ -19,6 +19,11 @@ const meta = (scripts: Record<string, string> = {}): RepositoryMetadata =>
   ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
      packageJson: { scripts, dependencies: {}, devDependencies: {} } }) as unknown as RepositoryMetadata;
 
+const pyMeta = (dependencies: string[]): RepositoryMetadata =>
+  ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+     python: { requirements: [], hasPyproject: true, hasPipfile: false, hasManagePy: false,
+               entryCandidates: [], dependencies, packageable: false } }) as unknown as RepositoryMetadata;
+
 const attempt = (over: {
   plan?: RunPlan; code: FailureCode; message?: string; evidence?: string; exitCode?: number;
   logs?: string; metadata?: RepositoryMetadata; previous?: RunPlan[];
@@ -106,6 +111,32 @@ describe('repairs a rule can make from evidence', () => {
 
   it('ignores a port the log names that no dev server could use', () => {
     const out = attempt({ plan: plan({ expectedPort: 3000 }), code: FailureCode.PORT_NOT_LISTENING, logs: 'Listening on port 80' });
+    expect(out).toBeNull();
+  });
+});
+
+describe('when pip is asked to build something that is not a package', () => {
+  const REFUSAL = "error: Multiple top-level packages discovered in a flat-layout: ['app', 'certs', 'resources'].";
+
+  it('installs the declared dependencies instead, with no model call', () => {
+    const out = attempt({
+      plan: plan({ runtime: { language: 'python', version: '3.12' }, packageManager: 'pip', installCommand: 'pip install .', startCommand: 'uvicorn main:app --host 0.0.0.0 --port 8000', expectedPort: 8000 }),
+      code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+      logs: REFUSAL,
+      metadata: pyMeta(['fastapi', 'uvicorn']),
+    });
+    expect(out?.plan.installCommand).toBe('pip install fastapi uvicorn');
+    expect(out?.record.source).toBe('deterministic');
+    expect(out?.record.evidence[0]).toMatch(/Multiple top-level packages/);
+  });
+
+  it('proposes nothing when the project declares no dependencies to install', () => {
+    const out = attempt({
+      plan: plan({ runtime: { language: 'python', version: '3.12' }, packageManager: 'pip', installCommand: 'pip install .', startCommand: 'uvicorn main:app --host 0.0.0.0 --port 8000', expectedPort: 8000 }),
+      code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+      logs: REFUSAL,
+      metadata: pyMeta([]),
+    });
     expect(out).toBeNull();
   });
 });

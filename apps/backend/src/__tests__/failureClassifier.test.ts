@@ -169,3 +169,19 @@ describe('a native build that only needed `python` on PATH', () => {
     expect(out.message).toMatch(/native code failed to build/);
   });
 });
+
+describe('a pyproject that is not a distribution', () => {
+  const LOG = `Processing /workspace
+  Getting requirements to build wheel: finished with status 'error'
+      error: Multiple top-level packages discovered in a flat-layout: ['app', 'certs', 'resources'].
+      To avoid accidental inclusion of unwanted files or directories,
+note: This error originates from a subprocess, and is likely not a problem with pip.`;
+
+  it('says the project is not a package, not that installation is a mystery', () => {
+    const out = classify(LOG, 'install');
+    expect(out.code).toBe(FailureCode.DEPENDENCY_INSTALL_FAILED);
+    expect(out.confidence).toBe('high');
+    expect(out.message).toMatch(/cannot be installed as a package/);
+    expect(out.remedy).toMatch(/declared dependencies by name/);
+  });
+});

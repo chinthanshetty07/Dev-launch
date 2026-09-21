@@ -367,3 +367,37 @@ describe('which path readiness checks', () => {
     expect(out.plan?.healthCheck.path).toBe('/states/');
   });
 });
+
+describe('installing a project that is not a package', () => {
+  const py2 = (over: Record<string, unknown>) =>
+    meta({ python: { requirements: [], hasPyproject: true, hasPipfile: false, hasManagePy: false,
+      entryCandidates: [{ file: 'main.py', framework: 'fastapi', appVariable: 'app' }], ...over } as never });
+
+  it('installs the declared dependencies rather than building the project', () => {
+    // `pip install .` failed with setuptools' flat-layout refusal, and repair then
+    // guessed `pip install -r requirements.txt` on a repository that has no such file.
+    // The dependencies were declared the whole time.
+    const out = planner.plan(py2({ packageable: false, dependencies: ['fastapi', 'uvicorn', 'sqlalchemy'] }));
+    expect(out.plan?.installCommand).toBe('pip install fastapi uvicorn sqlalchemy');
+    expect(out.warnings.join(' ')).toMatch(/several top-level directories/);
+  });
+
+  it('still builds a project that is a package', () => {
+    expect(planner.plan(py2({ packageable: true, dependencies: ['fastapi'] })).plan?.installCommand).toBe('pip install .');
+    // Unknown packageability keeps the old behaviour rather than guessing.
+    expect(planner.plan(py2({ dependencies: ['fastapi'] })).plan?.installCommand).toBe('pip install .');
+  });
+
+  it('installs nothing, and says so, when there is nothing declared to install', () => {
+    const out = planner.plan(py2({ packageable: false, dependencies: [] }));
+    expect(out.plan?.installCommand).toBeNull();
+    expect(out.warnings.join(' ')).toMatch(/declares no dependencies/);
+  });
+
+  it('refuses a dependency name that is not a plain distribution name', () => {
+    // These reach a shell. The allowlist would reject the command anyway; not composing
+    // it in the first place is the cheaper place to stop.
+    const out = planner.plan(py2({ packageable: false, dependencies: ['fastapi', 'evil; rm -rf /', '--index-url=http://x'] }));
+    expect(out.plan?.installCommand).toBe('pip install fastapi');
+  });
+});

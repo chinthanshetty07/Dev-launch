@@ -357,10 +357,35 @@ export class RepositoryAnalyzer {
       requirements,
       ...(pyproject ? { dependencies: pyprojectDeps(pyproject) } : {}),
       hasPyproject,
+      ...(hasPyproject ? { packageable: await this.isPackageable(base, pyproject ?? '') } : {}),
       hasPipfile,
       hasManagePy,
       entryCandidates,
     };
+  }
+
+  /**
+   * Whether `pip install .` can build this project, modelled on setuptools' own rule.
+   *
+   * Explicit package configuration settles it, and so does a `src/` layout. Otherwise
+   * setuptools auto-discovers, and auto-discovery *fails* — it does not guess — when
+   * more than one top-level directory could be a package. Its exclusion list is short
+   * and documented, so this can be predicted rather than discovered by failing.
+   */
+  private async isPackageable(base: string, pyproject: string): Promise<boolean> {
+    // Any build backend told where the code is.
+    if (/^\s*(packages|py-modules|package-dir)\s*=/m.test(pyproject)) return true;
+    if (/\[tool\.setuptools\.packages\.find\]/.test(pyproject)) return true;
+
+    const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
+    if (entries.some((e) => e.isDirectory() && e.name === 'src')) return true;
+
+    // Setuptools ignores these when discovering a flat layout; everything else counts.
+    const IGNORED_BY_SETUPTOOLS = /^(tests?|docs?|examples?|scripts?|tools?|build|dist|venv|env|node_modules|.*\.egg-info)$/i;
+    const candidates = entries.filter(
+      (e) => e.isDirectory() && !e.name.startsWith('.') && !IGNORED_BY_SETUPTOOLS.test(e.name),
+    );
+    return candidates.length <= 1;
   }
 
   /**

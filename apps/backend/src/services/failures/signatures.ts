@@ -179,6 +179,24 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     describe: () => 'npm could not resolve a consistent dependency tree.',
   },
   {
+    // A pyproject.toml is not a promise of a buildable package. This is an ordinary
+    // application layout — code beside its certificates and assets — and setuptools
+    // refuses to guess which directory is the distribution. Nothing is wrong with the
+    // repository; `pip install .` was simply the wrong way to install it.
+    id: 'flat-layout-not-a-package',
+    code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+    phases: ['install'],
+    patterns: [
+      /Multiple top-level packages discovered in a flat-layout/i,
+      /Multiple top-level modules discovered in a flat-layout/i,
+    ],
+    remedy:
+      'This project is an application, not a distribution: its dependencies are ' +
+      'declared in pyproject.toml but it cannot be built as a package. DevLaunch ' +
+      'installs the declared dependencies by name instead.',
+    describe: (e) => `The project cannot be installed as a package: ${e.trim().slice(0, 160)}`,
+  },
+  {
     // Before the generic native-build rule, because it names the cause exactly: the
     // module's own Makefile called a bare `python` and the image had only `python3`.
     // node-gyp's toolchain check passed moments earlier, so the generic remedy —

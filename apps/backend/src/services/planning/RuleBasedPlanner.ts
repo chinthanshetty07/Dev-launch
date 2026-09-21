@@ -250,13 +250,10 @@ export class RuleBasedPlanner {
     workingDirectory: string,
     warnings: string[],
   ): PlanningOutcome | null {
-    const install = py.requirements.length > 0
-      ? 'pip install -r requirements.txt'
-      : py.hasPyproject
-        ? 'pip install .'
-        : null;
-
-    if (install === null) {
+    // "Nothing to install" and "no idea how to install" are different answers, and
+    // collapsing them threw away a plannable project: a pyproject that declares no
+    // dependencies still says how to start, and there is simply nothing to fetch first.
+    if (py.requirements.length === 0 && !py.hasPyproject) {
       warnings.push(
         py.hasPipfile
           ? 'Pipfile-only projects are not supported by the rule-based planner.'
@@ -264,6 +261,9 @@ export class RuleBasedPlanner {
       );
       return null;
     }
+
+    const install =
+      py.requirements.length > 0 ? 'pip install -r requirements.txt' : pyprojectInstall(py, warnings);
 
     // Both manifests, because a packaged project declares its framework only in
     // pyproject.toml — and read from requirements.txt alone it declared nothing, planned
@@ -375,4 +375,37 @@ export function healthPathFor(meta: RepositoryMetadata): string {
   if (gets.some((r) => r.path === '/')) return '/';
   const concrete = gets.filter((r) => !/[:{}<>*]/.test(r.path)).sort((a, b) => a.path.length - b.path.length);
   return concrete[0]?.path ?? '/';
+}
+
+/**
+ * How to install a project whose dependencies live in pyproject.toml.
+ *
+ * `pip install .` when the project is a buildable distribution. When it is not — an
+ * ordinary application laid out flat, which setuptools refuses to auto-discover — the
+ * dependencies are still declared and still installable, so they are installed by name
+ * and the project is left where it is. It is run from its source directory anyway.
+ *
+ * By name, without version specifiers, because the command allowlist permits no quotes,
+ * `>` or `[`: `fastapi[standard]>=0.115` cannot be written as a command argument at all.
+ * The constraint is worth stating plainly rather than silently resolving to latest.
+ */
+function pyprojectInstall(py: PythonSummary, warnings: string[]): string | null {
+  if (py.packageable !== false) return 'pip install .';
+
+  const deps = (py.dependencies ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
+  if (deps.length === 0) {
+    warnings.push(
+      'pyproject.toml declares no dependencies and the project is not a buildable ' +
+        'package, so nothing is installed. Imports it needs may be missing.',
+    );
+    return null;
+  }
+
+  warnings.push(
+    `Installing ${deps.length} declared dependencies by name: this project has several ` +
+      'top-level directories and no package configuration, so `pip install .` cannot ' +
+      'build it. Version constraints are not applied — the command allowlist permits no ' +
+      '`>` or quotes.',
+  );
+  return `pip install ${deps.join(' ')}`;
 }
