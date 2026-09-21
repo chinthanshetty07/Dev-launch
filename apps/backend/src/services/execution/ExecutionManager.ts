@@ -563,12 +563,8 @@ export class ExecutionManager {
       };
     }
 
-    return {
-      state: ExecutionState.FAILED,
-      hostPort,
-      readiness,
-      ...(await this.explainNotReady(container, plan, sentinels, readiness, logs)),
-    };
+    const explained = await this.explainNotReady(container, plan, sentinels, readiness, logs);
+    return { hostPort, readiness, ...explained };
   }
 
   private async explainNotReady(
@@ -577,7 +573,7 @@ export class ExecutionManager {
     sentinels: Set<string>,
     readiness: ReadinessResult,
     logs?: LogManager,
-  ): Promise<{ failure: FailureDetail; diagnosis?: PortDiagnosis }> {
+  ): Promise<{ state: ExecutionState; failure?: FailureDetail; diagnosis?: PortDiagnosis }> {
     // One inspect, not two. Calling isRunning() and then inspect() again left a window
     // in which the container could change state between them.
     const state = await this.containerState(container);
@@ -586,6 +582,7 @@ export class ExecutionManager {
       // Not knowing is its own answer. Reporting a phase failure here would be
       // inventing a diagnosis out of a Docker API hiccup.
       return {
+        state: ExecutionState.FAILED,
         failure: {
           code: FailureCode.UNKNOWN_RUNTIME_ERROR,
           message: 'The container could not be inspected, so the failure cannot be attributed.',
@@ -600,6 +597,7 @@ export class ExecutionManager {
     // failing. Attributing a phase failure to it would invent a cause.
     if (state.removed) {
       return {
+        state: ExecutionState.FAILED,
         failure: {
           code: FailureCode.UNKNOWN_RUNTIME_ERROR,
           message: 'The container was removed before readiness completed.',
@@ -612,12 +610,23 @@ export class ExecutionManager {
     // more informative answer anyway.
     if (!state.running) {
       const exitCode = state.exitCode;
-      const { failure, phase } = classifyExit({ exitCode, timedOut: false }, sentinels);
+      const { state: exitState, failure, phase } = classifyExit({ exitCode, timedOut: false }, sentinels);
+
+      // A program that ran and exited 0 did its job. Not every repository is a server:
+      // a CLI, a migration, a seeder, a scraper, a build script all finish and stop, and
+      // reporting that as `UNKNOWN_RUNTIME_ERROR: container exited before becoming ready`
+      // told a person their working program was broken, with no evidence and no remedy
+      // — the exact shape of unhelpful failure this exists to prevent. `runToCompletion`
+      // had always classified it correctly; only readiness, which is watching for a port
+      // that is never going to open, did not.
+      if (exitState === ExecutionState.COMPLETED) return { state: ExecutionState.COMPLETED };
+
       const coarse = failure ?? {
         code: FailureCode.UNKNOWN_RUNTIME_ERROR,
         message: 'Container exited before becoming ready.',
       };
       return {
+        state: ExecutionState.FAILED,
         failure: this.classifier.classify({
           // Read at classification time, not when readiness began: the session path
           // calls waitForReady immediately after launch, when nothing has been
@@ -640,6 +649,7 @@ export class ExecutionManager {
 
     if (diagnosis.kind === 'loopback-only') {
       return {
+        state: ExecutionState.FAILED,
         diagnosis,
         failure: {
           evidence: lastError,
@@ -691,6 +701,7 @@ export class ExecutionManager {
       // bind is read from the container's own socket table and is not a guess a log line
       // should be allowed to overrule.
       return {
+        state: ExecutionState.FAILED,
         diagnosis,
         failure: this.classifier.classify({
           logs: logs?.buffer.all() ?? [],
@@ -703,6 +714,7 @@ export class ExecutionManager {
 
     // Listening and reachable, but no HTTP response within the budget.
     return {
+      state: ExecutionState.FAILED,
       diagnosis,
       failure: {
         code: FailureCode.READINESS_TIMEOUT,

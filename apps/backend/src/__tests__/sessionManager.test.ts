@@ -857,3 +857,33 @@ describe('how a failure is repaired', () => {
     await mgr.shutdown();
   });
 });
+
+describe('a program that is not a server', () => {
+  const completed = (): ReadyOutcome => ({
+    state: ExecutionState.COMPLETED,
+    hostPort: null,
+    readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+  });
+
+  it('reports it as completed, with no failure and no repair', async () => {
+    // Not every repository is a server. A CLI, a migration, a seeder, a scraper all run
+    // and stop, and readiness — watching for a port that is never going to open — called
+    // that `UNKNOWN_RUNTIME_ERROR: container exited before becoming ready`: a working
+    // program reported as broken, with no evidence and no remedy. runToCompletion had
+    // always classified exit 0 correctly; only this path did not.
+    let repaired = 0;
+    const mgr = new SessionManager(fakeExec(completed), {
+      analyzer: { analyze: async () => ({ warnings: [], envExample: [] }) } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'node', warnings: [] }) } as never,
+      aiRepair: { repair: async () => { repaired++; return { plan: plan(), attempt: 1 }; } } as never,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => session.state === ExecutionState.COMPLETED);
+
+    expect(session.state).toBe(ExecutionState.COMPLETED);
+    expect(session.failure).toBeUndefined();
+    expect(repaired, 'a program that worked is not repaired').toBe(0);
+    expect(session.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/ran to completion and exited 0/);
+    await mgr.shutdown();
+  });
+});

@@ -324,3 +324,81 @@ describe('what the manifest says about an entry point', () => {
     expect(meta.packageJson?.entryFiles).toEqual([]);
   });
 });
+
+describe('the routes an application declares', () => {
+  const build = async (files: Record<string, string>) => {
+    const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+    const { join, dirname } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-routes-'));
+    for (const [rel, body] of Object.entries(files)) {
+      await mkdir(dirname(join(dir, rel)), { recursive: true });
+      await writeFile(join(dir, rel), body);
+    }
+    return dir;
+  };
+  const key = (r: { method: string; path: string }) => `${r.method} ${r.path}`;
+
+  it('reads express routes, prefixes a mounted router, and reads the .http file beside them', async () => {
+    // The repository that prompted this: an API whose root 404s and whose README says to
+    // use the .http file. Every route below was written down; none had to be guessed.
+    const dir = await build({
+      'package.json': JSON.stringify({ name: 'api', main: 'app.js', dependencies: { express: '4' } }),
+      'app.js': `const express = require('express'); const app = express();
+const users = require('./routes/users');
+app.use('/api/users', users);
+app.get('/states/', (q, r) => r.send([]));
+app.get('/states/:stateId', (q, r) => r.send({}));
+app.post('/districts/', (q, r) => r.send({}));
+app.listen(3000);`,
+      'routes/users.js': `const router = require('express').Router();
+router.get('/', (q, r) => r.send([]));
+router.get('/:id', (q, r) => r.send({}));
+module.exports = router;`,
+      'app.http': 'GET http://localhost:3000/states\n\n###\n\nPOST http://localhost:3000/districts/\n',
+    });
+    const routes = (await analyzer.analyze(dir, '.')).httpRoutes!.map(key);
+    expect(routes).toEqual(expect.arrayContaining(['GET /states/', 'GET /states/:stateId', 'POST /districts/', 'GET /api/users/', 'GET /api/users/:id', 'GET /states']));
+    // A mounted router's paths are never reported bare: /users/:id is a wrong answer.
+    expect(routes).not.toContain('GET /:id');
+  });
+
+  it('reads Flask routes with their methods, and a FastAPI router under its prefix', async () => {
+    const flask = await build({
+      'requirements.txt': 'flask\n',
+      'app.py': `from flask import Flask
+app = Flask(__name__)
+@app.route('/todos', methods=['GET', 'POST'])
+def todos(): return []
+@app.route('/todos/<int:id>')
+def todo(id): return {}`,
+    });
+    expect((await analyzer.analyze(flask, '.')).httpRoutes!.map(key)).toEqual(
+      expect.arrayContaining(['GET /todos', 'POST /todos', 'GET /todos/<int:id>']),
+    );
+
+    const fastapi = await build({
+      'requirements.txt': 'fastapi\n',
+      'main.py': `from fastapi import FastAPI
+from routers import documents
+app = FastAPI()
+app.include_router(documents.router, prefix="/api/documents")
+@app.get("/health")
+def health(): return {}`,
+      'routers/documents.py': `from fastapi import APIRouter
+router = APIRouter()
+@router.get("/")
+def list_docs(): return []
+@router.post("/")
+def add(): return {}`,
+    });
+    expect((await analyzer.analyze(fastapi, '.')).httpRoutes!.map(key)).toEqual(
+      expect.arrayContaining(['GET /health', 'GET /api/documents/', 'POST /api/documents/']),
+    );
+  });
+
+  it('reports nothing for a repository that declares nothing', async () => {
+    const dir = await build({ 'package.json': JSON.stringify({ name: 'lib', dependencies: {} }), 'index.js': 'module.exports = 1;' });
+    expect((await analyzer.analyze(dir, '.')).httpRoutes).toBeUndefined();
+  });
+});

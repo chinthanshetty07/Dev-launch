@@ -6,6 +6,7 @@ import {
   TERMINAL_STATES,
   type RequiredEnvVar,
   type FailureDetail,
+  type ReadinessView,
   type RepairRecord,
   type RepositoryMetadata,
   type ProjectPlan,
@@ -97,6 +98,8 @@ export interface Session {
   repairAttempts?: RunPlan[];
   /** What each repair changed, why, and whether a rule or a model decided it. */
   repairs?: RepairRecord[];
+  /** What the readiness check saw at the health path, once ready. */
+  readiness?: ReadinessView;
   /** Model calls spent on repair, against the per-failure budget. */
   aiRepairCalls?: number;
   /** The model's own account of what it inferred. Displayed, never acted on. */
@@ -574,6 +577,14 @@ export class SessionManager extends EventEmitter {
     if (outcome.state === ExecutionState.READY) {
       session.readyAt = Date.now();
       session.url = outcome.url;
+      // What was seen at the health path travels with the URL. A 404 at `/` is not a
+      // failure, but it is the fact a person needs before they open an API's root and
+      // conclude the run is broken.
+      session.readiness = {
+        path: resolved.healthCheck.path,
+        status: outcome.readiness.status,
+        healthHintOk: outcome.readiness.healthHintOk,
+      };
       // A repaired session carries the diagnosis of the attempt that failed. Once it is
       // ready that diagnosis is history, and leaving it set would show an error against
       // a working application.
@@ -584,6 +595,21 @@ export class SessionManager extends EventEmitter {
       handle.clearStartupBudget?.();
       this.setState(session, ExecutionState.READY);
       this.armLifetime(session);
+      return;
+    }
+
+    // It ran, and it finished. Nothing to browse and nothing to repair — repairing a
+    // program that worked is how a session burns both attempts arriving back here.
+    if (outcome.state === ExecutionState.COMPLETED) {
+      session.failure = undefined;
+      session.logs.buffer.push(
+        'stdout',
+        'The program ran to completion and exited 0. It never opened port ' +
+          `${resolved.expectedPort ?? 'any'}, so there is nothing to open in a browser — ` +
+          'which is the expected shape for a script, a migration or a CLI.',
+      );
+      this.setState(session, ExecutionState.COMPLETED, 'ran to completion');
+      await this.teardown(session);
       return;
     }
 

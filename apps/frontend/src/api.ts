@@ -1,4 +1,4 @@
-import type { RepairRecord } from '@devlaunch/shared';
+import type { HttpRoute, ReadinessView, RepairRecord } from '@devlaunch/shared';
 import type {
   BackingView,
   RequiredEnvVar,
@@ -27,6 +27,8 @@ export interface SessionView {
   failure?: FailureDetail;
   /** What automated repair changed, why, and whether a rule or a model decided it. */
   repairs?: RepairRecord[];
+  routes?: HttpRoute[];
+  readiness?: ReadinessView;
   endedReason?: string;
   createdAt: number;
   readyAt?: number;

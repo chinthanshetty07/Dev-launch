@@ -240,3 +240,17 @@ finds `python3` on its own, so the toolchain check passes and the compile then d
 `/bin/sh: 1: python: not found`, exit 127. The generic native-build rule matched the
 `gyp ERR!` that followed and sent people after a missing system library. The runner
 image now ships `python-is-python3`, and the line is its own signature.
+
+## Exiting 0 is not a failure
+
+Readiness watches for a port. A repository that never opens one — a CLI, a migration, a
+seeder, a scraper, a build script — exits 0 having done exactly its job, and the
+readiness path reported `UNKNOWN_RUNTIME_ERROR: container exited before becoming ready`,
+confidence low, no evidence, no remedy. A working program described as broken, in the
+least actionable words available. `runToCompletion` had always classified exit 0 as
+`COMPLETED`; only the readiness path, which cannot tell "finished" from "died" by
+watching a socket, did not.
+
+A clean exit before readiness is now `COMPLETED`. The session says what happened — it
+ran, it finished, it never opened a port, and that is the expected shape for a script —
+and no repair is attempted, because there is nothing wrong to repair.

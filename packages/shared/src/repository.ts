@@ -37,8 +37,24 @@ export interface RepositoryMetadata {
   /** Infrastructure the repository expects to exist but does not contain. */
   backing?: BackingService[];
 
+  /**
+   * HTTP routes the application declares, read from its source.
+   *
+   * An API reaches READY and its root returns 404, because an API has no page at `/`.
+   * Handing a person that URL and nothing else is handing them a blank "Cannot GET /" —
+   * the application is running perfectly and looks broken. The routes are what there is
+   * to open instead, and they were in the source all along.
+   */
+  httpRoutes?: HttpRoute[];
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
+}
+
+export interface HttpRoute {
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'ALL';
+  path: string;
+  /** Where it was read from, relative to the service directory. */
+  source: string;
 }
 
 export interface PackageJsonSummary {

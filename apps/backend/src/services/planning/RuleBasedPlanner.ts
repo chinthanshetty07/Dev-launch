@@ -203,7 +203,7 @@ export class RuleBasedPlanner {
             { key: 'HOST', value: '0.0.0.0', required: false },
             { key: 'PORT', value: String(port), required: false },
           ],
-          healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
+          healthCheck: { path: healthPathFor(meta), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
           planSource: 'rule-based',
         }),
       };
@@ -238,7 +238,7 @@ export class RuleBasedPlanner {
         expectedPort: port,
         hostBinding: framework ? (framework.binding ?? 'forced') : 'unknown',
         environmentVariables: env,
-        healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
+        healthCheck: { path: healthPathFor(meta), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
         planSource: 'rule-based',
       }),
     };
@@ -353,9 +353,26 @@ export class RuleBasedPlanner {
         expectedPort: fw.defaultPort,
         hostBinding: 'forced',
         environmentVariables: env,
-        healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
+        healthCheck: { path: healthPathFor(meta), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
         planSource: 'rule-based',
       }),
     };
   }
+}
+
+/**
+ * Which path to check readiness on.
+ *
+ * `/` unless the application declares routes and none of them is `/` — then the first
+ * parameter-free GET it declares. An API answering 404 at `/` is running, and the check
+ * already tolerates that; but a check that hits a real route sees a real answer, and
+ * reports a mismatch only when there is one.
+ */
+export function healthPathFor(meta: RepositoryMetadata): string {
+  const routes = meta.httpRoutes ?? [];
+  if (routes.length === 0) return '/';
+  const gets = routes.filter((r) => r.method === 'GET');
+  if (gets.some((r) => r.path === '/')) return '/';
+  const concrete = gets.filter((r) => !/[:{}<>*]/.test(r.path)).sort((a, b) => a.path.length - b.path.length);
+  return concrete[0]?.path ?? '/';
 }

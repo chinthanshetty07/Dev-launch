@@ -84,3 +84,15 @@ export function parseAfterSeq(raw: string | null | undefined): number {
   const n = Number.parseInt(raw, 10);
   return Number.isInteger(n) && n >= -1 ? n : FROM_START;
 }
+
+/**
+ * What the readiness check actually saw at the health path.
+ *
+ * A 404 at `/` on a running server is not a failure — an API has no page there — but
+ * it is a fact a person needs before they open the URL and conclude the run is broken.
+ */
+export interface ReadinessView {
+  path: string;
+  status?: number;
+  healthHintOk?: boolean;
+}

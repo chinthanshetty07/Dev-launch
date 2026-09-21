@@ -44,6 +44,9 @@ function present(session: Session) {
     aiNote: session.aiNote,
     /** Typed and evidenced, so what changed and why is readable rather than inferred. */
     repairs: session.repairs,
+    /** The routes the application declares, so an API's URL is not a blank 404. */
+    routes: session.metadata?.httpRoutes,
+    readiness: session.readiness,
     endedReason: session.endedReason,
     createdAt: session.createdAt,
     readyAt: session.readyAt,

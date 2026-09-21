@@ -25,6 +25,7 @@ function stubDocker(inspect: () => Promise<unknown>): DockerManager {
 }
 
 interface Explained {
+  state: string;
   failure: { code: string; confidence?: string; message: string; evidence?: string; remedy?: string };
 }
 
@@ -64,6 +65,22 @@ describe('container state attribution', () => {
     expect(out.failure.message).toMatch(/could not be inspected/i);
   });
 
+  it('calls a container that exited 0 completed, not an unknown error', async () => {
+    // Readiness is watching for a port. A repository that never opens one — a CLI, a
+    // migration, a seeder — exits 0 having done its job, and this reported
+    // `UNKNOWN_RUNTIME_ERROR: container exited before becoming ready`: a working program
+    // described as broken, with no evidence and no remedy. runToCompletion had always
+    // classified exit 0 correctly; only this path, which cannot tell "finished" from
+    // "died" by watching a socket, did not.
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: false, ExitCode: 0 } })),
+    );
+    const sentinels = new Set(['__DEVLAUNCH:PHASE:START:BEGIN__']);
+    const out = await explain(exec, [container, plan, sentinels, readiness, undefined]);
+    expect(out.state).toBe('COMPLETED');
+    expect(out.failure).toBeUndefined();
+  });
+
   it('still attributes a genuinely exited container to its phase', async () => {
     const exec = new ExecutionManager(
       stubDocker(async () => ({ State: { Running: false, ExitCode: 1 } })),
@@ -71,6 +88,7 @@ describe('container state attribution', () => {
 
     const sentinels = new Set(['__DEVLAUNCH:PHASE:START:BEGIN__']);
     const out = await explain(exec, [container, plan, sentinels, readiness, undefined]);
+    expect(out.state).toBe('FAILED');
     expect(out.failure.code).toBe(FailureCode.START_COMMAND_FAILED);
   });
 

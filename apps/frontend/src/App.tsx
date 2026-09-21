@@ -4,6 +4,7 @@ import { useSession } from './useSession';
 import { RepoLauncher } from './components/RepoLauncher';
 import { PipelineStrip } from './components/PipelineStrip';
 import { ServicePanel } from './components/ServicePanel';
+import { EndpointsPanel } from './components/EndpointsPanel';
 import { PlanPanel } from './components/PlanPanel';
 import { InputGate } from './components/InputGate';
 import { FailurePanel } from './components/FailurePanel';
@@ -212,6 +213,10 @@ export default function App() {
             Open Application
           </a>
         </section>
+      )}
+
+      {state === 'READY' && (
+        <EndpointsPanel url={session?.url} routes={session?.routes} readiness={session?.readiness} />
       )}
 
       <FailurePanel failure={session?.failure} repairs={session?.repairs} />

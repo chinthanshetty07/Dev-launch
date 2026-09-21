@@ -316,3 +316,17 @@ dead application.
 
 A third bound covers `AWAITING_INPUT` (10 min). Concurrency is 1, so a session nobody
 answers would otherwise hold the only slot until the process restarted.
+
+## An API's URL is not a blank 404
+
+An API reaches READY and its root returns 404, because an API has no page at `/`. The
+readiness check tolerates that on purpose; a person handed the URL does not — they see
+"Cannot GET /" and conclude the run is broken while the application runs perfectly.
+
+The analyzer reads the routes the application declares: `app.get('/states/')`, a
+router's paths under the mount it is registered on (`/users/:id` in `routes/users.js`
+is `/api/users/:id` to a client, and the bare form is a wrong answer), Flask routes with
+their methods, FastAPI routers under `include_router`'s prefix, and any `.http` request
+file the author tests with. The dashboard says the root has no page and lists them, GET
+routes as links. Readiness checks a declared concrete GET route when `/` is not one, so
+a mismatch there means something.

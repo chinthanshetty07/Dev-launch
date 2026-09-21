@@ -13,8 +13,8 @@ They are deliberately not in the automated suite.
 | Fixture | Exercises |
 |---|---|
 | `node-http-basic` | Zero-dependency HTTP server; the baseline happy path |
-| `node-exit-ok` | A process that completes and exits 0 |
-| `node-vite-app` | Vite detection, lockfile → npm, `engines.node`, framework config |
+| `node-exit-ok` | A process that completes and exits 0. Through the readiness path — which watches for a port that is never going to open — this was reported as `UNKNOWN_RUNTIME_ERROR`; it is `COMPLETED` |
+| `node-vite-app` | Vite detection, lockfile → npm, `engines.node`, framework config — and it actually serves. Its `tsconfig.json` was a zero-byte file for a long time and no test noticed, because planning and measuring a repository never parse it; the first run that started it died on `Unexpected end of file in JSON` |
 | `python-flask-basic` | Flask detection, entry point and app variable, required env vars |
 | `python-django-basic` | Django detection from `manage.py` |
 | `node-monorepo` | Workspace with exactly one runnable package |

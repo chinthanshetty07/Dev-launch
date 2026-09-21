@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ExecutionState, FailureDetail, RepairRecord, ServerMessage, WireLogEntry } from '@devlaunch/shared';
+import type { ExecutionState, FailureDetail, HttpRoute, ReadinessView, RepairRecord, ServerMessage, WireLogEntry } from '@devlaunch/shared';
 import { furthestOf, progressOf } from '@devlaunch/shared';
 import { api, type SessionView } from './api';
 
@@ -23,6 +23,8 @@ export interface SessionStream {
   url?: string;
   failure?: FailureDetail;
   repairs?: RepairRecord[];
+  routes?: HttpRoute[];
+  readiness?: ReadinessView;
   connected: boolean;
 }
 
@@ -151,6 +153,8 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
     url: session?.url,
     failure: session?.failure,
     repairs: session?.repairs,
+    routes: session?.routes,
+    readiness: session?.readiness,
     refresh,
   };
 }

@@ -1,7 +1,8 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import type {
   EnvExampleVar,
+  HttpRoute,
   PackageJsonSummary,
   PythonEntry,
   PythonSummary,
@@ -111,6 +112,7 @@ export class RepositoryAnalyzer {
       python,
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,
+      ...(await this.readRoutes(base, fileNames, packageJson?.entryFiles ?? [], python?.entryCandidates.map((e) => e.file) ?? [])),
       workspace: await this.readWorkspace(base, packageJson, fileNames, warnings),
       ...(await this.readServices(base, envRaw ? parseEnvExample(envRaw) : [])),
       warnings,
@@ -218,6 +220,98 @@ export class RepositoryAnalyzer {
       if (exists) out.push(rel);
     }
     return out;
+  }
+
+  /**
+   * The routes the application declares, from its entry files and the router files they
+   * mount, plus any `.http` request file the author left beside them.
+   *
+   * Bounded: a fixed set of directories, a few dozen files, each read capped. This reads
+   * what is written — `app.get('/states/')` is not an inference — and a mounted router's
+   * paths are prefixed by the mount it is registered under, since `/users/:id` in
+   * `routes/users.js` is `/api/users/:id` to a client and the former is a wrong answer.
+   */
+  private async readRoutes(
+    base: string,
+    fileNames: string[],
+    nodeEntries: string[],
+    pythonEntries: string[],
+  ): Promise<Pick<RepositoryMetadata, 'httpRoutes'>> {
+    const routes: HttpRoute[] = [];
+    const add = (method: string, path: string, source: string): void => {
+      const m = method.toUpperCase();
+      if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'ALL'].includes(m)) return;
+      const clean = ('/' + path).replace(/\/{2,}/g, '/').replace(/\?.*$/, '');
+      if (routes.some((r) => r.method === m && r.path === clean)) return;
+      if (routes.length < 40) routes.push({ method: m as HttpRoute['method'], path: clean, source });
+    };
+
+    // --- Node: entry files, then the routers they mount, then conventional route dirs ---
+    const mounts = new Map<string, string>(); // resolved file → mount prefix
+    for (const entry of nodeEntries.slice(0, 3)) {
+      const src = await readCapped(join(base, entry));
+      if (src === null) continue;
+      for (const m of src.matchAll(/\b(?:app|server|api)\.(get|post|put|patch|delete|all)\(\s*(['"`])([^'"`]+)\2/g)) add(m[1]!, m[3]!, entry);
+      const requires = new Map<string, string>();
+      for (const m of src.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*require\(\s*['"`]([^'"`]+)['"`]\s*\)/g)) requires.set(m[1]!, m[2]!);
+      for (const m of src.matchAll(/import\s+(\w+)\s+from\s+['"`]([^'"`]+)['"`]/g)) requires.set(m[1]!, m[2]!);
+      for (const m of src.matchAll(/\.use\(\s*['"`](\/[^'"`]*)['"`]\s*,\s*(?:require\(\s*['"`]([^'"`]+)['"`]\s*\)|(\w+))/g)) {
+        const mod = m[2] ?? (m[3] ? requires.get(m[3]) : undefined);
+        if (!mod || !mod.startsWith('.')) continue;
+        const rel = join(dirname(entry), mod).replace(/^\.\//, '');
+        for (const candidate of [rel, `${rel}.js`, `${rel}/index.js`, `${rel}.mjs`, `${rel}.ts`]) mounts.set(candidate, m[1]!);
+      }
+    }
+    const routerFiles = new Set<string>(mounts.keys());
+    for (const dir of ['routes', 'src/routes', 'controllers', 'src/controllers']) {
+      const entries = await readdir(join(base, dir), { withFileTypes: true }).catch(() => []);
+      for (const e of entries) if (e.isFile() && /\.(?:c|m)?[jt]s$/.test(e.name)) routerFiles.add(`${dir}/${e.name}`);
+    }
+    for (const file of [...routerFiles].slice(0, 20)) {
+      const src = await readCapped(join(base, file));
+      if (src === null) continue;
+      const prefix = mounts.get(file) ?? '';
+      for (const m of src.matchAll(/\b(?:router|app|server|api)\.(get|post|put|patch|delete|all)\(\s*(['"`])([^'"`]+)\2/g)) add(m[1]!, prefix + m[3]!, file);
+    }
+
+    // --- Python: Flask routes and blueprints, FastAPI routers and their prefixes ---
+    const pyMounts = new Map<string, string>(); // module basename → prefix
+    const pyFiles = new Set<string>(pythonEntries.slice(0, 3));
+    for (const entry of pythonEntries.slice(0, 3)) {
+      const src = await readCapped(join(base, entry));
+      if (src === null) continue;
+      for (const m of src.matchAll(/include_router\(\s*(\w+)(?:\.router)?[^)]*?prefix\s*=\s*['"]([^'"]+)['"]/g)) pyMounts.set(m[1]!, m[2]!);
+      for (const m of src.matchAll(/register_blueprint\(\s*(\w+)[^)]*?url_prefix\s*=\s*['"]([^'"]+)['"]/g)) pyMounts.set(m[1]!, m[2]!);
+    }
+    for (const dir of ['routers', 'routes', 'api', 'blueprints', ...pythonEntries.map((e) => join(dirname(e), 'routers')), ...pythonEntries.map((e) => join(dirname(e), 'routes'))]) {
+      const entries = await readdir(join(base, dir), { withFileTypes: true }).catch(() => []);
+      for (const e of entries) if (e.isFile() && e.name.endsWith('.py') && e.name !== '__init__.py') pyFiles.add(`${dir}/${e.name}`);
+    }
+    for (const file of [...pyFiles].slice(0, 20)) {
+      const src = await readCapped(join(base, file));
+      if (src === null) continue;
+      const own =
+        /APIRouter\([^)]*?prefix\s*=\s*['"]([^'"]+)['"]/.exec(src)?.[1] ??
+        /Blueprint\([^)]*?url_prefix\s*=\s*['"]([^'"]+)['"]/.exec(src)?.[1] ?? '';
+      const stem = file.split('/').pop()!.replace(/\.py$/, '');
+      const prefix = (pyMounts.get(stem) ?? '') + own;
+      for (const m of src.matchAll(/@\w+\.route\(\s*['"]([^'"]+)['"](?:[^)]*?methods\s*=\s*\[([^\]]*)\])?/g)) {
+        const methods = m[2] ? [...m[2].matchAll(/['"](\w+)['"]/g)].map((x) => x[1]!) : ['GET'];
+        for (const method of methods) add(method, prefix + m[1]!, file);
+      }
+      for (const m of src.matchAll(/@\w+\.(get|post|put|patch|delete)\(\s*['"]([^'"]+)['"]/g)) add(m[1]!, prefix + m[2]!, file);
+    }
+
+    // --- A request file the author tests with, which lists exactly what to call ---
+    for (const name of fileNames.filter((n) => /\.(?:http|rest)$/.test(n)).slice(0, 3)) {
+      const src = await readCapped(join(base, name));
+      if (src === null) continue;
+      for (const m of src.matchAll(/^(GET|POST|PUT|PATCH|DELETE)\s+(?:https?:\/\/[^/\s]+)?(\/\S*)/gm)) add(m[1]!, m[2]!, name);
+    }
+
+    // GET first: those are the ones a person can open.
+    routes.sort((a, b) => Number(b.method === 'GET') - Number(a.method === 'GET'));
+    return routes.length ? { httpRoutes: routes } : {};
   }
 
   private async readPython(base: string, fileNames: string[]): Promise<PythonSummary | undefined> {

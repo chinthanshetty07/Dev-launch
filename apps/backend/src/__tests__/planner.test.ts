@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { RepositoryMetadata } from '@devlaunch/shared';
-import { RuleBasedPlanner } from '../services/planning/RuleBasedPlanner.js';
+import { RuleBasedPlanner, healthPathFor } from '../services/planning/RuleBasedPlanner.js';
 import { RunPlanValidator } from '../services/planning/RunPlanValidator.js';
 import { NODE_FRAMEWORKS } from '../services/planning/frameworks.js';
 
@@ -340,5 +340,30 @@ describe('a framework with no start script', () => {
     const out = planner.plan(express({ entryFiles: [] }));
     expect(out.plan).toBeNull();
     expect(out.warnings.join(' ')).toMatch(/found none of its expected scripts/);
+  });
+});
+
+describe('which path readiness checks', () => {
+  it('uses a concrete GET route when the application has no page at /', () => {
+    // An API's root 404s; the check tolerated that but learned nothing. A route the
+    // application declares gives a real answer, and a mismatch there means something.
+    const m = meta({ httpRoutes: [
+      { method: 'GET', path: '/states/:stateId', source: 'app.js' },
+      { method: 'POST', path: '/districts/', source: 'app.js' },
+      { method: 'GET', path: '/states/', source: 'app.js' },
+    ] });
+    expect(healthPathFor(m)).toBe('/states/');
+  });
+  it('keeps / when it is declared, or when nothing is', () => {
+    expect(healthPathFor(meta({ httpRoutes: [{ method: 'GET', path: '/', source: 'app.js' }, { method: 'GET', path: '/x', source: 'app.js' }] }))).toBe('/');
+    expect(healthPathFor(meta())).toBe('/');
+    expect(healthPathFor(meta({ httpRoutes: [{ method: 'GET', path: '/u/:id', source: 'a' }] }))).toBe('/');
+  });
+  it('reaches the plan', () => {
+    const out = planner.plan(meta({
+      packageJson: { name: 'x', scripts: { start: 'node app.js' }, dependencies: { express: '4' }, devDependencies: {} },
+      httpRoutes: [{ method: 'GET', path: '/states/', source: 'app.js' }],
+    }));
+    expect(out.plan?.healthCheck.path).toBe('/states/');
   });
 });
