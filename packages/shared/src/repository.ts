@@ -198,6 +198,29 @@ export interface PythonEntry {
    */
   module?: string;
   framework: 'flask' | 'django' | 'fastapi' | 'streamlit' | 'gradio' | null;
+  /**
+   * Whether the file is named like an entry point — `app.py`, `main.py`, `wsgi.py`.
+   *
+   * The scan reads every top-level `.py` file, because a Streamlit dashboard is called
+   * `dashboard.py` and no list of names catches the next one. That breadth needs a
+   * counterweight: when no file imports the framework, the fallback must not settle on
+   * whatever came first. One repository's only top-level module is `tests.py`, and it was
+   * started as `FLASK_APP=tests`.
+   *
+   * Only an explicit `false` disqualifies a candidate. Absent means "nobody said", and
+   * the safe reading of that is to allow it: the bug being guarded against is a scan
+   * that *added* junk, and that scan marks what it adds.
+   */
+  conventional?: boolean;
+  /**
+   * Directory the file lives in, relative to the working directory, when not at its root.
+   *
+   * A small Flask project keeps its application in `app/app.py` with no `__init__.py`,
+   * and imports its siblings as `from routes.task_route import ...` — which only resolves
+   * with `app/` as the working directory. The plan runs there and installs from the root,
+   * where requirements.txt is.
+   */
+  dir?: string;
   /** Name of the module-level app object, when one is obvious. */
   appVariable?: string;
 }

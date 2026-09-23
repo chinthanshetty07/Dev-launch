@@ -17,6 +17,11 @@ import {
 } from './frameworks.js';
 import { config } from '../../config/index.js';
 
+/** Join two repository-relative paths, keeping `.` meaning "the working directory". */
+function joinPath(base: string, child: string): string {
+  return base === '.' || base === '' ? child : `${base}/${child}`;
+}
+
 export interface PlanningOutcome {
   plan: RunPlan | null;
   /** Detector that matched, e.g. "vite", "django". */
@@ -541,8 +546,13 @@ export class RuleBasedPlanner {
       );
     }
 
+    // A file that imports the framework, or failing that one *named* like an entry
+    // point. Not simply the first candidate: the scan deliberately reads every top-level
+    // `.py` file so a Streamlit dashboard called `dashboard.py` is found, and one
+    // repository's only top-level module is `tests.py` — which was duly started as
+    // `FLASK_APP=tests`, and then as `FLASK_APP=app` by a model asked to guess again.
     const entry = py.entryCandidates.find((e) => e.framework === kind)
-      ?? py.entryCandidates.find((e) => e.file !== 'manage.py');
+      ?? py.entryCandidates.find((e) => e.conventional !== false && e.file !== 'manage.py');
     // Inside a package the file path is not the import path: `src/pg_rag/main.py` runs
     // as `pg_rag.main` once installed, and only as that.
     const moduleName = entry?.module ?? entry?.file.replace(/\.py$/, '');
@@ -550,6 +560,18 @@ export class RuleBasedPlanner {
     // The step between installing and starting. A schema-creation script the author
     // documented is exactly what this slot is for, and without it the application runs
     // and answers 500 to everything.
+    // The entry may live one level down, in a directory that is not a package — and its
+    // own imports only resolve from there. The install stays where the manifest is.
+    const runDir = entry?.dir ? joinPath(workingDirectory, entry.dir) : workingDirectory;
+    const installDirectory = runDir === workingDirectory ? null : workingDirectory;
+    if (entry?.dir) {
+      warnings.push(
+        `Starting from ${runDir}: ${entry.file} lives there and imports its siblings by ` +
+          'bare name, which only resolves with that directory as the working directory. ' +
+          `Dependencies are still installed from ${workingDirectory}.`,
+      );
+    }
+
     const initScript = (py.initScripts ?? []).find((f) => f !== entry?.file);
     if (initScript) {
       warnings.push(`Running ${initScript} before start: it creates the database schema this application expects.`);
@@ -627,7 +649,8 @@ export class RuleBasedPlanner {
         // Only one can run, and the repository's own is the more informed of the two.
         buildCommand: initScript ? `python ${initScript}` : frameworkBuild,
         startCommand,
-        workingDirectory,
+        workingDirectory: runDir,
+        ...(installDirectory ? { installDirectory } : {}),
         expectedPort: fw.defaultPort,
         hostBinding: 'forced',
         environmentVariables: env,

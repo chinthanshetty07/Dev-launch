@@ -263,7 +263,7 @@ describe('RuleBasedPlanner — Python frameworks', () => {
     const out = planner.plan(py({
       hasPyproject: true,
       dependencies: ['fastapi', 'sqlalchemy', 'asyncpg'],
-      entryCandidates: [{ file: 'main.py', framework: null }],
+      entryCandidates: [{ file: 'main.py', conventional: true, framework: null }],
     }));
     expect(out.detected).toBe('fastapi');
     expect(out.plan?.installCommand).toBe('pip install .');
@@ -825,5 +825,58 @@ describe('which Node version a repository needs', () => {
     );
     expect(out.plan?.runtime.version).toBe('20');
     expect(out.warnings.join(' ')).toMatch(/Repository requests Node/);
+  });
+});
+
+describe('a Flask application in a subdirectory', () => {
+  const sub = (over: Record<string, unknown> = {}) =>
+    meta({
+      python: {
+        requirements: ['Flask==2.3.0'],
+        hasPyproject: false,
+        hasPipfile: false,
+        hasManagePy: false,
+        entryCandidates: [
+          { file: 'tests.py', conventional: false, framework: null },
+          { file: 'app.py', dir: 'app', conventional: true, framework: 'flask', appVariable: 'app' },
+        ],
+        ...over,
+      },
+    } as Partial<RepositoryMetadata>);
+
+  it('runs from the directory the entry file lives in', () => {
+    // `app/app.py` imports its siblings by bare name, which only resolves with `app/` as
+    // the working directory.
+    const out = sub();
+    const plan = planner.plan(out).plan;
+    expect(plan?.workingDirectory).toBe('app');
+    expect(plan?.environmentVariables.find((v) => v.key === 'FLASK_APP')?.value).toBe('app');
+  });
+
+  it('still installs where the manifest is', () => {
+    const plan = planner.plan(sub()).plan;
+    expect(plan?.installDirectory).toBe('.');
+    expect(plan?.installCommand).toBe('pip install -r requirements.txt');
+  });
+
+  it('never settles on a file that is not named like an entry point', () => {
+    // `tests.py` was started as `FLASK_APP=tests`, and then as `FLASK_APP=app` by a model
+    // asked to guess again. Neither is an application.
+    const plan = planner.plan(
+      sub({
+        entryCandidates: [{ file: 'tests.py', conventional: false, framework: null }],
+      }),
+    ).plan;
+    expect(plan).toBeNull();
+  });
+
+  it('leaves an application at the root where it is', () => {
+    const plan = planner.plan(
+      sub({
+        entryCandidates: [{ file: 'app.py', conventional: true, framework: 'flask', appVariable: 'app' }],
+      }),
+    ).plan;
+    expect(plan?.workingDirectory).toBe('.');
+    expect(plan?.installDirectory).toBeNull();
   });
 });

@@ -563,3 +563,54 @@ approved version above the one that failed.
 The model budget stays at zero, and that is not a matter of degree: no plan a model
 writes can conjure an image that is not on the allowlist, so asking it spends a call to
 be told what the allowlist already says.
+
+## Which file is the application, and where it runs from
+
+The Python entry scan reads every top-level `.py` file, because a Streamlit dashboard is
+called `dashboard.py` and no list of names catches the next one. That breadth needs a
+counterweight, and it did not have one: when no file imports the framework, the fallback
+took whatever came first. One repository's only top-level module is `tests.py`, so it was
+started as `FLASK_APP=tests`, and then — after a model was asked to guess again — as
+`FLASK_APP=app`. Neither is an application.
+
+Two changes, and they belong together:
+
+- **Candidates carry whether they are *named* like an entry point.** The fallback takes a
+  conventional name or nothing. Only an explicit `false` disqualifies one: the bug being
+  guarded against is a scan that *added* junk, and that scan marks what it adds, so
+  "nobody said" is safe to allow.
+- **The application may be one level down without being a package.** `app/app.py` with no
+  `__init__.py` is a common small-Flask shape, invisible to the package scan (which
+  requires `__init__.py`) and to the root scan (which does not look down). It is found
+  now, bounded to immediate subdirectories and conventional filenames, skipping `tests/`,
+  `docs/`, `migrations/` and their kind.
+
+Where the entry lives decides where the plan runs. `app/app.py` imports its siblings as
+`from routes.task_route import ...`, which only resolves with `app/` as the working
+directory — so `workingDirectory` is the entry's directory and `installDirectory` stays
+where the manifest is. The plan says so in a warning, because running somewhere other
+than the repository root is a decision.
+
+### Locality is relative to the importer
+
+The import walk's notion of "a module this repository provides" was the repository root's
+listing. `app/app.py` importing `routes.task_route` is a directory inside `app/` — nowhere
+in that listing — so `routes` was proposed to pip as a distribution to install. The set
+now grows as the walk descends: whatever sits beside a file is local to it.
+
+The walk is also seeded from a subdirectory entry. It started only from root `.py` files,
+so a repository whose entire application lives in `app/` collected no imports at all.
+
+### A declared dependency list can still be missing one
+
+This was reasoned about twice and the first answer was too broad. The rule that extends an
+install from an error naming a package refused to touch `-r requirements.txt`, because a
+repository that declares its dependencies owns the gaps in them. That is right about whose
+bug it is and wrong about what DevLaunch can see: one repository imports `flasgger` in its
+application and lists Flask, Werkzeug, requests and pytest.
+
+The import is a declaration too, and it is the one that decides whether the program runs.
+So a declared list is extended as well — but only by a module the project's own source
+imports, and never by a name read out of a log alone. A package the requirements file
+already pins is left alone, because installing it twice resolves it twice and the second
+answer is not the one the repository asked for.

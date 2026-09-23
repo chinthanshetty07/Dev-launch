@@ -605,3 +605,69 @@ describe('which file starts the application', () => {
     expect(meta.python?.entryCandidates.find((e) => e.framework === 'gradio')?.file).toBe('demo.py');
   });
 });
+
+describe('an application one level down that is not a package', () => {
+  async function pyTree(files: Record<string, string>): Promise<string> {
+    const { mkdtemp, writeFile, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join, dirname: dir } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'devlaunch-subdir-'));
+    scratch.push(root);
+    for (const [path, contents] of Object.entries(files)) {
+      const full = join(root, path);
+      await mkdir(dir(full), { recursive: true });
+      await writeFile(full, contents);
+    }
+    return root;
+  }
+
+  it('finds app/app.py when there is no __init__.py anywhere', async () => {
+    // The package scan requires `__init__.py` and the root scan never looks down, so
+    // this shape had no entry at all — and the planner settled on whatever else was at
+    // the root, which in one repository was `tests.py`.
+    const root = await pyTree({
+      'requirements.txt': 'Flask==2.3.0\n',
+      'tests.py': 'import pytest\nimport requests\n',
+      'app/app.py': 'from flask import Flask\napp = Flask(__name__)\n',
+    });
+    const meta = await analyzer.analyze(root);
+    const entry = meta.python?.entryCandidates.find((e) => e.framework === 'flask');
+    expect(entry).toMatchObject({ file: 'app.py', dir: 'app' });
+  });
+
+  it('marks a file named like an entry point as conventional', async () => {
+    const root = await pyTree({
+      'requirements.txt': 'Flask\n',
+      'tests.py': 'import pytest\n',
+      'main.py': 'from flask import Flask\napp = Flask(__name__)\n',
+    });
+    const meta = await analyzer.analyze(root);
+    const byName = Object.fromEntries(
+      (meta.python?.entryCandidates ?? []).map((e) => [e.file, e.conventional]),
+    );
+    expect(byName['main.py']).toBe(true);
+    expect(byName['tests.py']).toBe(false);
+  });
+
+  it('does not go looking inside tests/ for the application', async () => {
+    const root = await pyTree({
+      'requirements.txt': 'Flask\n',
+      'tests/app.py': 'from flask import Flask\napp = Flask(__name__)\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.entryCandidates.find((e) => e.dir === 'tests')).toBeUndefined();
+  });
+
+  it('never proposes installing a module that sits beside the importer', async () => {
+    // `routes` is a directory inside `app/`, invisible from the repository root — and
+    // `pip install routes` is not a thing.
+    const root = await pyTree({
+      'requirements.txt': 'Flask\n',
+      'app/app.py': "from flask import Flask\nfrom routes.task import go\nimport flasgger\n",
+      'app/routes/task.py': 'def go(): pass\n',
+    });
+    const meta = await analyzer.analyze(root);
+    expect(meta.python?.imports).toContain('flasgger');
+    expect(meta.python?.imports).not.toContain('routes');
+  });
+});

@@ -87,6 +87,9 @@ const MAX_ENTRY_SCAN = 12;
 /** Never the program: packaging, configuration, and the schema scripts read separately. */
 const SKIP_AS_ENTRY = ['setup.py', 'conftest.py', '__init__.py'];
 
+/** Directories that hold something other than the application. */
+const SKIP_AS_ENTRY_DIR = /^(?:tests?|docs?|examples?|scripts?|migrations?|static|templates|venv|env|node_modules|__pycache__|build|dist)$/i;
+
 /**
  * Scripts that create a database schema, by name.
  *
@@ -474,7 +477,11 @@ export class RepositoryAnalyzer {
     // Both files and directories: `routers/` is a package this repository provides, and
     // reading it as a distribution put `pip install routers` — which does not exist — in
     // the middle of an otherwise correct install command.
-    const local = [...pyFiles.map((n) => n.replace(/\.py$/, '')), ...dirNames];
+    // Grows as the walk descends. A module is "local" relative to the file importing it,
+    // and the root's listing cannot know that: `app/app.py` does `from routes.task_route
+    // import ...`, where `routes` is a directory inside `app/` — invisible from the root,
+    // and duly proposed to pip as a distribution to install.
+    const local = new Set([...pyFiles.map((n) => n.replace(/\.py$/, '')), ...dirNames]);
     const imported: string[] = [];
     let hardcodedDb: { file: string; url: string } | undefined;
 
@@ -483,34 +490,46 @@ export class RepositoryAnalyzer {
     // alone installed two of the three distributions the application needs and the run
     // died on `No module named 'sqlalchemy'`. Bounded hard — this follows a repository's
     // own imports, it does not search its tree.
-    const queue = [...candidates];
     const visited = new Set<string>();
-    while (queue.length > 0 && visited.size < MAX_IMPORT_FILES) {
-      const file = queue.shift()!;
-      if (visited.has(file)) continue;
-      visited.add(file);
-      const source = await readCapped(join(base, file));
-      if (source === null) continue;
+      const walkImports = async (from: string): Promise<void> => {
+      const queue = [from];
+      while (queue.length > 0 && visited.size < MAX_IMPORT_FILES) {
+        const file = queue.shift()!;
+        if (visited.has(file)) continue;
+        visited.add(file);
+        const source = await readCapped(join(base, file));
+        if (source === null) continue;
 
-      if (candidates.includes(file)) entryCandidates.push({ file, ...detectPythonFramework(source) });
-      for (const dist of importedDistributions(source, local)) {
-        if (!imported.includes(dist)) imported.push(dist);
-      }
-      // A connection URL names its driver in the scheme, and SQLAlchemy loads it by name
-      // at connect time — so nothing imports it and the import scan cannot see it.
-      for (const dist of driversForConnectionUrls(source)) {
-        if (!imported.includes(dist)) imported.push(dist);
-      }
-      if (!hardcodedDb) {
-        const url = hardcodedDatabaseUrl(source);
-        if (url) hardcodedDb = { file, url };
-      }
-      for (const module of localImports(source, local)) {
-        for (const next of await this.filesOfLocalModule(base, module)) {
-          if (!visited.has(next)) queue.push(next);
+        if (candidates.includes(file)) {
+          entryCandidates.push({
+            file,
+            conventional: ENTRY_FILES.includes(file),
+            ...detectPythonFramework(source),
+          });
+        }
+        // What sits beside this file is local to it, whatever the root looks like.
+        for (const sibling of await this.siblingModules(base, file)) local.add(sibling);
+
+        for (const dist of importedDistributions(source, [...local])) {
+          if (!imported.includes(dist)) imported.push(dist);
+        }
+        // A connection URL names its driver in the scheme, and SQLAlchemy loads it by name
+        // at connect time — so nothing imports it and the import scan cannot see it.
+        for (const dist of driversForConnectionUrls(source)) {
+          if (!imported.includes(dist)) imported.push(dist);
+        }
+        if (!hardcodedDb) {
+          const url = hardcodedDatabaseUrl(source);
+          if (url) hardcodedDb = { file, url };
+        }
+        for (const module of localImports(source, [...local])) {
+          for (const next of await this.filesOfLocalModule(base, module)) {
+            if (!visited.has(next)) queue.push(next);
+          }
         }
       }
-    }
+      };
+    for (const candidate of candidates) await walkImports(candidate);
 
     // A packaged project keeps its entry point inside the package — `src/pg_rag/main.py`
     // — where a scan of the working directory never looks. Read it under the module path
@@ -518,6 +537,21 @@ export class RepositoryAnalyzer {
     const pyproject = hasPyproject ? await readCapped(join(base, 'pyproject.toml')) : null;
     if (entryCandidates.every((e) => !e.framework)) {
       entryCandidates.push(...(await this.readPackageEntries(base)));
+    }
+    // Still nothing that imports a framework: look one level down in ordinary
+    // directories. A small Flask project keeps its application in `app/app.py` with no
+    // `__init__.py` at all, so the package scan above cannot see it and the root scan
+    // never looks — and the planner then settled on whatever else was lying around.
+    if (entryCandidates.every((e) => !e.framework)) {
+      const found = await this.readSubdirectoryEntries(base);
+      entryCandidates.push(...found);
+      // Walk its imports too. The queue was seeded from the repository root, so a
+      // repository whose only Python lives in `app/` collected nothing at all — and the
+      // one dependency its application needs and requirements.txt forgot was invisible.
+      for (const entry of found) {
+        const path = entry.dir ? `${entry.dir}/${entry.file}` : entry.file;
+        await walkImports(path);
+      }
     }
 
     return {
@@ -583,6 +617,52 @@ export class RepositoryAnalyzer {
   }
 
   /**
+   * Module names that sit beside a file: its directory's own `.py` files and folders.
+   *
+   * Locality is relative to the importer. `app/app.py` imports `routes.task_route`, and
+   * `routes` is a directory inside `app/` — nowhere in the repository root's listing, so
+   * a root-only notion of "local" reported it as a distribution to fetch.
+   */
+  private async siblingModules(base: string, file: string): Promise<string[]> {
+    const dir = dirname(file);
+    if (dir === '.' || dir === '') return [];
+    const entries = await readdir(join(base, dir), { withFileTypes: true }).catch(() => []);
+    return entries
+      .filter((e) => e.isDirectory() || e.name.endsWith('.py'))
+      .map((e) => e.name.replace(/\.py$/, ''));
+  }
+
+  /**
+   * A framework entry point one level down, in a directory that is not a package.
+   *
+   * Distinct from `readPackageEntries`, which requires `__init__.py` and reports an
+   * importable module path. This is the other shape, and it is at least as common in
+   * small projects: `app/app.py` with no `__init__.py`, importing its siblings as
+   * `from routes.task_route import ...`. That only resolves with `app/` on the path, so
+   * the directory travels with the entry and the plan runs from it.
+   *
+   * Bounded: immediate subdirectories only, the same conventional filenames, and the
+   * first one that actually imports a framework. It is not a search of the tree.
+   */
+  private async readSubdirectoryEntries(base: string): Promise<PythonEntry[]> {
+    const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
+    const dirs = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !SKIP_AS_ENTRY_DIR.test(e.name))
+      .slice(0, MAX_ENTRY_SCAN);
+
+    for (const dir of dirs) {
+      for (const file of ENTRY_FILES) {
+        const source = await readCapped(join(base, dir.name, file));
+        if (source === null) continue;
+        const detected = detectPythonFramework(source);
+        if (!detected.framework) continue;
+        return [{ file, dir: dir.name, conventional: true, ...detected }];
+      }
+    }
+    return [];
+  }
+
+  /**
    * Entry points inside a package, under `src/<pkg>/` or `<pkg>/`.
    *
    * Bounded on purpose: one level of package, the same handful of filenames as the root
@@ -603,7 +683,12 @@ export class RepositoryAnalyzer {
           const detected = detectPythonFramework(source);
           if (!detected.framework) continue;
           const rel = parent === '.' ? `${pkg.name}/${file}` : `${parent}/${pkg.name}/${file}`;
-          out.push({ file: rel, module: `${pkg.name}.${file.replace(/\.py$/, '')}`, ...detected });
+          out.push({
+            file: rel,
+            module: `${pkg.name}.${file.replace(/\.py$/, '')}`,
+            conventional: true,
+            ...detected,
+          });
         }
         if (out.length) return out;
       }

@@ -361,6 +361,10 @@ describe('a pin with no wheel for this interpreter', () => {
 
 describe('a package the error names, missing from a list we composed', () => {
   const composed = (installCommand: string) => plan({ installCommand });
+  const pyImports = (imports: string[], requirements: string[] = []): RepositoryMetadata =>
+    ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+       python: { requirements, imports, hasPyproject: false, hasPipfile: false,
+                 hasManagePy: false, entryCandidates: [] } }) as unknown as RepositoryMetadata;
 
   it('adds the package a library says it needs', () => {
     // Nothing in a FastAPI project imports python-multipart, so an install list built
@@ -395,13 +399,44 @@ describe('a package the error names, missing from a list we composed', () => {
     expect(out).toBeNull();
   });
 
-  it('leaves a requirements file alone', () => {
-    // There the repository declared the set, and a missing entry is the repository's to
-    // fix rather than a gap in a guess DevLaunch made.
+  it('will not add a name read out of a log to a list the repository wrote', () => {
+    // This test previously asserted that a requirements.txt install was never extended
+    // at all, on the reasoning that a repository which declares its dependencies owns
+    // the gaps in them. That is right about whose bug it is and wrong about what
+    // DevLaunch can see — so the rule now extends a declared list too, and what it
+    // refuses is narrower and more exact: a package the project's own source does not
+    // import. The log alone is not evidence about this repository.
     const out = attempt({
       plan: composed('pip install -r requirements.txt'),
       code: FailureCode.START_COMMAND_FAILED,
       logs: 'RuntimeError: Form data requires "python-multipart" to be installed.',
+      metadata: pyImports([]),
+    });
+    expect(out).toBeNull();
+  });
+
+  it('adds a package the source imports and requirements.txt forgot', () => {
+    // A real repository imports `flasgger` in its application and lists Flask, Werkzeug,
+    // requests and pytest. The import is a declaration too, and it is the one that
+    // decides whether the program runs.
+    const out = attempt({
+      plan: composed('pip install -r requirements.txt'),
+      code: FailureCode.START_COMMAND_FAILED,
+      logs: "ModuleNotFoundError: No module named 'flasgger'",
+      metadata: pyImports(['flask', 'flasgger']),
+    });
+    expect(out?.plan.installCommand).toBe('pip install -r requirements.txt flasgger');
+    expect(out?.record.evidence.join(' ')).toMatch(/requirements\.txt does not list it/);
+  });
+
+  it('does not fight a pin the requirements file already carries', () => {
+    // Installing it again beside a pinned version is how one package ends up resolved
+    // twice, and the second answer is not the one the repository asked for.
+    const out = attempt({
+      plan: composed('pip install -r requirements.txt'),
+      code: FailureCode.START_COMMAND_FAILED,
+      logs: "ModuleNotFoundError: No module named 'flasgger'",
+      metadata: pyImports(['flasgger'], ['flasgger==0.9.7']),
     });
     expect(out).toBeNull();
   });

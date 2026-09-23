@@ -233,27 +233,47 @@ const RULES: readonly Rule[] = [
     },
   },
 
-  // --- the install list we composed was missing one package, and the error names it ---
+  // --- a package the application imports is missing, and the error names it -----------
   //
-  // Only a list DevLaunch built itself, from a project's imports, is extended here. That
-  // list is a good prediction and an incomplete one: nothing in a FastAPI project imports
-  // `python-multipart`, and the first request to a form route raises `Form data requires
-  // "python-multipart" to be installed.` A model was asked to interpret that sentence,
-  // which is a sentence naming a package. Where the repository declared its own
-  // dependencies, a missing one is the repository's to fix and not a gap in our guess.
+  // Two cases, and they are not the same evidence.
+  //
+  // A list DevLaunch composed from a project's imports is a good prediction and an
+  // incomplete one: nothing in a FastAPI project imports `python-multipart`, and the
+  // first request to a form route raises `Form data requires "python-multipart" to be
+  // installed.` A model was asked to interpret that — a sentence naming a package.
+  //
+  // This rule first refused to touch a `-r requirements.txt` install, on the reasoning
+  // that a repository which declared its own dependencies owns the gaps in them. That is
+  // right about *whose bug it is* and wrong about what DevLaunch can see. One repository
+  // imports `flasgger` in its application and lists Flask, Werkzeug, requests and pytest
+  // in requirements.txt. The import is a declaration too, and it is the one that decides
+  // whether the program runs. So a declared list is extended as well — but only by a
+  // module the project's own source imports, never by a name read out of a log alone.
   {
     applies: (c) => c === FailureCode.START_COMMAND_FAILED || c === FailureCode.BUILD_FAILED,
-    propose: ({ plan, failure, logs }) => {
+    propose: ({ plan, failure, logs, metadata }) => {
       const install = plan.installCommand ?? '';
       const composed = /^pip install (?!-)[A-Za-z0-9][\w.=-]*(?: [A-Za-z0-9][\w.=-]*)*$/.test(install);
-      if (!composed) return null;
+      const declared = /^pip install\s+-r\s+requirements\.txt\s*$/.test(install.trim());
+      if (!composed && !declared) return null;
 
       const text = `${failure.evidence ?? ''}\n${failure.message}\n${logs.slice(-6000)}`;
       const named = missingDistribution(text);
       if (!named) return null;
 
+      // The stricter gate for a list the repository wrote: the source has to import it.
+      if (declared) {
+        const imports = (metadata.python?.imports ?? []).map((d) => d.toLowerCase());
+        if (!imports.includes(named.distribution.toLowerCase())) return null;
+      }
+
       const already = install.slice('pip install '.length).split(/\s+/).map((a) => a.split('==')[0]!.toLowerCase());
       if (already.includes(named.distribution.toLowerCase())) return null;
+      // A requirements file may already pin it under a name the error spells differently;
+      // installing it twice is harmless, installing it against a pin is not.
+      if (declared && (metadata.python?.requirements ?? []).some((r) => r.toLowerCase().startsWith(named.distribution.toLowerCase()))) {
+        return null;
+      }
 
       const installCommand = `${install} ${named.distribution}`;
       return {
@@ -264,7 +284,12 @@ const RULES: readonly Rule[] = [
           failureCode: failure.code,
           before: { installCommand: install },
           after: { installCommand },
-          evidence: [named.quote, 'the install list was composed from this project\'s imports, which do not name it'],
+          evidence: [
+            named.quote,
+            declared
+              ? `requirements.txt does not list it, and this project's own source imports it`
+              : "the install list was composed from this project's imports, which do not name it",
+          ],
           confidence: 'high',
         },
       };
