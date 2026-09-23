@@ -236,3 +236,44 @@ note: This error originates from a subprocess, and is likely not a problem with 
     expect(out.remedy).toMatch(/declared dependencies by name/);
   });
 });
+
+describe('a Node crash', () => {
+  it('names the module that does not exist, not the watcher\'s epilogue', () => {
+    // A real run reported `Failed running 'app.js'` as its entire evidence, four lines
+    // below `Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite`.
+    const out = classify(
+      "node:internal/modules/esm/translators:391\n" +
+        '    throw new ERR_UNKNOWN_BUILTIN_MODULE(url);\n' +
+        'Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite\n' +
+        '    at ModuleLoader.builtinStrategy (node:internal/modules/esm/translators:391:11)\n' +
+        'Node.js v20.20.2\n' +
+        "Failed running 'app.js'",
+      'start',
+    );
+    expect(out.code).toBe(FailureCode.WRONG_RUNTIME_VERSION);
+    expect(out.evidence).toMatch(/node:sqlite/);
+  });
+
+  it('quotes a bracketed Node error when no signature claims it', () => {
+    // Node writes `TypeError [ERR_INVALID_ARG_TYPE]: ...`, and an exception pattern that
+    // stops at the first space skips the whole line — leaving the evidence to be whatever
+    // the runner printed last, which is an epilogue rather than a cause.
+    const out = classify(
+      'TypeError [ERR_INVALID_ARG_TYPE]: The "path" argument must be of type string\n' +
+        '    at Object.readFileSync (node:fs:1234:5)\n' +
+        "Failed running 'app.js'",
+      'start',
+    );
+    expect(out.confidence).toBe('low');
+    expect(out.evidence).toMatch(/ERR_INVALID_ARG_TYPE/);
+  });
+
+  it('is a runtime-version problem, not a port problem', () => {
+    // A watcher keeps the container alive after the crash, so the symptom is "nothing is
+    // listening" and the cause is a module the running Node does not have. A model was
+    // asked to interpret it and rewrote the start command.
+    const out = classify('Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite', 'start');
+    expect(out.code).toBe(FailureCode.WRONG_RUNTIME_VERSION);
+    expect(out.confidence).toBe('high');
+  });
+});

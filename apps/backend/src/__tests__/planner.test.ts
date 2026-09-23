@@ -147,15 +147,20 @@ describe('RuleBasedPlanner — Node frameworks', () => {
   });
 
   it('warns when the repository demands a Node version we cannot supply', () => {
+    // The example moved, not the intent. This used `>=22` when 20 was the only image
+    // DevLaunch shipped; 22 is approved now and `>=22` is satisfied rather than refused,
+    // so the case is stated with a bound nothing on the allowlist meets. What is being
+    // tested is unchanged: a demand we cannot meet is said out loud rather than run
+    // silently on whatever happens to be available.
     const out = planner.plan(meta({
       packageJson: {
         scripts: { dev: 'vite' },
         dependencies: { vite: '5' },
         devDependencies: {},
-        engineNode: '>=22',
+        engineNode: '>=99',
       },
     }));
-    expect(out.warnings.join(' ')).toMatch(/only 20 is available/);
+    expect(out.warnings.join(' ')).toContain('Repository requests Node ">=99"');
   });
 
   it('covers every framework in the table', () => {
@@ -749,5 +754,76 @@ describe('a package that is not an application', () => {
       }),
     );
     expect(out.unrunnable).toBeUndefined();
+  });
+});
+
+describe('which Node version a repository needs', () => {
+  const withBuiltins = (builtins: string[], over: Partial<RepositoryMetadata> = {}) =>
+    node({ express: '^5' }, { start: 'node app.js' }, { nodeBuiltins: builtins, ...over });
+
+  it('defaults to 20, because that is what the author most likely used', () => {
+    const out = planner.plan(node({ express: '^4' }, { start: 'node app.js' }));
+    expect(out.plan?.runtime.version).toBe('20');
+  });
+
+  it('raises to 22 for a built-in that 20 does not have', () => {
+    // `import { DatabaseSync } from 'node:sqlite'` is this repository's only statement
+    // about its runtime — it declares no `engines` field at all — and without it the run
+    // dies inside the module loader with a name indistinguishable from every other
+    // built-in.
+    const out = planner.plan(withBuiltins(['sqlite', 'crypto']));
+    expect(out.plan?.runtime.version).toBe('22');
+  });
+
+  it('says so, because the dependency tree resolves against whichever Node runs', () => {
+    const out = planner.plan(withBuiltins(['sqlite']));
+    expect(out.warnings.join(' ')).toMatch(/Running Node 22 rather than 20/);
+    expect(out.warnings.join(' ')).toMatch(/node:sqlite/);
+  });
+
+  it('ignores built-ins that have always existed', () => {
+    const out = planner.plan(withBuiltins(['fs', 'path', 'crypto', 'http']));
+    expect(out.plan?.runtime.version).toBe('20');
+  });
+
+  it('honours a lower bound the manifest declares', () => {
+    const out = planner.plan(
+      node({ express: '^5' }, { start: 'node app.js' }, {
+        packageJson: {
+          name: 'x', scripts: { start: 'node app.js' }, dependencies: { express: '^5' },
+          devDependencies: {}, engineNode: '>=22',
+        },
+      }),
+    );
+    expect(out.plan?.runtime.version).toBe('22');
+  });
+
+  it('does not climb past a version it can satisfy', () => {
+    // `>=18` is satisfied by 20, and running 22 instead would be a change nobody asked
+    // for against a dependency tree resolved for something older.
+    const out = planner.plan(
+      node({ express: '^4' }, { start: 'node app.js' }, {
+        packageJson: {
+          name: 'x', scripts: { start: 'node app.js' }, dependencies: { express: '^4' },
+          devDependencies: {}, engineNode: '>=18',
+        },
+      }),
+    );
+    expect(out.plan?.runtime.version).toBe('20');
+  });
+
+  it('falls back to the default when nothing approved is high enough', () => {
+    // Pretending to satisfy a floor we cannot reach would replace one honest error with
+    // a confusing one; the failure names what is missing instead.
+    const out = planner.plan(
+      node({ express: '^5' }, { start: 'node app.js' }, {
+        packageJson: {
+          name: 'x', scripts: { start: 'node app.js' }, dependencies: { express: '^5' },
+          devDependencies: {}, engineNode: '>=99',
+        },
+      }),
+    );
+    expect(out.plan?.runtime.version).toBe('20');
+    expect(out.warnings.join(' ')).toMatch(/Repository requests Node/);
   });
 });

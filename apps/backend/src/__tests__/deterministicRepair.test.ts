@@ -358,3 +358,132 @@ describe('a pin with no wheel for this interpreter', () => {
     expect(out?.plan.installCommand).toBe('pip install psycopg2-binary fastapi');
   });
 });
+
+describe('a package the error names, missing from a list we composed', () => {
+  const composed = (installCommand: string) => plan({ installCommand });
+
+  it('adds the package a library says it needs', () => {
+    // Nothing in a FastAPI project imports python-multipart, so an install list built
+    // from its imports cannot contain it — and the first form route raises a sentence
+    // naming the package. A model was asked to interpret that.
+    const out = attempt({
+      plan: composed('pip install fastapi uvicorn'),
+      code: FailureCode.START_COMMAND_FAILED,
+      logs: 'RuntimeError: Form data requires "python-multipart" to be installed.',
+    });
+    expect(out?.plan.installCommand).toBe('pip install fastapi uvicorn python-multipart');
+    expect(out?.record.evidence.join(' ')).toMatch(/python-multipart/);
+  });
+
+  it('translates an import name into the distribution that provides it', () => {
+    const out = attempt({
+      plan: composed('pip install flask'),
+      code: FailureCode.START_COMMAND_FAILED,
+      logs: "ModuleNotFoundError: No module named 'cv2'",
+    });
+    expect(out?.plan.installCommand).toBe('pip install flask opencv-python');
+  });
+
+  it('never proposes installing the standard library', () => {
+    // `pip install imp` does not exist, and proposing it turns one honest failure into
+    // two. A module the standard library removed is a runtime-version problem.
+    const out = attempt({
+      plan: composed('pip install flask'),
+      code: FailureCode.START_COMMAND_FAILED,
+      logs: "ModuleNotFoundError: No module named 'imp'",
+    });
+    expect(out).toBeNull();
+  });
+
+  it('leaves a requirements file alone', () => {
+    // There the repository declared the set, and a missing entry is the repository's to
+    // fix rather than a gap in a guess DevLaunch made.
+    const out = attempt({
+      plan: composed('pip install -r requirements.txt'),
+      code: FailureCode.START_COMMAND_FAILED,
+      logs: 'RuntimeError: Form data requires "python-multipart" to be installed.',
+    });
+    expect(out).toBeNull();
+  });
+
+  it('does not add a package that is already being installed', () => {
+    // Re-adding it would produce a plan identical in effect and spend an attempt.
+    const out = attempt({
+      plan: composed('pip install fastapi python-multipart'),
+      code: FailureCode.START_COMMAND_FAILED,
+      logs: 'RuntimeError: Form data requires "python-multipart" to be installed.',
+    });
+    expect(out).toBeNull();
+  });
+});
+
+describe('a runtime too old for what the application imports', () => {
+  const nodePlan = (version: string) =>
+    RunPlanSchema.parse({ ...plan(), runtime: { language: 'node', version } });
+
+  it('moves to the next approved version', () => {
+    // The planner already chooses from what the repository declares, so reaching here
+    // means the declaration was missing or was one it does not recognise. The error names
+    // the module and the allowlist names the versions; moving between them is arithmetic.
+    const out = attempt({
+      plan: nodePlan('20'),
+      code: FailureCode.WRONG_RUNTIME_VERSION,
+      logs: 'Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite',
+    });
+    expect(out?.plan.runtime.version).toBe('22');
+    expect(out?.record.evidence.join(' ')).toMatch(/node:sqlite/);
+  });
+
+  it('stops when the plan is already on the newest approved version', () => {
+    // The honest answer: the failure stands and its remedy names what is missing.
+    const out = attempt({
+      plan: nodePlan('22'),
+      code: FailureCode.WRONG_RUNTIME_VERSION,
+      logs: 'Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:whatever',
+    });
+    expect(out).toBeNull();
+  });
+
+  it('does not move a language with only one approved version', () => {
+    const out = attempt({
+      plan: RunPlanSchema.parse({ ...plan(), runtime: { language: 'python', version: '3.12' } }),
+      code: FailureCode.WRONG_RUNTIME_VERSION,
+      logs: 'ModuleNotFoundError: No module named \'imp\'',
+    });
+    expect(out).toBeNull();
+  });
+});
+
+describe('choosing the next approved runtime', () => {
+  /** A list longer than the allowlist, where "nearest above" and "newest" differ. */
+  const four = [18, 20, 22, 24].map((v) => ({ language: 'node', version: String(v) }));
+
+  it('takes the nearest version above, not the newest', async () => {
+    // Against the real allowlist these are the same answer, so this is stated against a
+    // list the allowlist may grow into. "Newest" would skip the version in between —
+    // one nobody chose, running a dependency tree resolved for something else.
+    const { nextApprovedVersion } = await import('../services/planning/DeterministicRepair.js');
+    expect(nextApprovedVersion('node', '18', four)).toBe('20');
+    expect(nextApprovedVersion('node', '20', four)).toBe('22');
+  });
+
+  it('sorts numerically, not as text', async () => {
+    // `['18','20','22','24'].sort()` is lucky; add 8 or 100 and string order lies.
+    const { nextApprovedVersion } = await import('../services/planning/DeterministicRepair.js');
+    const odd = [8, 20, 100].map((v) => ({ language: 'node', version: String(v) }));
+    expect(nextApprovedVersion('node', '8', odd)).toBe('20');
+    expect(nextApprovedVersion('node', '20', odd)).toBe('100');
+  });
+
+  it('returns nothing when the version in use is already the highest', async () => {
+    const { nextApprovedVersion } = await import('../services/planning/DeterministicRepair.js');
+    expect(nextApprovedVersion('node', '24', four)).toBeNull();
+    expect(nextApprovedVersion('node', '22')).toBeNull();
+    expect(nextApprovedVersion('python', '3.12')).toBeNull();
+  });
+
+  it('returns nothing for a language it does not ship', async () => {
+    const { nextApprovedVersion } = await import('../services/planning/DeterministicRepair.js');
+    expect(nextApprovedVersion('ruby', '3')).toBeNull();
+  });
+});

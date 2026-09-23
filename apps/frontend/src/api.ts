@@ -10,6 +10,15 @@ import type {
   WorkspacePackage,
 } from '@devlaunch/shared';
 
+/** One edit DevLaunch made to the repository it cloned, and why. */
+export interface SourceRewrite {
+  /** Path relative to the repository root. */
+  file: string;
+  from: string;
+  to: string;
+  reason: string;
+}
+
 export interface PendingInput {
   requiredEnv: RequiredEnvVar[];
   choices?: WorkspacePackage[];
@@ -27,6 +36,8 @@ export interface SessionView {
   failure?: FailureDetail;
   /** What automated repair changed, why, and whether a rule or a model decided it. */
   repairs?: RepairRecord[];
+  /** Edits DevLaunch made to the clone, when DEVLAUNCH_REWRITE_SOURCE is set. */
+  rewrites?: SourceRewrite[];
   routes?: HttpRoute[];
   readiness?: ReadinessView;
   endedReason?: string;

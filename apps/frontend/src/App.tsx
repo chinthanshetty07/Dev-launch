@@ -13,6 +13,7 @@ import { InputGate } from './components/InputGate';
 import { FailurePanel } from './components/FailurePanel';
 import { LogTerminal } from './components/LogTerminal';
 import { Collapsible } from './components/Collapsible';
+import { RewritePanel } from './components/RewritePanel';
 
 const RUNNING = [
   'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING',
@@ -223,6 +224,11 @@ export default function App() {
         )}
         {state === 'COMPLETED' && <CompletedHero reason={session?.endedReason} />}
         {state === 'FAILED' && <FailurePanel failure={session?.failure} repairs={session?.repairs} />}
+
+        {/* Above the plan and above the log, whatever the session is doing. Editing
+            someone's repository is a real liberty, and the only thing that makes it a
+            reasonable one is that it is impossible to miss. */}
+        <RewritePanel rewrites={session?.rewrites} />
 
         {state === 'READY' && (
           <EndpointsPanel url={session?.url} routes={session?.routes} readiness={session?.readiness} />

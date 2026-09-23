@@ -7,8 +7,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "==> Building devlaunch/node:20"
-docker build -f docker/runner/node20.Dockerfile -t devlaunch/node:20 docker/runner
+# Two Node versions, and the reason is a repository rather than a preference: `node:sqlite`
+# arrived in 22.5, so a project importing it cannot run on 20 at all. Everything else
+# about the two images is identical, which is why there is one Dockerfile.
+for v in 20 22; do
+  echo "==> Building devlaunch/node:$v"
+  docker build --build-arg "NODE_VERSION=$v" -f docker/runner/node.Dockerfile -t "devlaunch/node:$v" docker/runner
+done
 
 echo "==> Building devlaunch/python:3.12"
 docker build -f docker/runner/python312.Dockerfile -t devlaunch/python:3.12 docker/runner

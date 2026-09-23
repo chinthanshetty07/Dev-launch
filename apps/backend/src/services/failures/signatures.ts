@@ -153,6 +153,25 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
 
   // --- runtime version -------------------------------------------------------
   {
+    // Thrown by the module loader, not by a dependency: the name looks like every other
+    // built-in and the failure surfaces as "nothing is listening", because a watcher
+    // keeps the container alive after the crash. One real repository imports
+    // `node:sqlite`, which arrived in 22.5, declares no `engines` field at all, and was
+    // reported as a port problem while a model rewrote its start command.
+    id: 'unknown-builtin-module',
+    code: FailureCode.WRONG_RUNTIME_VERSION,
+    patterns: [
+      /ERR_UNKNOWN_BUILTIN_MODULE/,
+      /No such built-in module: node:([a-z_]+)/,
+    ],
+    remedy:
+      'The application imports a Node built-in module that the running version does not ' +
+      'have. DevLaunch picks the version from the repository — an `engines.node` range, ' +
+      'or a `node:` import it recognises — so a built-in newer than any approved image ' +
+      'is the one case it cannot satisfy.',
+    describe: (e) => `This Node version has no such built-in module: ${e.trim().slice(0, 160)}`,
+  },
+  {
     id: 'wrong-runtime-version',
     code: FailureCode.WRONG_RUNTIME_VERSION,
     patterns: [
@@ -164,8 +183,8 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       /This package requires Node/i,
     ],
     remedy:
-      'The repository asks for a runtime version DevLaunch does not provide. Only ' +
-      'Node 20 and Python 3.12 are available.',
+      'The repository asks for a runtime version DevLaunch does not provide. Node 20, ' +
+      'Node 22 and Python 3.12 are available.',
     describe: () => 'The project requires a runtime version that is not available.',
   },
 
@@ -261,7 +280,7 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     patterns: [/\/bin\/sh: \d*:? ?python: not found/, /(?:^|\s)python: not found/],
     remedy:
       'A native module\'s build script runs `python` unqualified. The runner image now ' +
-      'ships python-is-python3; rebuild it (docker/runner/node20.Dockerfile).',
+      'ships python-is-python3; rebuild it (docker/runner/node.Dockerfile).',
     describe: () => 'A native module\'s build script needs `python` on PATH, and only `python3` was present.',
   },
   {

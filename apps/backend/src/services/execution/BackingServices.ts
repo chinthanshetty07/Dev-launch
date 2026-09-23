@@ -210,7 +210,12 @@ export function connectionEnv(
     const spec = BACKING_SPECS[need.kind];
     if (!spec) continue;
     const url = connectionUrl(need, database);
-    const keys = new Set(need.urlEnvKeys ?? [need.urlEnvKey ?? spec.defaultEnvKey]);
+    // An *empty* list is not a declaration, it is the absence of one, and `?? ` does not
+    // catch it. A database detected only from a hardcoded URL in the source declares no
+    // variable at all — correctly, because the application reads none — and it was
+    // provisioned, healthy, and injected under no name whatsoever.
+    const declared = need.urlEnvKeys?.length ? need.urlEnvKeys : undefined;
+    const keys = new Set(declared ?? [need.urlEnvKey ?? spec.defaultEnvKey]);
     for (const key of keys) out.push({ key, value: url, required: false });
   }
   return out;

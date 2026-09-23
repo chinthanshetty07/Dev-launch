@@ -68,6 +68,17 @@ export interface RepositoryMetadata {
    */
   declaredPort?: number;
   /**
+   * Node built-in modules the source imports by their `node:` prefix.
+   *
+   * A repository's most reliable statement about the runtime it needs. `engines.node` is
+   * a declaration many projects never make — the one that prompted this declares none —
+   * while `import { DatabaseSync } from 'node:sqlite'` is made by necessity, and
+   * `node:sqlite` did not exist before 22.5. Without it the run fails inside the module
+   * loader with `ERR_UNKNOWN_BUILTIN_MODULE`, from a name indistinguishable from every
+   * other built-in.
+   */
+  nodeBuiltins?: string[];
+  /**
    * A loopback bind address written into the source as a literal.
    *
    * No environment variable, flag or plan can change `app.listen(port, 'localhost')`.

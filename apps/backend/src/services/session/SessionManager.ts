@@ -42,6 +42,11 @@ import type { AIRepair } from '../ai/AIRepair.js';
 import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
 import { repairPolicyFor } from '../failures/RepairPolicy.js';
 import { tryDeterministicRepair } from '../planning/DeterministicRepair.js';
+import {
+  applySourceRewrites,
+  databaseUrlRewrite,
+  type SourceRewrite,
+} from '../execution/SourceRewrite.js';
 
 /**
  * Failures a different plan could plausibly fix.
@@ -105,6 +110,16 @@ export interface Session {
    */
   backing?: ProvisionResult;
   cleanupRepo?: () => Promise<void>;
+  /**
+   * Whether `sourceDir` is a directory DevLaunch created and will delete.
+   *
+   * True only for a clone. A `sourceDir` launch runs against a directory that already
+   * existed — a fixture in this repository, or a path someone gave us — and that is
+   * somebody's working copy, not ours. Editing it is the exact thing every message about
+   * rewriting promises does not happen, and a live run proved the promise was false: the
+   * fixture's own `vite.config.js` came back from a test run rewritten and staged.
+   */
+  ownsSource?: boolean;
 
   /** Plans already tried by the repair loop, so an attempt cannot repeat one. */
   repairAttempts?: RunPlan[];
@@ -112,6 +127,14 @@ export interface Session {
   repairs?: RepairRecord[];
   /** What the readiness check saw at the health path, once ready. */
   readiness?: ReadinessView;
+  /**
+   * Edits made to the clone, when `DEVLAUNCH_REWRITE_SOURCE` is set.
+   *
+   * Shown, always. A tool that changes code silently is one whose output cannot be
+   * trusted, and the whole argument for allowing this at all is that the change is
+   * small, named, and visible.
+   */
+  rewrites?: SourceRewrite[];
   /** Model calls spent on repair, against the per-failure budget. */
   aiRepairCalls?: number;
   /** The model's own account of what it inferred. Displayed, never acted on. */
@@ -301,6 +324,8 @@ export class SessionManager extends EventEmitter {
     this.setState(session, ExecutionState.CLONING);
     const clone = await this.deps.git.clone(repoUrl);
     session.cleanupRepo = clone.cleanup;
+    // Cloned, so this directory is ours to edit if the rewrite flag says so.
+    session.ownsSource = true;
     session.logs.buffer.push(
       'stdout',
       `Cloned ${clone.url} (${clone.fileCount} files, ${Math.round(clone.sizeBytes / 1024)} KB)`,
@@ -541,7 +566,11 @@ export class SessionManager extends EventEmitter {
       backing: session.metadata?.backing,
       repoName: session.metadata?.packageJson?.name ?? repoNameFromUrl(session.repoUrl),
       discovery: discoveryByService(session, project),
+      // Only a clone is ours to edit. See `Session.ownsSource`.
+      mayRewriteSource: session.ownsSource === true,
     });
+
+    if (session.run.rewrites?.length) session.rewrites = session.run.rewrites;
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
     await this.verifyProject(session, executor, sourceDir, req);
@@ -718,6 +747,7 @@ export class SessionManager extends EventEmitter {
     // synchronous, took no time at all, and had already finished.
     this.setState(session, ExecutionState.STARTING);
     const resolved = await this.provisionBacking(session);
+    await this.rewriteHardcodedHosts(session, sourceDir);
     const handle = await this.exec.launch({
       sessionId: session.id,
       plan: resolved,
@@ -811,6 +841,50 @@ export class SessionManager extends EventEmitter {
     session.failure = kept && attempts > 0 ? { ...kept, repairAttemptsAfter: attempts } : kept;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
+  }
+
+  /**
+   * Point a loopback literal in the source at something the container can reach.
+   *
+   * Off unless `DEVLAUNCH_REWRITE_SOURCE` is set; see `SourceRewrite` for why the
+   * default is off and why these two cases are the exception. Runs after provisioning,
+   * because the replacement is the connection string of a server that has to exist
+   * first, and before launch, because the clone is copied into the container there.
+   *
+   * Once per session. A repair re-enters `startAndVerify`, and the literal is already
+   * gone by then — `applySourceRewrites` would find nothing and do nothing, but saying
+   * so twice in the log reads like it happened twice.
+   */
+  private async rewriteHardcodedHosts(session: Session, sourceDir: string): Promise<void> {
+    if (!config.rewriteSource || session.rewrites) return;
+    if (!session.ownsSource) {
+      session.logs.buffer.push(
+        'stderr',
+        'Not rewriting the source: this session runs from a directory that already ' +
+          'existed rather than from a clone, and that is your working copy, not ours.',
+      );
+      return;
+    }
+    const url = (session.planMetadata ?? session.metadata)?.python?.hardcodedDatabaseUrl;
+    const provisioned = session.backing?.injected?.[0]?.value;
+    if (!url || !provisioned) return;
+
+    const request = databaseUrlRewrite(
+      joinRelative(session.plan?.workingDirectory, url.file),
+      url.url,
+      provisioned,
+    );
+    if (!request) return;
+
+    const applied = await applySourceRewrites(sourceDir, [request]);
+    session.rewrites = applied;
+    for (const change of applied) {
+      session.logs.buffer.push(
+        'stdout',
+        `Rewrote ${change.file}: ${redactUrl(change.from)} → ${redactUrl(change.to)} — ${change.reason}. ` +
+          'Your own checkout is untouched; this edit is in the clone DevLaunch runs from.',
+      );
+    }
   }
 
   /**
@@ -1455,17 +1529,23 @@ export class SessionManager extends EventEmitter {
 function discoveryByService(
   session: Session,
   project: ProjectPlan,
-): { callsOrigins: Record<string, string[]>; envKeys: Record<string, string[]> } {
+): {
+  callsOrigins: Record<string, string[]>;
+  envKeys: Record<string, string[]>;
+  devProxies: Record<string, { file: string; target: string }>;
+} {
   const callsOrigins: Record<string, string[]> = {};
   const envKeys: Record<string, string[]> = {};
+  const devProxies: Record<string, { file: string; target: string }> = {};
 
   for (const plan of project.services) {
     const found = session.metadata?.services?.find((c) => c.dir === plan.workingDirectory);
     if (!found) continue;
     if (found.callsOrigins) callsOrigins[plan.name] = found.callsOrigins;
     if (found.envKeys) envKeys[plan.name] = found.envKeys;
+    if (found.devProxy) devProxies[plan.name] = found.devProxy;
   }
-  return { callsOrigins, envKeys };
+  return { callsOrigins, envKeys, devProxies };
 }
 
 /** The repository's own name, for naming its database after it rather than after nothing. */
@@ -1508,4 +1588,21 @@ function withBindRemedy(
       'environment variable or command-line flag can change it. Edit that line to bind ' +
       '0.0.0.0 — inside a container it is the only address Docker can forward to.',
   };
+}
+
+/** A path inside the clone, given a plan that may run in a subdirectory of it. */
+function joinRelative(workingDirectory: string | undefined, file: string): string {
+  const dir = workingDirectory && workingDirectory !== '.' ? `${workingDirectory}/` : '';
+  return `${dir}${file}`;
+}
+
+/**
+ * A connection string with its password removed.
+ *
+ * The log is shown on screen and copied into bug reports. DevLaunch's own password is
+ * not a secret, but the one in the repository's literal may be a real credential its
+ * author pasted, and echoing it back is not this tool's decision to make.
+ */
+function redactUrl(url: string): string {
+  return url.replace(/^([a-z0-9+.-]+:\/\/[^:/@]+):[^@]*@/i, '$1:***@');
 }

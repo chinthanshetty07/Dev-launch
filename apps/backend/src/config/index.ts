@@ -28,6 +28,11 @@ export function resolveDockerSocket(): string {
   return found;
 }
 
+/** Any of the spellings a person reasonably expects to work. */
+function boolProperty(name: string): boolean {
+  return /^(?:1|true|yes|on)$/i.test(process.env[name] ?? '');
+}
+
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -125,6 +130,24 @@ export const config = {
      */
     maxRepairAttempts: intEnv('DEVLAUNCH_MAX_REPAIR_ATTEMPTS', 2),
   },
+
+  /**
+   * Whether DevLaunch may edit the repository it cloned.
+   *
+   * Off by default, and the default is the point. "Run this project" and "change this
+   * project" are different promises, and a tool that quietly does the second while
+   * claiming the first is one whose output you cannot trust. Without this, a loopback
+   * address written into a config file is *found and named* — the file, the line, the
+   * replacement — which costs nothing and is always right.
+   *
+   * It does not, however, run the project. Two shapes cannot be run any other way: a dev
+   * server proxying to `http://localhost:8000` (resolved inside the frontend's own
+   * container, where localhost is the frontend), and a Python database URL hardcoded to
+   * localhost (which reads no variable, so there is nothing to inject). With this on,
+   * those literals are rewritten in the clone — a temporary directory DevLaunch owns,
+   * never anything the user has checked out — and every edit is logged in full.
+   */
+  rewriteSource: boolProperty('DEVLAUNCH_REWRITE_SOURCE'),
 
   /**
    * Two independent clocks. The original plan used one ~10 min budget, which would

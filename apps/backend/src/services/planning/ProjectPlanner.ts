@@ -8,6 +8,7 @@ import { ProjectPlanSchema } from '@devlaunch/shared';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from './RuleBasedPlanner.js';
 import { workspaceInstall } from '../analysis/ServiceDiscovery.js';
+import { config } from '../../config/index.js';
 
 export interface ProjectPlanningOutcome {
   plan: ProjectPlan | null;
@@ -73,8 +74,11 @@ export class ProjectPlanner {
       // Named before the run, because it is the one way a project can reach READY and
       // still answer nothing. The dev server resolves this target itself, inside this
       // service's own container, so `localhost` is this service — not the API beside it.
-      // DevLaunch does not edit a repository to make it run, so the honest thing is to
-      // say exactly which line to change and what to change it to.
+      //
+      // Named either way. With DEVLAUNCH_REWRITE_SOURCE off — the default — this is all
+      // DevLaunch does about it, and saying which line to change is the honest answer.
+      // With it on the line is changed in the clone, and saying so is still the honest
+      // answer: a tool that edits code silently is one you cannot trust the output of.
       if (candidate.devProxy) {
         const api = candidates.find((c) => c.role === 'api' && c !== candidate);
         const suggestion = api
@@ -84,7 +88,12 @@ export class ProjectPlanner {
           `${candidate.name}: ${candidate.devProxy.file} proxies to ` +
             `${candidate.devProxy.target}, which inside this container is this service ` +
             `itself — every request the page makes will fail. Point it at ${suggestion} ` +
-            'instead; services reach each other by name here.',
+            'instead; services reach each other by name here. ' +
+            (config.rewriteSource
+              ? 'DEVLAUNCH_REWRITE_SOURCE is set, so DevLaunch will make that change in ' +
+                'its own clone before starting; your checkout is untouched.'
+              : 'Set DEVLAUNCH_REWRITE_SOURCE=1 to have DevLaunch make that change in its ' +
+                'own clone before starting; your checkout is untouched.'),
         );
       }
 

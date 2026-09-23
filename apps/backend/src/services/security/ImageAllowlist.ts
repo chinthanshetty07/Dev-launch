@@ -27,6 +27,12 @@ export interface ApprovedImage {
  */
 export const APPROVED_IMAGES: Readonly<Record<string, ApprovedImage>> = Object.freeze({
   'devlaunch/node:20': { language: 'node', version: '20' },
+  // 22, because a repository asked for something 20 does not have rather than because
+  // newer is better: `node:sqlite` arrived in 22.5, and a project importing it cannot
+  // run on 20 at all — no plan, no repair and no dependency reaches a built-in module
+  // that is not in the binary. 20 remains the default, since a project that runs on it
+  // runs on the version its author most likely used.
+  'devlaunch/node:22': { language: 'node', version: '22' },
   'devlaunch/python:3.12': { language: 'python', version: '3.12' },
 });
 

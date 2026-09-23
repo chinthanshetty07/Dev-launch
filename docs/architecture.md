@@ -433,3 +433,21 @@ So a named image is tried, and if it does not accept connections the run falls b
 to the pinned image, quoting the container's own last line. Said out loud, because a
 repository that asked for pgvector and quietly got plain Postgres would fail later on its
 first `CREATE EXTENSION` and deserves to know which it got.
+
+## The one thing DevLaunch will change about a repository
+
+See `docs/limitations.md` for the constraints and `SourceRewrite.ts` for the reasoning.
+The short version: `DEVLAUNCH_REWRITE_SOURCE` is off by default because "run this
+project" and "change this project" are different promises, and a tool that quietly does
+the second while claiming the first is one whose output cannot be trusted.
+
+Two details worth knowing if you touch this:
+
+- **The port is rewritten along with the host.** The port in the literal describes the
+  author's machine. DevLaunch planned the API and knows where it listens, and keeping the
+  literal's number produced `http://backend:5001` against a service on 3000 — the same
+  502 the rewrite exists to prevent, now with a plausible-looking host.
+- **The proxy rewrite happens in the executor, not the planner.** Only there is the API's
+  alias settled: `aliasesFor` declines the plain name when another project already holds
+  it, and pointing a config file at a name this project does not answer to would be worse
+  than leaving it alone.

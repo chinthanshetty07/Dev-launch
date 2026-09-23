@@ -138,3 +138,32 @@ entry files import. The distributions are correct — they are what the source s
 — but nothing constrains their versions, because the repository constrained nothing. A
 project written against an older major version of a library it does not pin will install
 the current one and may fail in its own code. The plan says so in a warning.
+
+## DevLaunch edits a repository only when told to, and only its own clone
+
+`DEVLAUNCH_REWRITE_SOURCE` is off by default. With it off, a loopback address written
+into a repository's source is *found and named* — the file, the line, the replacement —
+and the run proceeds or fails as the repository dictates. That is always right and costs
+nothing.
+
+It does not, however, run the project. Two shapes cannot be run any other way, because
+the address is a literal and no environment variable, flag or plan reaches it:
+
+- a dev server proxying to `http://localhost:8000`, which it resolves inside its own
+  container, where `localhost` is the frontend rather than the API beside it;
+- a Python database URL hardcoded to `localhost`, which reads no variable at all.
+
+With the flag on, those two literals are rewritten. The constraints are the point:
+
+- **Only a clone.** A session launched from a `sourceDir` — a fixture, or a path someone
+  supplied — runs against a directory that already existed, and that is somebody's
+  working copy. Nothing is written there, flag or no flag. This was not a hypothetical:
+  a live run rewrote this repository's own fixture before the check existed.
+- **Only files analysis identified**, never a tree-wide search and replace.
+- **Only the exact literal that was found**, once, and only if it is still present.
+- **Only a loopback host.** A target already naming a reachable host is left alone.
+- **Paths are resolved through `realpath`**, so a symlink in the repository cannot reach
+  outside the clone.
+- **Every edit is shown** — in the log, and in a panel above the plan and the output, with
+  both sides of the change and the reason. Passwords are redacted from the log line,
+  because a credential in the literal may be a real one its author pasted.

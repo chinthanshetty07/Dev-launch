@@ -102,8 +102,16 @@ export class FailureClassifier {
   }
 }
 
-/** `RuntimeError: ...`, `sqlalchemy.exc.OperationalError: ...`, `TypeError: ...`. */
-const EXCEPTION_LINE = /^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Failure)\b[^\s]*:\s\S/;
+/**
+ * `RuntimeError: ...`, `sqlalchemy.exc.OperationalError: ...`, `TypeError: ...`, and
+ * Node's bracketed form `Error [ERR_UNKNOWN_BUILTIN_MODULE]: ...`.
+ *
+ * The bracket matters: without it the best line in a Node crash was skipped and the
+ * evidence became `Failed running 'app.js'` — the watcher's epilogue, four lines below
+ * the sentence naming the module that does not exist.
+ */
+const EXCEPTION_LINE =
+  /^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Failure)\b(?:\s*\[[^\]]+\])?[^\s]*:\s\S/;
 
 /**
  * The last line worth showing a person.

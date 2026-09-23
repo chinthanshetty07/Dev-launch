@@ -517,3 +517,49 @@ project rather than having skipped a step.
 
 A schema script the repository names outright still wins: it knows this repository, where
 `manage.py migrate` knows Django.
+
+## Two Node versions, chosen from evidence
+
+DevLaunch ships Node 20 and Node 22. 20 is the default, and that is a decision rather
+than an accident: a project that runs on 20 runs on the version its author most likely
+used, and a newer runtime is a change — the dependency tree resolves against whichever
+Node runs.
+
+22 exists because a repository asked for something 20 does not have. `node:sqlite`
+arrived in 22.5, and a project importing it cannot run on 20 at all: no plan, no repair
+and no dependency reaches a built-in module that is not in the binary. The failure is
+not a dependency error a person can act on. It is `ERR_UNKNOWN_BUILTIN_MODULE`, thrown
+inside the module loader, from a name that looks like every other built-in — and because
+`node --watch` keeps the container alive after the crash, it surfaced as "nothing is
+listening on port 3000" while a model rewrote the start command.
+
+The version is chosen from two kinds of evidence, and the stronger one is not the
+manifest:
+
+- **A `node:` import.** `engines.node` is a declaration many projects never make — the one
+  that prompted this declares none — while `import { DatabaseSync } from 'node:sqlite'`
+  is made by necessity. Only the prefixed form is read: `node:sqlite` cannot be anything
+  but the built-in, where a bare `sqlite` could be any package on npm.
+- **An `engines.node` lower bound**, and only one an approved image can satisfy. An upper
+  bound is reported as a warning instead; silently running a version the repository
+  excluded would be worse than running the default and saying so.
+
+The lowest approved version that satisfies the floor wins, and the choice is said out
+loud whenever it is not the default. When nothing approved is high enough, the default
+runs and the failure names what is missing — pretending to satisfy a floor we cannot
+reach would replace one honest error with a confusing one.
+
+One Dockerfile builds both, parameterised by `NODE_VERSION`. Everything in it is a
+property of DevLaunch's sandbox rather than of a Node release, and the reasoning in its
+comments is the part that must not be duplicated.
+
+### And so a version mismatch became repairable
+
+`WRONG_RUNTIME_VERSION` was non-repairable *because* the allowlist carried one image per
+language, with a test tying the policy to that fact and promising that approving a second
+version would change it. It did. A rule now moves `runtime.version` to the nearest
+approved version above the one that failed.
+
+The model budget stays at zero, and that is not a matter of degree: no plan a model
+writes can conjure an image that is not on the allowlist, so asking it spends a call to
+be told what the allowlist already says.

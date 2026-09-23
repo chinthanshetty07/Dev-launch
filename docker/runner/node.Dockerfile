@@ -1,6 +1,11 @@
 # DevLaunch Node runner.
 #
-# Built once and allowlisted; never built per run. Two things the stock node:20-slim
+# One file, built once per approved version. Parameterised rather than copied because
+# everything below is a property of DevLaunch's sandbox rather than of a Node release,
+# and two copies of it would drift — the reasoning in these comments is the part that
+# must not be duplicated.
+#
+# Built once and allowlisted; never built per run. Three things the stock node:N-slim
 # image cannot give us:
 #
 # 1. /workspace and /devlaunch must already exist and be owned by the non-root user.
@@ -17,7 +22,8 @@
 #    `python` from a Makefile, and without the alias the compile dies with
 #    `/bin/sh: 1: python: not found` — exit 127, after a successful toolchain check —
 #    which reads as a missing system library and is nothing of the kind.
-FROM node:20-slim
+ARG NODE_VERSION=20
+FROM node:${NODE_VERSION}-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

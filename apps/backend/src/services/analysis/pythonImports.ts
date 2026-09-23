@@ -46,6 +46,15 @@ const STDLIB = new Set([
   // Not stdlib, but never installed: pip ships with the interpreter and setuptools is
   // a build dependency rather than something an application declares.
   'pip', 'setuptools', 'pkg_resources', '__future__',
+  // Removed from the standard library, most of them in 3.12. They are listed here for
+  // the opposite reason to the rest: they are exactly the names that turn up in
+  // `ModuleNotFoundError`, and `pip install imp` does not exist. Some have third-party
+  // backports, and installing one silently would be a guess — a dependency written
+  // against a Python that still had these is a runtime-version problem, which is what
+  // the `removed-stdlib-module` signature says it is.
+  'imp', 'distutils', 'asynchat', 'asyncore', 'smtpd', 'cgi', 'cgitb', 'telnetlib',
+  'nntplib', 'imghdr', 'sndhdr', 'chunk', 'crypt', 'mailcap', 'msilib', 'nis',
+  'ossaudiodev', 'pipes', 'spwd', 'sunau', 'uu', 'xdrlib', 'audioop', 'aifc',
 ]);
 
 /**
@@ -80,6 +89,19 @@ const DISTRIBUTION_FOR: Readonly<Record<string, string>> = Object.freeze({
   docx: 'python-docx',
   fitz: 'pymupdf',
 });
+
+/**
+ * The distribution that provides an importable module, when the two differ.
+ *
+ * Exported so repair can translate `No module named 'cv2'` into something pip can
+ * actually fetch. Returns the module name itself where PyPI's name matches, and nothing
+ * at all for the standard library — `pip install imp` does not exist, and proposing it
+ * would turn one honest failure into two.
+ */
+export function distributionForModule(module: string): string | null {
+  if (STDLIB.has(module)) return null;
+  return DISTRIBUTION_FOR[module] ?? module;
+}
 
 /**
  * Third-party distributions a source file declares it needs, in import order.

@@ -15,6 +15,7 @@ import {
   bindingArgs,
   type NodeFramework,
 } from './frameworks.js';
+import { config } from '../../config/index.js';
 
 export interface PlanningOutcome {
   plan: RunPlan | null;
@@ -36,9 +37,30 @@ export interface PlanningOutcome {
   warnings: string[];
 }
 
-/** Only image we have per language; recorded so a mismatch surfaces as a warning. */
-const NODE_IMAGE_VERSION = '20';
+/**
+ * Node versions DevLaunch ships, oldest first.
+ *
+ * 20 is the default because a project that runs on it runs on the version its author
+ * most likely used, and a newer runtime is a change rather than an improvement. 22
+ * exists for repositories that cannot run on 20 at all — see `nodeVersionFor`.
+ */
+const NODE_IMAGE_VERSIONS = ['20', '22'] as const;
+const NODE_IMAGE_VERSION = NODE_IMAGE_VERSIONS[0];
 const PYTHON_IMAGE_VERSION = '3.12';
+
+/**
+ * Built-in modules that do not exist in every Node DevLaunch ships, and when they arrived.
+ *
+ * A repository importing one of these has stated its minimum more precisely than any
+ * `engines` field would, and more reliably: this one declares no engines at all, and its
+ * `import { DatabaseSync } from 'node:sqlite'` is the only thing that says it needs 22.
+ * The failure without it is not a dependency error a person can act on — it is
+ * `ERR_UNKNOWN_BUILTIN_MODULE`, thrown by the loader, from a module name that looks like
+ * every other built-in.
+ */
+const BUILTIN_SINCE: Readonly<Record<string, number>> = Object.freeze({
+  sqlite: 22,
+});
 
 function detectPackageManager(lockfiles: string[]): 'npm' | 'yarn' | 'pnpm' {
   if (lockfiles.includes('pnpm-lock.yaml')) return 'pnpm';
@@ -60,10 +82,12 @@ function installFor(pm: 'npm' | 'yarn' | 'pnpm'): string {
  * A heuristic, deliberately: implementing semver range logic for one warning is not
  * worth a dependency. It errs toward silence, except where a bound is unambiguous.
  */
-function nodeVersionWarning(engineNode: string | undefined): string | undefined {
+function nodeVersionWarning(engineNode: string | undefined, ourVersion: string): string | undefined {
   if (!engineNode) return undefined;
-  const ours = Number(NODE_IMAGE_VERSION);
-  const warn = `Repository requests Node "${engineNode}" but only ${NODE_IMAGE_VERSION} is available.`;
+  const ours = Number(ourVersion);
+  const warn =
+    `Repository requests Node "${engineNode}"; running ${ourVersion}, the closest of ` +
+    `${NODE_IMAGE_VERSIONS.join(' and ')}.`;
 
   // An upper bound below our version excludes us outright. Checked first, because a
   // range like ">=14 <=16" also contains a lower bound we would otherwise accept.
@@ -98,6 +122,42 @@ function looksLikeALibrary(pkg: PackageJsonSummary): boolean {
   if (startsSomething) return false;
   if (Object.keys(pkg.dependencies).length > 0) return false;
   return /^(?:\.\/)?(?:dist|lib|build|es|esm|cjs|out)\//.test(pkg.main ?? '');
+}
+
+/**
+ * Which approved Node version to run this repository on.
+ *
+ * Two kinds of evidence, and the stronger one is not the manifest. `engines.node` is a
+ * declaration a lot of repositories simply do not make; an `import` of a built-in module
+ * is one every repository that needs it makes by necessity. So a newer built-in raises
+ * the floor outright, and `engines` raises it only when it names a version we have.
+ *
+ * The lowest version that satisfies the evidence wins. Running everything on the newest
+ * available Node would be a different tool: a project pinned to 20 by its author is a
+ * project whose dependencies were resolved against 20.
+ */
+export function nodeVersionFor(meta: RepositoryMetadata): string {
+  let floor = Number(NODE_IMAGE_VERSION);
+
+  for (const builtin of meta.nodeBuiltins ?? []) {
+    const since = BUILTIN_SINCE[builtin];
+    if (since !== undefined) floor = Math.max(floor, since);
+  }
+
+  const engine = meta.packageJson?.engineNode;
+  if (engine) {
+    // Only a lower bound, and only one we can actually satisfy. An upper bound is what
+    // `nodeVersionWarning` reports on; silently running a version the repository
+    // excluded would be worse than running the default and saying so.
+    const lower = [...engine.matchAll(/(?:>=?|\^|~)\s*(\d+)/g)].map((m) => Number(m[1]));
+    const wanted = Math.max(...lower, 0);
+    if (Number.isFinite(wanted)) floor = Math.max(floor, wanted);
+  }
+
+  const match = NODE_IMAGE_VERSIONS.find((v) => Number(v) >= floor);
+  // Nothing high enough: the default, and the failure names what is missing. Pretending
+  // to satisfy a floor we cannot reach would replace one honest error with a confusing one.
+  return match ?? NODE_IMAGE_VERSION;
 }
 
 function pickScript(pkg: PackageJsonSummary, candidates: string[]): string | undefined {
@@ -264,8 +324,20 @@ export class RuleBasedPlanner {
     warnings: string[],
   ): PlanningOutcome | null {
     const pm = detectPackageManager(meta.lockfiles);
-    const versionWarning = nodeVersionWarning(pkg.engineNode);
+    const nodeVersion = nodeVersionFor(meta);
+    const versionWarning = nodeVersionWarning(pkg.engineNode, nodeVersion);
     if (versionWarning) warnings.push(versionWarning);
+
+    // Said when it is not the default, because it is a decision rather than a detail:
+    // the dependency tree resolves against whichever Node runs, and a project pinned to
+    // 20 by its author is a project whose packages were chosen for 20.
+    if (nodeVersion !== NODE_IMAGE_VERSION) {
+      const why = (meta.nodeBuiltins ?? []).find((b) => BUILTIN_SINCE[b] !== undefined);
+      warnings.push(
+        `Running Node ${nodeVersion} rather than ${NODE_IMAGE_VERSION}` +
+          (why ? `: this project imports \`node:${why}\`, which ${NODE_IMAGE_VERSION} does not have.` : '.'),
+      );
+    }
 
     // Said before the run rather than after it fails. A literal bind address is the one
     // problem DevLaunch can see coming and can do nothing about, so the earliest useful
@@ -324,7 +396,7 @@ export class RuleBasedPlanner {
         detected: framework.id,
         warnings,
         plan: RunPlanSchema.parse({
-          runtime: { language: 'node', version: NODE_IMAGE_VERSION },
+          runtime: { language: 'node', version: nodeVersion },
           packageManager: pm,
           installCommand: installFor(pm),
           buildCommand: null,
@@ -363,7 +435,7 @@ export class RuleBasedPlanner {
       detected: framework?.id ?? 'node',
       warnings,
       plan: RunPlanSchema.parse({
-        runtime: { language: 'node', version: NODE_IMAGE_VERSION },
+        runtime: { language: 'node', version: nodeVersion },
         packageManager: pm,
         installCommand: installFor(pm),
         // Dev servers build on the fly; a separate build step would only slow start-up.
@@ -443,7 +515,12 @@ export class RuleBasedPlanner {
         `${py.hardcodedDatabaseUrl.file} hardcodes a database URL pointing at localhost ` +
           `(\`${py.hardcodedDatabaseUrl.url.slice(0, 80)}\`). Inside a container that is ` +
           'this application, not a database. Read the URL from an environment variable ' +
-          'and DevLaunch will provision one and fill it in.',
+          'and DevLaunch will provision one and fill it in. ' +
+          (config.rewriteSource
+            ? 'DEVLAUNCH_REWRITE_SOURCE is set, so DevLaunch will point that line at the ' +
+              'database it starts; your checkout is untouched.'
+            : 'Or set DEVLAUNCH_REWRITE_SOURCE=1 to have DevLaunch point that line at the ' +
+              'database it starts; your checkout is untouched.'),
       );
     }
 

@@ -1,6 +1,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import type {
+  BackingService,
   EnvExampleVar,
   HttpRoute,
   PackageJsonSummary,
@@ -19,6 +20,7 @@ import {
   discoverServices,
   findDeclaredPort,
   findHardcodedLoopbackBind,
+  findNodeBuiltins,
   pyprojectDepsBySection,
 } from './ServiceDiscovery.js';
 import { readCompose, type ComposeService, type ComposeSummary } from './ComposeFile.js';
@@ -162,7 +164,7 @@ export class RepositoryAnalyzer {
       ...(await this.readRoutes(base, fileNames, packageJson?.entryFiles ?? [], python?.entryCandidates.map((e) => e.file) ?? [])),
       ...(await this.readBinding(base, packageJson)),
       workspace: await this.readWorkspace(base, packageJson, fileNames, warnings),
-      ...(await this.readServices(base, envRaw ? parseEnvExample(envRaw) : [])),
+      ...(await this.readServices(base, envRaw ? parseEnvExample(envRaw) : [], python)),
       warnings,
     };
   }
@@ -179,7 +181,7 @@ export class RepositoryAnalyzer {
   private async readBinding(
     base: string,
     pkg: PackageJsonSummary | undefined,
-  ): Promise<Pick<RepositoryMetadata, 'declaredPort' | 'hardcodedBind'>> {
+  ): Promise<Pick<RepositoryMetadata, 'declaredPort' | 'hardcodedBind' | 'nodeBuiltins'>> {
     if (!pkg) return {};
     const declaredPort = await findDeclaredPort(base, {
       name: pkg.name,
@@ -187,9 +189,11 @@ export class RepositoryAnalyzer {
       dependencies: pkg.dependencies,
     });
     const hardcodedBind = await findHardcodedLoopbackBind(base);
+    const nodeBuiltins = await findNodeBuiltins(base, pkg.entryFiles ?? [], pkg.main);
     return {
       ...(declaredPort ? { declaredPort } : {}),
       ...(hardcodedBind ? { hardcodedBind } : {}),
+      ...(nodeBuiltins.length ? { nodeBuiltins } : {}),
     };
   }
 
@@ -202,6 +206,7 @@ export class RepositoryAnalyzer {
   private async readServices(
     base: string,
     envExample: EnvExampleVar[],
+    python?: PythonSummary,
   ): Promise<Pick<RepositoryMetadata, 'services' | 'soleService' | 'backing'>> {
     // The compose file first, because it is a declaration rather than an inference: it
     // names the directories, the ports and the database image outright. Convention-based
@@ -225,6 +230,16 @@ export class RepositoryAnalyzer {
     // .env.example with no driver in the manifest still means a database is expected.
     const fromEnv = backingFromEnvKeys(envExample.map((v) => v.key));
     const merged = [...backing];
+
+    // A connection string written into the source is the plainest declaration of all:
+    // `create_engine("postgresql://...")` says this project needs Postgres, whatever its
+    // manifest happens to list. It was the one declaration nothing read, so a repository
+    // whose only mention of a database is that line got none provisioned and failed with
+    // `Connection refused` against a server that was never started.
+    const hardcoded = hardcodedBacking(python?.hardcodedDatabaseUrl?.url);
+    if (hardcoded && !merged.some((b) => b.kind === hardcoded.kind)) {
+      merged.push({ ...hardcoded, neededBy: [] });
+    }
     for (const found of fromEnv) {
       const existing = merged.find((b) => b.kind === found.kind);
       // A variable the repository actually names beats the one the rule guessed.
@@ -762,4 +777,41 @@ function primaryFor(compose: ComposeSummary, dir: string): ComposeService | unde
     sharing.find((c) => c.containerPort !== undefined) ??
     sharing[0]
   );
+}
+
+/**
+ * The database a hardcoded connection string names, by its scheme.
+ *
+ * The URL cannot be used as written — its host is the author's machine — but the scheme
+ * says which server to start, and the driver says which dialect to build the replacement
+ * with.
+ */
+function hardcodedBacking(url: string | undefined): Omit<BackingService, 'neededBy'> | undefined {
+  if (!url) return undefined;
+  const scheme = /^([a-z0-9+]+):\/\//i.exec(url)?.[1]?.toLowerCase();
+  if (!scheme) return undefined;
+
+  const kind = scheme.startsWith('postgres')
+    ? ('postgres' as const)
+    : scheme.startsWith('mysql')
+      ? ('mysql' as const)
+      : scheme.startsWith('mongodb')
+        ? ('mongodb' as const)
+        : scheme.startsWith('redis')
+          ? ('redis' as const)
+          : undefined;
+  if (!kind) return undefined;
+
+  // The dialect names the driver after a `+`, and that is what the replacement URL has
+  // to be written with: `postgresql+asyncpg://` reaches asyncpg and `postgresql://` does
+  // not.
+  const driver = scheme.includes('+') ? scheme.split('+')[1] : undefined;
+  // No `urlEnvKeys`: this application reads no variable, which is the whole problem.
+  // The provisioner falls back to the conventional name for the kind, which costs
+  // nothing unread and is right if the repository also happens to read one.
+  return {
+    kind,
+    evidence: `the source hardcodes a ${kind} URL`,
+    ...(driver ? { driver } : {}),
+  };
 }

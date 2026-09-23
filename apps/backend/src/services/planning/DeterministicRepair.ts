@@ -6,6 +6,8 @@ import {
   type RunPlan,
 } from '@devlaunch/shared';
 import { RunPlanValidator } from './RunPlanValidator.js';
+import { APPROVED_IMAGES } from '../security/ImageAllowlist.js';
+import { distributionForModule } from '../analysis/pythonImports.js';
 
 /**
  * Repairs a rule can make from evidence, before a model is asked anything.
@@ -231,6 +233,44 @@ const RULES: readonly Rule[] = [
     },
   },
 
+  // --- the install list we composed was missing one package, and the error names it ---
+  //
+  // Only a list DevLaunch built itself, from a project's imports, is extended here. That
+  // list is a good prediction and an incomplete one: nothing in a FastAPI project imports
+  // `python-multipart`, and the first request to a form route raises `Form data requires
+  // "python-multipart" to be installed.` A model was asked to interpret that sentence,
+  // which is a sentence naming a package. Where the repository declared its own
+  // dependencies, a missing one is the repository's to fix and not a gap in our guess.
+  {
+    applies: (c) => c === FailureCode.START_COMMAND_FAILED || c === FailureCode.BUILD_FAILED,
+    propose: ({ plan, failure, logs }) => {
+      const install = plan.installCommand ?? '';
+      const composed = /^pip install (?!-)[A-Za-z0-9][\w.=-]*(?: [A-Za-z0-9][\w.=-]*)*$/.test(install);
+      if (!composed) return null;
+
+      const text = `${failure.evidence ?? ''}\n${failure.message}\n${logs.slice(-6000)}`;
+      const named = missingDistribution(text);
+      if (!named) return null;
+
+      const already = install.slice('pip install '.length).split(/\s+/).map((a) => a.split('==')[0]!.toLowerCase());
+      if (already.includes(named.distribution.toLowerCase())) return null;
+
+      const installCommand = `${install} ${named.distribution}`;
+      return {
+        plan: { ...plan, installCommand },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: failure.code,
+          before: { installCommand: install },
+          after: { installCommand },
+          evidence: [named.quote, 'the install list was composed from this project\'s imports, which do not name it'],
+          confidence: 'high',
+        },
+      };
+    },
+  },
+
   // --- a Python console script is not on PATH; the module is -------------------------
   {
     applies: (c) => c === FailureCode.START_COMMAND_FAILED,
@@ -253,6 +293,42 @@ const RULES: readonly Rule[] = [
           evidence: [
             evidence ? evidence.match(notFound)![0].slice(0, 160) : `exit code 127: ${first} is not on PATH`,
             `${first} is installed as a module and runs as python -m ${first}`,
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
+
+  // --- the runtime is too old, and a newer one is approved -------------------------------
+  //
+  // The planner already chooses a version from what the repository declares, so reaching
+  // here means the declaration was missing or was one it does not recognise — a built-in
+  // newer than the table knows about, say. The error names the module, the allowlist
+  // names the versions, and moving between them is arithmetic rather than judgement. A
+  // model is never asked: it cannot add an image, so its answer is bounded by the same
+  // list a rule can read directly.
+  {
+    applies: (c) => c === FailureCode.WRONG_RUNTIME_VERSION,
+    propose: ({ plan, failure, logs }) => {
+      const next = nextApprovedVersion(plan.runtime.language, plan.runtime.version);
+      if (!next) return null;
+
+      const named =
+        /No such built-in module: (node:[a-z_]+)/.exec(`${failure.evidence ?? ''}\n${logs.slice(-4000)}`)?.[1];
+      return {
+        plan: { ...plan, runtime: { ...plan.runtime, version: next } },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: FailureCode.WRONG_RUNTIME_VERSION,
+          before: { runtimeVersion: plan.runtime.version },
+          after: { runtimeVersion: next },
+          evidence: [
+            named
+              ? `${named} does not exist in ${plan.runtime.language} ${plan.runtime.version}`
+              : failure.message.slice(0, 160),
+            `${next} is the next approved ${plan.runtime.language} image`,
           ],
           confidence: 'high',
         },
@@ -471,4 +547,49 @@ function pinnedButUnbuildable(
   if (!pinned) return null;
 
   return { name: pinned.split('==')[0]!, pinned };
+}
+
+/**
+ * A distribution a Python error says is missing, with the line that said so.
+ *
+ * Two shapes, both of which name the package outright. The first is a library telling
+ * you what to install — `Form data requires "python-multipart" to be installed.` The
+ * second is the interpreter naming an import, which is a module name and therefore needs
+ * translating for the handful of cases where the two differ.
+ */
+function missingDistribution(text: string): { distribution: string; quote: string } | null {
+  const told =
+    /(?:requires|needs) ["'`]?([A-Za-z0-9][A-Za-z0-9._-]*)["'`]? to be installed/i.exec(text) ??
+    /(?:pip install|Please install) ["'`]?([A-Za-z0-9][A-Za-z0-9._-]*)["'`]?(?:\s|$|\.)/i.exec(text);
+  if (told) return { distribution: told[1]!, quote: told[0]!.slice(0, 160) };
+
+  const imported = /ModuleNotFoundError: No module named ['"]([A-Za-z_][A-Za-z0-9_]*)['"]/.exec(text);
+  if (!imported) return null;
+  const dist = distributionForModule(imported[1]!);
+  return dist ? { distribution: dist, quote: imported[0]!.slice(0, 160) } : null;
+}
+
+/**
+ * The next approved image version for a language, above the one a plan is using.
+ *
+ * Ordered numerically by major, because that is what these version strings are — `20`,
+ * `22`, `3.12`. Returns nothing when the plan is already on the newest, which is the
+ * honest answer: the failure stands and its remedy names what is missing.
+ */
+export function nextApprovedVersion(
+  language: string,
+  current: string,
+  approved: readonly { language: string; version: string }[] = Object.values(APPROVED_IMAGES),
+): string | null {
+  const versions = approved
+    .filter((image) => image.language === language)
+    .map((image) => image.version)
+    .sort((a, b) => Number.parseFloat(a) - Number.parseFloat(b));
+
+  // Strictly above, and the *nearest* one. With two Node images "nearest above" and
+  // "newest" are the same answer, which is precisely why the list is a parameter: the
+  // day a third is approved they stop being the same, and the difference is a version
+  // nobody chose running a dependency tree resolved for something else. A rule that
+  // cannot be told apart from a wrong one is not being tested.
+  return versions.find((v) => Number.parseFloat(v) > Number.parseFloat(current)) ?? null;
 }

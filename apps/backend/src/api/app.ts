@@ -44,6 +44,13 @@ function present(session: Session) {
     aiNote: session.aiNote,
     /** Typed and evidenced, so what changed and why is readable rather than inferred. */
     repairs: session.repairs,
+    /**
+     * Edits DevLaunch made to the clone, when DEVLAUNCH_REWRITE_SOURCE is set.
+     *
+     * Always surfaced. The whole argument for allowing a tool to change a repository at
+     * all is that the change is small, named, and visible.
+     */
+    rewrites: session.rewrites,
     /** The routes the application declares, so an API's URL is not a blank 404. */
     routes: session.metadata?.httpRoutes,
     readiness: session.readiness,

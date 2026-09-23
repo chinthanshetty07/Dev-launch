@@ -41,17 +41,28 @@ describe('what repair is allowed to do about a failure', () => {
   });
 
   it('keeps the runtime-version policy in step with the image allowlist', () => {
-    // WRONG_RUNTIME_VERSION is non-repairable only because `runtime.version` has
-    // nowhere else to point: the allowlist carries one image per language. Approving a
-    // second version would make a rewritten plan able to satisfy the manifest, and this
-    // is the test that says so rather than leaving the policy quietly wrong.
+    // This test previously asserted the opposite, and said so: WRONG_RUNTIME_VERSION was
+    // non-repairable *because* the allowlist carried one image per language, and it
+    // promised that approving a second would make the failure repairable and that this
+    // test would be what says so. Node 22 was then approved, for a repository importing
+    // `node:sqlite`. The fact changed, so the policy changed, and the intent is restated
+    // rather than the assertion flipped.
+    //
+    // What holds either way is the *relationship*: a rule can move `runtime.version`
+    // exactly when there is somewhere to move it to.
     const perLanguage = new Map<string, number>();
     for (const image of Object.values(APPROVED_IMAGES)) {
       perLanguage.set(image.language, (perLanguage.get(image.language) ?? 0) + 1);
     }
-    const onlyOneEach = [...perLanguage.values()].every((n) => n === 1);
-    expect(onlyOneEach).toBe(true);
-    expect(repairPolicyFor(FailureCode.WRONG_RUNTIME_VERSION).repairability).toBe('NON_REPAIRABLE');
+    const somethingToChoose = [...perLanguage.values()].some((n) => n > 1);
+    const policy = repairPolicyFor(FailureCode.WRONG_RUNTIME_VERSION);
+    expect(policy.repairability).toBe(somethingToChoose ? 'DETERMINISTIC' : 'NON_REPAIRABLE');
+  });
+
+  it('never asks a model to solve a runtime-version mismatch', () => {
+    // Not a matter of degree. No plan a model writes can conjure an image that is not on
+    // the allowlist, so asking it spends a call to be told what the allowlist says.
+    expect(repairPolicyFor(FailureCode.WRONG_RUNTIME_VERSION).aiCalls).toBe(0);
   });
 
   it('derives the repairable list from the policy, so there is one truth', () => {

@@ -492,7 +492,11 @@ export async function findDeclaredPort(
       const raw = await readCapped(join(base, candidate));
       if (raw === null) continue;
       const match =
-        /process\.env\.PORT\s*\|\|\s*(\d{2,5})/.exec(raw) ??
+        // `Number(process.env.PORT) || 5001` and `process.env.PORT ?? 5001` are as
+        // common as the bare form, and an anchored pattern read neither — so a service
+        // whose port was written down was planned on a framework default instead.
+        /process\.env\.PORT\s*(?:\|\||\?\?)\s*(\d{2,5})/.exec(raw) ??
+        /(?:Number|parseInt)\s*\(\s*process\.env\.PORT[^)]*\)\s*(?:\|\||\?\?)\s*(\d{2,5})/.exec(raw) ??
         /\.listen\(\s*(\d{2,5})/.exec(raw) ??
         // `const port = 8017`, then `app.listen(port, hostname)`. Lower case, because
         // that is how it is written in ordinary JavaScript — the pattern here was
@@ -803,3 +807,33 @@ const VITE_CONFIGS = [
 ];
 
 const LOOPBACK_URL = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d{2,5})?\/?$/;
+
+/**
+ * Node built-in modules an entry file imports, by the bare name after `node:`.
+ *
+ * Only the prefixed form is read, and that is the point: `node:sqlite` is unambiguous
+ * where `sqlite` could be any package on npm. Bounded to the same entry files the port
+ * scan reads, plus whatever `main` names — this answers "which runtime does this need",
+ * which is decided by the file that runs first.
+ */
+export async function findNodeBuiltins(
+  base: string,
+  entryFiles: readonly string[],
+  main: string | undefined,
+): Promise<string[]> {
+  const found = new Set<string>();
+  const candidates = [...new Set([...entryFiles, ...(main ? [main] : []), ...NODE_ENTRY_FILES])];
+
+  for (const file of candidates.slice(0, MAX_BUILTIN_SCAN)) {
+    const raw = await readCapped(join(base, file));
+    if (raw === null) continue;
+    for (const m of raw.matchAll(/(?:from\s*|require\s*\(\s*)['"`]node:([a-z_]+)['"`]/g)) {
+      found.add(m[1]!);
+    }
+    for (const m of raw.matchAll(/import\s+['"`]node:([a-z_]+)['"`]/g)) found.add(m[1]!);
+  }
+  return [...found];
+}
+
+/** Entry files read looking for a built-in import. Bounded, like every other scan here. */
+const MAX_BUILTIN_SCAN = 8;

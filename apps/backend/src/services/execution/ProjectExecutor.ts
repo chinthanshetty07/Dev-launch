@@ -16,6 +16,12 @@ import { choosePort } from '../ports/HostPorts.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { ExecutionManager, LaunchHandle, ReadyOutcome } from './ExecutionManager.js';
+import {
+  applySourceRewrites,
+  repointHost,
+  type RewriteRequest,
+  type SourceRewrite,
+} from './SourceRewrite.js';
 
 export interface ServiceRun {
   name: string;
@@ -54,6 +60,8 @@ export interface ProjectRun {
   services: ServiceRun[];
   /** Databases provisioned for this project, in the order they were started. */
   backing: BackingRun[];
+  /** Edits made to the clone, when DEVLAUNCH_REWRITE_SOURCE is set. Shown, always. */
+  rewrites?: SourceRewrite[];
   /** The service a person is given the URL of: the web front door, or the only one. */
   entry(): ServiceRun | undefined;
   cleanup(): Promise<{ errors: Error[] }>;
@@ -70,9 +78,19 @@ export interface ProjectLaunchOptions {
   discovery?: {
     callsOrigins: Record<string, string[]>;
     envKeys: Record<string, string[]>;
+    /** Dev-server proxy targets pointing somewhere the container cannot reach. */
+    devProxies?: Record<string, { file: string; target: string }>;
   };
   /** The repository root; each service runs from its own subdirectory of it. */
   sourceDir: string;
+  /**
+   * Whether `sourceDir` is a clone DevLaunch owns, rather than somebody's working copy.
+   *
+   * The rewrite flag is a decision about what DevLaunch may do to *its own* copy. A
+   * `sourceDir` launch has no copy — it runs against the directory it was given — and a
+   * live run proved what that means: this repository's own fixture came back rewritten.
+   */
+  mayRewriteSource?: boolean;
   /** Aggregated, user-visible output. Each line arrives tagged with its service. */
   logs: LogManager;
   readinessTimeoutMs?: number;
@@ -207,6 +225,32 @@ export class ProjectExecutor {
       return [scoped];
     };
 
+    // A dev server's proxy target is resolved by the dev server process, inside its own
+    // container, so `localhost` there is the frontend itself. Rewritten here rather than
+    // during planning because only now is it known what the API actually answers to:
+    // `aliasesFor` declines the plain name when another project already holds it, and
+    // pointing a config file at a name this project does not have would be worse than
+    // leaving it alone. Off unless DEVLAUNCH_REWRITE_SOURCE is set.
+    const rewrites =
+      config.rewriteSource && opts.mayRewriteSource
+        ? await this.repointProxies(ordered, opts, aliasesFor)
+        : [];
+    if (config.rewriteSource && !opts.mayRewriteSource) {
+      opts.logs.write(
+        'stderr',
+        'Not rewriting the source: this session runs from a directory that already ' +
+          'existed rather than from a clone, and that is your working copy, not ours.',
+      );
+    }
+    for (const change of rewrites) {
+      opts.logs.write(
+        'stdout',
+        `Rewrote ${change.file}: ${change.from} → ${change.to} — ${change.reason}. ` +
+          'Your own checkout is untouched; this edit is in the clone DevLaunch runs from.',
+      );
+    }
+    run.rewrites = rewrites;
+
     for (const base of ordered) {
       // A variable the repository already supplies wins: the user's own value for
       // MONGO_URI is a decision, and overwriting it would be DevLaunch overruling it.
@@ -291,6 +335,28 @@ export class ProjectExecutor {
   }
 
   /**
+   * Send each browser-facing service's proxy at the sibling it is really trying to reach.
+   *
+   * The API's own port is used, not its published host port: this request is made from
+   * inside the frontend's container, over the container network, where the service is
+   * listening on the port it was planned with. The host mapping is for the browser and
+   * is a different number.
+   */
+  private async repointProxies(
+    services: readonly ServiceRunPlan[],
+    opts: ProjectLaunchOptions,
+    aliasesFor: (name: string) => string[],
+  ): Promise<SourceRewrite[]> {
+    const api = services.find((s) => s.role === 'api' && s.expectedPort !== null);
+    if (!api) return [];
+    const alias = aliasesFor(api.name)[0];
+    if (!alias) return [];
+
+    const requests = proxyRewrites(services, opts.discovery?.devProxies ?? {}, api, alias);
+    return applySourceRewrites(opts.sourceDir, requests);
+  }
+
+  /**
    * Start one database and wait until it actually answers.
    *
    * "Running" is not "accepting connections" — the same distinction readiness draws for
@@ -349,4 +415,40 @@ export class ProjectExecutor {
 /** APIs and workers first; the browser-facing service last. */
 function startRank(role: ServiceRole): number {
   return role === 'web' ? 1 : 0;
+}
+
+/**
+ * The edits that would point each service's dev-server proxy at the API.
+ *
+ * Pure, and separate from applying them, so the decision can be checked without Docker:
+ * which file, which literal, which replacement, and the sentence explaining it.
+ */
+export function proxyRewrites(
+  services: readonly ServiceRunPlan[],
+  devProxies: Record<string, { file: string; target: string }>,
+  api: ServiceRunPlan,
+  alias: string,
+): RewriteRequest[] {
+  const requests: RewriteRequest[] = [];
+  for (const service of services) {
+    const proxy = devProxies[service.name];
+    if (!proxy) continue;
+    const to = repointHost(proxy.target, alias, api.expectedPort ?? undefined);
+    if (!to) continue;
+    requests.push({
+      file: joinService(service.workingDirectory, proxy.file),
+      from: proxy.target,
+      to,
+      reason:
+        `the dev server resolves this inside ${service.name}'s own container, where ` +
+        `localhost is ${service.name}; ${api.name} answers to "${alias}" on port ` +
+        `${api.expectedPort} of this network`,
+    });
+  }
+  return requests;
+}
+
+/** A file inside the clone, given the service directory it belongs to. */
+function joinService(workingDirectory: string, file: string): string {
+  return workingDirectory && workingDirectory !== '.' ? `${workingDirectory}/${file}` : file;
 }

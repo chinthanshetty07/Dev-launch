@@ -1236,3 +1236,174 @@ describe('a database image the repository names', () => {
     await mgr.shutdown();
   }, 120_000);
 });
+
+describe('rewriting a hardcoded database URL, behind the flag', () => {
+  /**
+   * Off by default: "run this project" and "change this project" are different promises.
+   * With `DEVLAUNCH_REWRITE_SOURCE` set, the one literal analysis identified is pointed
+   * at the database DevLaunch actually started.
+   */
+  const withFlag = async <T>(value: boolean, run: () => Promise<T>): Promise<T> => {
+    const { config } = await import('../config/index.js');
+    const original = config.rewriteSource;
+    Object.defineProperty(config, 'rewriteSource', { value, configurable: true, writable: true });
+    try {
+      return await run();
+    } finally {
+      Object.defineProperty(config, 'rewriteSource', { value: original, configurable: true, writable: true });
+    }
+  };
+
+  async function repoWithHardcodedUrl(): Promise<string> {
+    const { mkdtemp, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-hard-'));
+    await writeFile(
+      join(dir, 'database.py'),
+      'SQLALCHEMY_DATABASE_URL = "postgresql://postgres:test1234@localhost/TodoDb"\n',
+    );
+    return dir;
+  }
+
+  const analyzed = (root: string) => ({
+    analyze: async () => ({
+      warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [], root,
+      python: {
+        requirements: [], hasPyproject: false, hasPipfile: false, hasManagePy: false,
+        entryCandidates: [],
+        hardcodedDatabaseUrl: {
+          file: 'database.py',
+          url: 'postgresql://postgres:test1234@localhost/TodoDb',
+        },
+      },
+      backing: [
+        { kind: 'postgres' as const, evidence: 'the source hardcodes a postgres URL', urlEnvKeys: [], neededBy: [] },
+      ],
+    }),
+  });
+  const planned = { planRepository: async () => ({ plan: plan(), detected: 'fastapi', warnings: [] }) };
+
+  it('points the literal at the database it started', async () => {
+    const root = await repoWithHardcodedUrl();
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+
+    const session = await withFlag(true, async () => {
+      const mgr = new SessionManager(exec, { analyzer: analyzed(root) as never, planner: planned as never });
+      const s = await mgr.launch({ sourceDir: root, image: 'devlaunch/python:3.12' });
+      // Stands in for having cloned it: only a clone is DevLaunch's to edit.
+      s.ownsSource = true;
+      await until(() => s.state === ExecutionState.READY, 5000);
+      await mgr.shutdown();
+      return s;
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const after = await readFile(join(root, 'database.py'), 'utf8');
+    expect(after).toContain('@postgres:5432/');
+    expect(after).not.toContain('@localhost/');
+    expect(session.rewrites?.[0]?.file).toBe('database.py');
+  });
+
+  it('never redacts nothing: the log shows the change without the password', async () => {
+    // The log is copied into bug reports, and the password in the literal may be a real
+    // credential its author pasted.
+    const root = await repoWithHardcodedUrl();
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+
+    const session = await withFlag(true, async () => {
+      const mgr = new SessionManager(exec, { analyzer: analyzed(root) as never, planner: planned as never });
+      const s = await mgr.launch({ sourceDir: root, image: 'devlaunch/python:3.12' });
+      s.ownsSource = true;
+      await until(() => s.state === ExecutionState.READY, 5000);
+      await mgr.shutdown();
+      return s;
+    });
+
+    const log = session.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(log).toMatch(/Rewrote database\.py/);
+    expect(log).toMatch(/your own checkout is untouched/i);
+    expect(log).not.toContain('test1234');
+  });
+
+  it('refuses to touch a directory it did not clone, flag or no flag', async () => {
+    // The promise every rewrite message makes is "your own checkout is untouched". A
+    // `sourceDir` launch runs against a directory that already existed, so there is no
+    // clone and that promise would be false. A live run proved it: this repository's own
+    // fixture came back from a test rewritten and staged in git.
+    const root = await repoWithHardcodedUrl();
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+
+    const session = await withFlag(true, async () => {
+      const mgr = new SessionManager(exec, { analyzer: analyzed(root) as never, planner: planned as never });
+      // `launch({ sourceDir })` never sets ownsSource; only cloning does.
+      const s = await mgr.launch({ sourceDir: root, image: 'devlaunch/python:3.12' });
+      await until(() => s.state === ExecutionState.READY, 5000);
+      await mgr.shutdown();
+      return s;
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    expect(await readFile(join(root, 'database.py'), 'utf8')).toContain('@localhost/TodoDb');
+    expect(session.rewrites).toBeUndefined();
+    expect(session.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(
+      /your working copy, not ours/,
+    );
+  });
+
+  it('marks a cloned directory as its own to edit', async () => {
+    // The two tests above set this by hand; without something asserting that cloning
+    // sets it, the flag could be on, the clone ours, and nothing would ever be rewritten.
+    const root = await repoWithHardcodedUrl();
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+
+    const session = await withFlag(true, async () => {
+      const mgr = new SessionManager(exec, {
+        analyzer: analyzed(root) as never,
+        planner: planned as never,
+        git: {
+          clone: async () => ({ dir: root, url: 'https://github.com/x/y', fileCount: 1, sizeBytes: 1, cleanup: async () => undefined }),
+        } as never,
+      });
+      const s = await mgr.launch({ repoUrl: 'https://github.com/x/y', image: 'devlaunch/python:3.12' });
+      await until(() => s.state === ExecutionState.READY, 5000);
+      await mgr.shutdown();
+      return s;
+    });
+
+    expect(session.ownsSource).toBe(true);
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    expect(await readFile(join(root, 'database.py'), 'utf8')).toContain('@postgres:5432/');
+  });
+
+  it('changes nothing at all with the flag off', async () => {
+    const root = await repoWithHardcodedUrl();
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = fakeDocker(created) as never;
+
+    const session = await withFlag(false, async () => {
+      const mgr = new SessionManager(exec, { analyzer: analyzed(root) as never, planner: planned as never });
+      const s = await mgr.launch({ sourceDir: root, image: 'devlaunch/python:3.12' });
+      await until(() => s.state === ExecutionState.READY, 5000);
+      await mgr.shutdown();
+      return s;
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    expect(await readFile(join(root, 'database.py'), 'utf8')).toContain('@localhost/TodoDb');
+    expect(session.rewrites).toBeUndefined();
+  });
+});

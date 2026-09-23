@@ -33,13 +33,7 @@ const POLICIES: Readonly<Record<FailureCode, RepairPolicy>> = Object.freeze({
   [FailureCode.DOCKER_SOCKET_REQUIRED]: none('the sandbox withholds the daemon on purpose; no configuration hands it over'),
   [FailureCode.REPOSITORY_TOO_LARGE]: none('the intake cap is a limit, not a symptom'),
   [FailureCode.CONTAINER_CREATE_FAILED]: none('the runtime failed before the plan ran'),
-  // The allowlist carries exactly one image per language, so `runtime.version` has
-  // nowhere else to point and no rewritten plan reaches a runtime that does not exist.
-  // A test holds this in step with APPROVED_IMAGES; if a second version is ever
-  // approved, this becomes repairable and that test says so.
-  [FailureCode.WRONG_RUNTIME_VERSION]: none(
-    'only one runtime version per language is available, so no plan can satisfy a different one',
-  ),
+
 
   // --- already decided ----------------------------------------------------------
   [FailureCode.INVALID_AI_PLAN]: none('the model has already produced an unusable plan; asking again is how it thrashes'),
@@ -54,6 +48,15 @@ const POLICIES: Readonly<Record<FailureCode, RepairPolicy>> = Object.freeze({
   [FailureCode.APPLICATION_UNHEALTHY]: rules(1, 'it answers, wrongly; the status and body say how'),
   [FailureCode.DEPENDENCY_INSTALL_FAILED]: rules(1, 'the install command or manager may be wrong for this manifest'),
   [FailureCode.BUILD_FAILED]: rules(1, 'the build command may be wrong; the last errors say what'),
+  // Node has two approved images now, so `runtime.version` has somewhere else to point
+  // and a rule can move it. The model budget stays at zero, and that is not a matter of
+  // degree: no plan a model writes can conjure an image that is not on the allowlist, so
+  // asking it is spending a call to be told what the allowlist already says. A test
+  // holds this in step with APPROVED_IMAGES.
+  [FailureCode.WRONG_RUNTIME_VERSION]: rules(
+    0,
+    'more than one runtime version is approved, so a rule can move the plan to another',
+  ),
   [FailureCode.PROCESS_TIMEOUT]: rules(1, 'something hung; whether install, start or readiness decides the fix'),
 
   // --- unknown: one bounded diagnosis, and stop rather than thrash ---------------

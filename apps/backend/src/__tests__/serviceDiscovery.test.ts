@@ -729,3 +729,67 @@ describe('a dev server proxying to an address its own container cannot reach', (
     expect(meta.services?.find((s) => s.role === 'web')?.devProxy).toBeUndefined();
   });
 });
+
+describe('the port an entry file writes down', () => {
+  const portOf = async (source: string): Promise<number | undefined> => {
+    const { findDeclaredPort } = await import('../services/analysis/ServiceDiscovery.js');
+    const root = await repo({ 'server.js': source, 'package.json': pkg('s', { start: 'node server.js' }) });
+    return findDeclaredPort(root, { scripts: {}, dependencies: {} });
+  };
+
+  it('reads the bare form', async () => {
+    expect(await portOf('const port = process.env.PORT || 5001;')).toBe(5001);
+  });
+
+  it('reads it through Number(), which is how it is usually written', async () => {
+    // An anchored pattern read neither this nor `parseInt`, so a service whose port was
+    // written down was planned on a framework default instead.
+    expect(await portOf('const port = Number(process.env.PORT) || 5001;')).toBe(5001);
+    expect(await portOf('const port = parseInt(process.env.PORT, 10) || 5001;')).toBe(5001);
+  });
+
+  it('reads nullish coalescing as well as or', async () => {
+    expect(await portOf('const port = process.env.PORT ?? 5001;')).toBe(5001);
+  });
+});
+
+describe('Node built-ins a repository imports', () => {
+  it('reads the prefixed form, which is the unambiguous one', async () => {
+    // `node:sqlite` cannot be anything but the built-in; a bare `sqlite` could be any
+    // package on npm, and reading it would raise the runtime floor on a false positive.
+    const root = await repo({
+      'package.json': pkg('app', { start: 'node app.js' }, { express: '^5' }),
+      'app.js': "import { DatabaseSync } from 'node:sqlite';\nimport express from 'express';\n",
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.nodeBuiltins).toContain('sqlite');
+    expect(meta.nodeBuiltins).not.toContain('express');
+  });
+
+  it('reads require() as well as import', async () => {
+    const root = await repo({
+      'package.json': pkg('app', { start: 'node server.js' }, { express: '^4' }),
+      'server.js': "const { test } = require('node:test');\n",
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.nodeBuiltins).toContain('test');
+  });
+
+  it('ignores an unprefixed module name', async () => {
+    const root = await repo({
+      'package.json': pkg('app', { start: 'node app.js' }, { sqlite3: '^5' }),
+      'app.js': "const sqlite = require('sqlite3');\n",
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.nodeBuiltins ?? []).not.toContain('sqlite3');
+  });
+
+  it('reads the file main names, not only conventional ones', async () => {
+    const root = await repo({
+      'package.json': { name: 'app', main: 'lib/entry.js', scripts: { start: 'node lib/entry.js' }, dependencies: { express: '^5' } },
+      'lib/entry.js': "import sqlite from 'node:sqlite';\n",
+    });
+    const meta = await new RepositoryAnalyzer().analyze(root);
+    expect(meta.nodeBuiltins).toContain('sqlite');
+  });
+});
