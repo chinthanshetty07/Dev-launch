@@ -58,6 +58,17 @@ export interface ServiceRun {
    */
   memoryMb?: number;
   /**
+   * Plans already tried for *this* service, so an attempt cannot repeat one.
+   *
+   * Per service, because the budget is. A session-wide array meant one service could
+   * spend the whole allowance and leave its siblings none: a real project had its API
+   * use both attempts on a memory raise and a port correction, and its frontend — which
+   * needed one rule to run — was refused with "repair limit reached" without a single
+   * attempt of its own. That is the same shape of bug as a repair that served only
+   * single-service repositories, one level down.
+   */
+  repairAttempts?: ServiceRunPlan[];
+  /**
    * Start this service again on the same port, with the same resolved plan.
    *
    * The port is what makes a restart safe to offer: it was chosen by DevLaunch and

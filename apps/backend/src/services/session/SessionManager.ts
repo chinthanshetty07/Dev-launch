@@ -787,9 +787,23 @@ export class SessionManager extends EventEmitter {
       return false;
     }
 
-    const previous = session.repairAttempts ?? [];
+    // Per service, not per session.
+    //
+    // A session-wide budget let one service spend the whole allowance and leave its
+    // siblings none. A real project's API used both attempts — a memory raise and a port
+    // correction — and its frontend, which needed one rule to run, was refused with
+    // "repair limit reached" without a single attempt of its own.
+    //
+    // Safe to widen because nothing here calls a model, and every rule must produce a
+    // plan that differs from the ones already tried: the progress check below refuses a
+    // repeat, so a service cannot spend its attempts going nowhere. The total work stays
+    // bounded at services × the ceiling, under the same startup budget as everything else.
+    const previous = service.repairAttempts ?? [];
     if (previous.length >= MAX_REPAIR_ATTEMPTS) {
-      session.logs.buffer.push('stderr', `Repair limit of ${MAX_REPAIR_ATTEMPTS} reached.`);
+      session.logs.buffer.push(
+        'stderr',
+        `Repair limit of ${MAX_REPAIR_ATTEMPTS} reached for ${service.name}.`,
+      );
       return false;
     }
 
@@ -820,6 +834,9 @@ export class SessionManager extends EventEmitter {
       }
 
       service.memoryMb = ceiling;
+      service.repairAttempts = [...previous, service.plan];
+      // Kept on the session too: it is what the dashboard counts, and what
+      // `repairAttemptsAfter` reports beside the diagnosis.
       session.repairAttempts = [...(session.repairAttempts ?? []), service.plan];
       session.repairs = [
         ...(session.repairs ?? []),
@@ -892,7 +909,8 @@ export class SessionManager extends EventEmitter {
         deterministic.record.evidence.join('; '),
     );
 
-    session.repairAttempts = [...previous, service.plan];
+    service.repairAttempts = [...previous, service.plan];
+    session.repairAttempts = [...(session.repairAttempts ?? []), service.plan];
     session.repairs = [
       ...(session.repairs ?? []),
       { ...deterministic.record, service: service.name },

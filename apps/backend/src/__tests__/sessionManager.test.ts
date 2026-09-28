@@ -1647,6 +1647,267 @@ describe('stopping a session that is still running', () => {
  * contain one service. Which is the exact criticism this file already makes of the repair
  * architecture that preceded it.
  */
+/**
+ * Two services, each needing a repair of its own.
+ *
+ * The budget was session-wide, so the first service to be repaired could spend it all.
+ * `horusyeung/nextjs-nestjs-fullstack-starter` did exactly that: its API used both
+ * attempts — a memory raise and a port correction — and its frontend was refused with
+ * "repair limit reached" without a single attempt of its own, then reported as the
+ * reason the project failed.
+ */
+describe('a project where more than one service needs repairing', () => {
+  const projectMeta = {
+    warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+    services: [
+      { name: 'api', dir: 'api', role: 'api', language: 'node', scripts: ['dev'], evidence: 'x' },
+      { name: 'web', dir: 'web', role: 'web', language: 'node', scripts: ['dev'], evidence: 'x' },
+    ],
+  };
+  const svc = (name: string, role: string, port: number) =>
+    ({ ...RunPlanSchema.parse({
+      runtime: { language: 'node', version: '20' },
+      packageManager: 'npm', installCommand: null, buildCommand: null,
+      startCommand: 'npm run dev', workingDirectory: name,
+      expectedPort: port, planSource: 'rule-based',
+    }), name, role }) as never;
+
+  /**
+   * `api` needs two repairs and `web` needs one — the real sequence, exactly. Under a
+   * session-wide budget of two, `api` consumes both and `web` is refused without ever
+   * being attempted.
+   */
+  function exec() {
+    const attempts: string[] = [];
+    let apiStarts = 0;
+    return {
+      attempts,
+      manager: {
+        docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+        async launch(o: { plan: { name?: string; expectedPort: number | null }; logs?: LogManager; memoryMb?: number }) {
+          const name = o.plan.name ?? 'single';
+          attempts.push(name);
+          const logs = o.logs ?? new LogManager();
+
+          if (name === 'api') {
+            apiStarts++;
+            // First: killed by the memory limit. Second: alive, but on the wrong port.
+            // Third: correct.
+            if (apiStarts === 1) {
+              return handle(logs, {
+                state: ExecutionState.FAILED, hostPort: null,
+                readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                failure: { code: FailureCode.OUT_OF_MEMORY, message: 'api: killed for exceeding the container memory limit.' },
+              });
+            }
+            if (o.plan.expectedPort !== 9000) {
+              logs.buffer.push('stderr', 'Listening on http://0.0.0.0:9000');
+              return handle(logs, {
+                state: ExecutionState.FAILED, hostPort: '1',
+                readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                failure: {
+                  code: FailureCode.PORT_NOT_LISTENING,
+                  message: `Nothing is listening on port ${o.plan.expectedPort}.`,
+                  observedSocket: { address: '0.0.0.0', port: 9000, loopbackOnly: false },
+                },
+              });
+            }
+            return handle(logs, {
+              state: ExecutionState.READY, hostPort: '1', url: 'http://localhost/api',
+              readiness: { ready: true, attempts: 1, elapsedMs: 1 },
+            });
+          }
+
+          // `web` needs exactly one correction, and only gets it if a budget is left.
+          if (o.plan.expectedPort !== 9100) {
+            logs.buffer.push('stderr', 'Listening on http://0.0.0.0:9100');
+            return handle(logs, {
+              state: ExecutionState.FAILED, hostPort: '1',
+              readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+              failure: {
+                code: FailureCode.PORT_NOT_LISTENING,
+                message: `Nothing is listening on port ${o.plan.expectedPort}.`,
+                observedSocket: { address: '0.0.0.0', port: 9100, loopbackOnly: false },
+              },
+            });
+          }
+          return handle(logs, {
+            state: ExecutionState.READY, hostPort: '1', url: 'http://localhost/web',
+            readiness: { ready: true, attempts: 1, elapsedMs: 1 },
+          });
+        },
+      } as unknown as ExecutionManager,
+    };
+  }
+
+  const handle = (logs: LogManager, outcome: ReadyOutcome) =>
+    ({
+      logs,
+      waitForReady: async () => outcome,
+      clearStartupBudget: () => undefined,
+      cleanup: async () => ({ errors: [] }),
+    }) as unknown as LaunchHandle;
+
+  it('gives every service its own attempts, so one cannot starve the others', async () => {
+    const e = exec();
+    const m = new SessionManager(e.manager, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [svc('api', 'api', 3000), svc('web', 'web', 3001)], planSource: 'rule-based' },
+          skipped: [], warnings: [],
+        }),
+      } as never,
+    });
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await until(
+      () => s.state === ExecutionState.READY || s.state === ExecutionState.FAILED
+        || s.state === ExecutionState.PARTIALLY_READY,
+      8000,
+    );
+
+    // `api` took two repairs — the whole session-wide allowance — and `web` still got
+    // the one it needed. Under the old budget this ended PARTIALLY_READY with `web`
+    // refused for a limit another service had spent.
+    expect(s.state).toBe(ExecutionState.READY);
+    expect(e.attempts.filter((n) => n === 'api')).toHaveLength(3);
+    expect(e.attempts.filter((n) => n === 'web')).toHaveLength(2);
+    expect((s.repairs ?? []).map((r) => `${r.service}:${r.type}`)).toEqual([
+      'api:MEMORY_LIMIT_RAISED',
+      'api:PORT_CORRECTION',
+      'web:PORT_CORRECTION',
+    ]);
+    await m.shutdown();
+  });
+
+  it('holds each service to its own ceiling, counting only its own attempts', async () => {
+    // A service that would need three distinct repairs gets two, because that is the
+    // ceiling — and the count is of *its* attempts, not the session's. Without recording
+    // per service, `previous` is always empty and the ceiling never arrives, which turns
+    // a bounded retry into one stopped only by a rule running out of ideas.
+    const attempts: string[] = [];
+    let starts = 0;
+    const manager = {
+      docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+      async launch(o: { plan: { name?: string; expectedPort: number | null }; logs?: LogManager }) {
+        const name = o.plan.name ?? 'single';
+        attempts.push(name);
+        const logs = o.logs ?? new LogManager();
+        if (name === 'web') {
+          return handle(logs, {
+            state: ExecutionState.READY, hostPort: '1', url: 'http://localhost/web',
+            readiness: { ready: true, attempts: 1, elapsedMs: 1 },
+          });
+        }
+        starts++;
+        if (starts === 1) {
+          return handle(logs, {
+            state: ExecutionState.FAILED, hostPort: null,
+            readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+            failure: { code: FailureCode.OUT_OF_MEMORY, message: 'api: killed for exceeding the container memory limit.' },
+          });
+        }
+        // A different port every time, so each correction is a *new* plan and the
+        // progress check never refuses one. Only the ceiling can stop this.
+        const opened = 9000 + starts;
+        logs.buffer.push('stderr', `Listening on http://0.0.0.0:${opened}`);
+        return handle(logs, {
+          state: ExecutionState.FAILED, hostPort: '1',
+          readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+          failure: {
+            code: FailureCode.PORT_NOT_LISTENING,
+            message: `Nothing is listening on port ${o.plan.expectedPort}.`,
+            observedSocket: { address: '0.0.0.0', port: opened, loopbackOnly: false },
+          },
+        });
+      },
+    } as unknown as ExecutionManager;
+
+    const m = new SessionManager(manager, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [svc('api', 'api', 3000), svc('web', 'web', 3001)], planSource: 'rule-based' },
+          skipped: [], warnings: [],
+        }),
+      } as never,
+    });
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await until(
+      () => s.state === ExecutionState.PARTIALLY_READY || s.state === ExecutionState.FAILED,
+      8000,
+    );
+
+    expect(s.state).toBe(ExecutionState.PARTIALLY_READY);
+    // One start, then exactly its own allowance of repairs.
+    expect(attempts.filter((n) => n === 'api')).toHaveLength(1 + config.ai.maxRepairAttempts);
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(
+      new RegExp(`Repair limit of ${config.ai.maxRepairAttempts} reached for api`),
+    );
+    await m.shutdown();
+  });
+
+  it('still stops a service that keeps failing, without touching its siblings\' budget', async () => {
+    // The ceiling is per service now, which must not mean unbounded. `api` can never be
+    // corrected here, so it spends its own attempts and stops; `web` is unaffected.
+    const attempts: string[] = [];
+    const manager = {
+      docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+      async launch(o: { plan: { name?: string; expectedPort: number | null }; logs?: LogManager }) {
+        const name = o.plan.name ?? 'single';
+        attempts.push(name);
+        const logs = o.logs ?? new LogManager();
+        if (name === 'api') logs.buffer.push('stderr', 'Listening on http://0.0.0.0:9000');
+        return {
+          logs,
+          waitForReady: async (): Promise<ReadyOutcome> =>
+            name === 'web'
+              ? { state: ExecutionState.READY, hostPort: '1', url: 'http://localhost/web', readiness: { ready: true, attempts: 1, elapsedMs: 1 } }
+              : { state: ExecutionState.FAILED, hostPort: '1', readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                  failure: {
+                    code: FailureCode.PORT_NOT_LISTENING,
+                    message: 'Nothing is listening.',
+                    observedSocket: { address: '0.0.0.0', port: 9000, loopbackOnly: false },
+                  } },
+          clearStartupBudget: () => undefined,
+          cleanup: async () => ({ errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+
+    const m = new SessionManager(manager, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [svc('api', 'api', 3000), svc('web', 'web', 3001)], planSource: 'rule-based' },
+          skipped: [], warnings: [],
+        }),
+      } as never,
+    });
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await until(
+      () => s.state === ExecutionState.PARTIALLY_READY || s.state === ExecutionState.FAILED,
+      8000,
+    );
+
+    expect(s.state).toBe(ExecutionState.PARTIALLY_READY);
+    // One start plus its own attempts, and no more.
+    expect(attempts.filter((n) => n === 'api').length).toBeLessThanOrEqual(1 + config.ai.maxRepairAttempts);
+    expect(attempts.filter((n) => n === 'web')).toHaveLength(1);
+    // It stops with a reason naming the service, and which reason depends on how it
+    // fails: here the rule proposes the same correction twice and the progress check
+    // refuses it before the budget runs out. Both are stopping for a stated cause, which
+    // is what this asserts — the *bound* is asserted by the attempt count above.
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(
+      /(Repair limit of \d+ reached for api|No rule applies to api)/,
+    );
+    await m.shutdown();
+  });
+});
+
 describe('a project service killed by our own memory limit', () => {
   const projectMeta = {
     warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
