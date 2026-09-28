@@ -39,6 +39,17 @@ describe('<RunHeader>', () => {
     expect(html).not.toMatch(/Run another/);
   });
 
+  it('offers the same shut down for a project that is only partly running', () => {
+    // It owns containers and holds the only slot exactly as a wholly ready one does.
+    // The two states differ in what they promise, not in what there is to stop — and a
+    // half-running project is the one somebody is most likely to want rid of.
+    const html = render('PARTIALLY_READY' as ExecutionState);
+    expect(html).toMatch(/Shut down/);
+    expect(html).not.toMatch(/Run another/);
+    // And it does not read as success.
+    expect(html).toContain('text-warn');
+  });
+
   it('still stops a run that has not finished', () => {
     for (const state of ['CLONING', 'BUILDING', 'WAITING_FOR_READY'] as ExecutionState[]) {
       expect(render(state), state).toMatch(/>Stop</);

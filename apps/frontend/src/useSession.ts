@@ -28,7 +28,7 @@ export interface SessionStream {
   connected: boolean;
 }
 
-const TERMINAL: string[] = ['READY', 'FAILED', 'CANCELLED', 'COMPLETED'];
+const TERMINAL: string[] = ['READY', 'PARTIALLY_READY', 'FAILED', 'CANCELLED', 'COMPLETED'];
 
 /** Reconnect ceiling. Past this the stream is gone, and retrying is not going to change it. */
 const MAX_RECONNECTS = 8;

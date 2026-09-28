@@ -174,6 +174,8 @@ export function describeState(state: ExecutionState | 'IDLE'): string {
       return 'Started — waiting for it to open its port and answer.';
     case 'READY':
       return 'Running and answering requests.';
+    case 'PARTIALLY_READY':
+      return 'Partly running. Some services are serving; one is not.';
     case 'REPAIRING':
       return 'That did not work. Trying a corrected plan.';
     case 'CLEANING_UP':

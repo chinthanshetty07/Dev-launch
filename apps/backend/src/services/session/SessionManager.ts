@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ExecutionState,
   FailureCode,
+  SERVING_STATES,
   TERMINAL_STATES,
   type RequiredEnvVar,
   type FailureDetail,
@@ -410,6 +411,14 @@ export class SessionManager extends EventEmitter {
       if (project.plan) {
         session.project = project.plan;
         session.detected = `project:${project.plan.services.map((sv) => sv.role).join('+')}`;
+        // Carried, not only logged. The single-service path has always set this and the
+        // dashboard has always rendered it, so a project was the one shape whose
+        // warnings — which service is starting from where, and why — existed only as
+        // two grey lines somewhere in several hundred lines of install output.
+        session.planWarnings = [
+          ...project.warnings,
+          ...project.skipped.map((skip) => `Skipping ${skip.name}: ${skip.reason}`),
+        ];
         session.logs.buffer.push(
           'stdout',
           `Detected ${project.plan.services.length} services: ` +
@@ -680,8 +689,55 @@ export class SessionManager extends EventEmitter {
     const attempts = session.repairAttempts?.length ?? 0;
     const kept = original ?? outcome.failure;
     session.failure = kept && attempts > 0 ? { ...kept, repairAttemptsAfter: attempts } : kept;
+
+    // What still works, keeps working.
+    //
+    // This was FAILED and teardown, unconditionally — so a repository whose server
+    // lists a dependency that does not exist on PyPI had its frontend, which had been
+    // serving for a minute, removed along with it. The reason had nothing to do with
+    // the frontend, and a person who wanted to look at it was left with nothing.
+    //
+    // Any service serving traffic is enough. Which one hardly matters: a working
+    // frontend is worth opening even when its API is down, and a working API is worth
+    // curling even when its frontend is not built. The failure is still reported, and
+    // reported first — the point is to stop destroying the answer, not to hide the
+    // question.
+    const serving = session.run?.services.filter((sv) => sv.state === ExecutionState.READY) ?? [];
+    if (serving.length > 0) {
+      // Those that made it keep their containers past the startup ceiling, as they
+      // would have in a wholly successful run. Without this they are stopped ten
+      // minutes later for failing to become ready, which they did.
+      for (const sv of serving) sv.handle.clearStartupBudget?.();
+      session.readyAt = Date.now();
+      session.url = this.servingUrl(session, serving);
+      this.setState(session, ExecutionState.PARTIALLY_READY);
+      session.logs.buffer.push(
+        'stdout',
+        `${serving.length} of ${session.run!.services.length} services are running and ` +
+          'will stay up. The diagnosis above is for the one that is not; fix it in the ' +
+          'repository and restart that service, or stop the session when you are done.',
+      );
+      // The same clocks a READY session gets: this one owns containers too, and
+      // something has to reclaim them.
+      this.armLifetime(session);
+      return;
+    }
+
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
+  }
+
+  /**
+   * The URL to hand a person for a partly-running project.
+   *
+   * The entry service when it is one of the survivors, because that is the page; the
+   * first survivor otherwise, because an API's own URL is still something to open and
+   * an empty result panel reads as nothing having worked.
+   */
+  private servingUrl(session: Session, serving: readonly ProjectRun['services'][number][]): string | undefined {
+    const entry = session.run?.entry();
+    if (entry && serving.includes(entry) && entry.url) return entry.url;
+    return serving.find((sv) => sv.url)?.url;
   }
 
   /**
@@ -1240,9 +1296,11 @@ export class SessionManager extends EventEmitter {
     const timer = setTimeout(() => {
       // READY hands over to the lifetime clock; AWAITING_INPUT has its own bound and is
       // waiting on a person rather than stuck.
+      // Both serving states hand over to the lifetime clock; AWAITING_INPUT has its own
+      // bound and is waiting on a person rather than stuck.
       if (
         TERMINAL_STATES.includes(session.state) ||
-        session.state === ExecutionState.READY ||
+        SERVING_STATES.includes(session.state) ||
         session.state === ExecutionState.AWAITING_INPUT
       ) {
         return;
@@ -1391,7 +1449,9 @@ export class SessionManager extends EventEmitter {
 
   touch(id: string): void {
     const session = this.sessions.get(id);
-    if (!session || session.state !== ExecutionState.READY) return;
+    // A partly-running project is being used like any other: somebody watching its log
+    // or polling its stats is reason not to reclaim it for idleness.
+    if (!session || !SERVING_STATES.includes(session.state)) return;
     this.clearTimers(id);
     this.armLifetime(session);
   }
@@ -1452,6 +1512,17 @@ export class SessionManager extends EventEmitter {
     }
 
     session.failure = outcome.failure;
+    // As in `verifyProject`: a restart that fixes nothing must not also take down the
+    // siblings that were working before it was asked for.
+    const serving = session.run.services.filter((sv) => sv.state === ExecutionState.READY);
+    if (serving.length > 0) {
+      for (const sv of serving) sv.handle.clearStartupBudget?.();
+      session.url = this.servingUrl(session, serving);
+      this.setState(session, ExecutionState.PARTIALLY_READY, 'restarted');
+      this.armLifetime(session);
+      return session;
+    }
+
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
     return session;

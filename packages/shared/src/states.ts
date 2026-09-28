@@ -15,6 +15,22 @@ export const ExecutionState = {
   STARTING: 'STARTING',
   WAITING_FOR_READY: 'WAITING_FOR_READY',
   READY: 'READY',
+  /**
+   * Some services are serving traffic and at least one is not.
+   *
+   * Added because the alternative was throwing working containers away. A project whose
+   * API fails its start command went straight to FAILED and teardown — taking down a
+   * frontend that had been serving for a minute, for a reason that had nothing to do
+   * with it. Real repositories fail this way constantly: one service has a broken
+   * import, a missing dependency, a requirement that does not exist on PyPI, and the
+   * rest are fine.
+   *
+   * Not terminal, because it is not finished: the containers are up, the URLs answer,
+   * the slot is held, and the failed service can be restarted once its repository is
+   * fixed. Distinct from READY because a person given a green light and a URL will
+   * assume the thing works, and distinct from FAILED because something does.
+   */
+  PARTIALLY_READY: 'PARTIALLY_READY',
   FAILED: 'FAILED',
   REPAIRING: 'REPAIRING',
   CLEANING_UP: 'CLEANING_UP',
@@ -45,6 +61,19 @@ export const STATE_PROGRESSION: readonly ExecutionState[] = [
   'STARTING',
   'WAITING_FOR_READY',
   'READY',
+];
+
+/**
+ * States in which the session owns running containers and holds the slot.
+ *
+ * READY and PARTIALLY_READY differ in what they promise and not at all in what they
+ * own, and every caller that asks "is there something running to stop, watch or time
+ * out" wants both. Keeping the list here rather than repeating the pair is what stops
+ * the second one being forgotten in the fifth place that checks.
+ */
+export const SERVING_STATES: readonly ExecutionState[] = [
+  ExecutionState.READY,
+  ExecutionState.PARTIALLY_READY,
 ];
 
 /** States from which no further transition occurs. */

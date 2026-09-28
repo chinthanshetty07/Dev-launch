@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ExecutionState, FailureCode, RunPlanSchema, type RunPlan } from '@devlaunch/shared';
+import {
+  ExecutionState,
+  FailureCode,
+  RunPlanSchema,
+  TERMINAL_STATES,
+  type RunPlan,
+} from '@devlaunch/shared';
 import { config } from '../config/index.js';
 import { SessionManager, SessionConflict } from '../services/session/SessionManager.js';
 import type {
@@ -949,6 +955,8 @@ describe('repairing a project, not only a lone service', () => {
   function projectExec(opts: { apiRecovers: boolean }) {
     const launches: { name: string; port: number | null }[] = [];
     const waits: string[] = [];
+    const cleanups: string[] = [];
+    const budgetsCleared: string[] = [];
     let apiAttempt = 0;
 
     const exec = {
@@ -978,13 +986,13 @@ describe('repairing a project, not only a lone service', () => {
                     observedSocket: { address: '0.0.0.0', port: 9001, loopbackOnly: false },
                   },
                 }),
-          clearStartupBudget: () => undefined,
-          cleanup: async () => ({ errors: [] }),
+          clearStartupBudget: () => { budgetsCleared.push(name); },
+          cleanup: async () => (cleanups.push(name), { errors: [] }),
         } as unknown as LaunchHandle;
       },
     } as unknown as ExecutionManager;
 
-    return { exec, launches, waits, apiAttempts: () => apiAttempt };
+    return { exec, launches, waits, cleanups, budgetsCleared, apiAttempts: () => apiAttempt };
   }
 
   const deps = (exec: ExecutionManager) =>
@@ -1019,12 +1027,21 @@ describe('repairing a project, not only a lone service', () => {
   });
 
   it('still stops at the repair ceiling when the rule does not help', async () => {
+    // The subject here is the ceiling: the loop must stop rather than thrash. It used
+    // to end in FAILED, and that was how "stopped" was expressed rather than what was
+    // being tested — stopping now leaves the web service up, because tearing down a
+    // container that works to announce that a sibling does not is not a way of
+    // stopping, it is a second failure. The diagnosis is still the api's, and it is
+    // still the first one taken.
     const { exec, apiAttempts } = projectExec({ apiRecovers: false });
     const mgr = deps(exec);
     const session = await mgr.launch({ sourceDir: '/tmp/repo' });
-    await until(() => session.state === ExecutionState.FAILED, 8000);
+    await until(
+      () => session.state === ExecutionState.PARTIALLY_READY || session.state === ExecutionState.FAILED,
+      8000,
+    );
 
-    expect(session.state).toBe(ExecutionState.FAILED);
+    expect(session.state).toBe(ExecutionState.PARTIALLY_READY);
     // One repair, then the same proposal again — which the progress check refuses.
     expect(apiAttempts()).toBeLessThanOrEqual(1 + config.ai.maxRepairAttempts);
     expect(session.failure?.message).toMatch(/api/);
@@ -1606,6 +1623,264 @@ describe('stopping a session that is still running', () => {
     // The slot is the point: a second launch was refused until this one ended.
     const next = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
     expect(next.id).not.toBe(s.id);
+    await mgr.shutdown();
+  });
+});
+
+/**
+ * A project where one service will not start, and the rest are fine.
+ *
+ * Which is the ordinary shape of a real failure, not an edge case. Of the repositories
+ * this was measured against, two failed exactly here: `school-management-system`, whose
+ * requirements.txt lists a package that does not exist on PyPI, and
+ * `sern-compose-template`, whose backend exits 1. Both had a frontend that had been
+ * serving for a minute, and both had it removed — for a reason that had nothing to do
+ * with it, leaving a person who wanted to look at it with nothing to look at.
+ */
+describe('a project that is partly running', () => {
+  const projectMeta = {
+    warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+    services: [
+      { name: 'web', dir: 'frontend', role: 'web', language: 'node', scripts: ['dev'], evidence: 'x' },
+      { name: 'api', dir: 'backend', role: 'api', language: 'node', scripts: ['dev'], evidence: 'x' },
+    ],
+  };
+
+  const svc = (name: string, role: string, port: number) =>
+    ({ ...RunPlanSchema.parse({
+      runtime: { language: 'node', version: '20' },
+      packageManager: 'npm', installCommand: null, buildCommand: null,
+      startCommand: `npm run dev --port ${port}`, workingDirectory: name,
+      expectedPort: port, planSource: 'rule-based',
+    }), name, role }) as never;
+
+  /** `api` never starts however it is planned; `web` is always fine. */
+  function exec() {
+    const cleanups: string[] = [];
+    const budgets: string[] = [];
+    return {
+      cleanups,
+      budgets,
+      manager: {
+        docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+        async launch(o: { plan: { name?: string; expectedPort: number | null }; logs?: LogManager }) {
+          const name = o.plan.name ?? 'single';
+          const ok = name !== 'api';
+          return {
+            logs: o.logs ?? new LogManager(),
+            waitForReady: async (): Promise<ReadyOutcome> =>
+              ok
+                ? { state: ExecutionState.READY, hostPort: '5173', url: `http://localhost:5173/`, readiness: { ready: true, attempts: 1, elapsedMs: 1 } }
+                : {
+                    state: ExecutionState.FAILED, hostPort: '4000',
+                    readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                    failure: { code: FailureCode.START_COMMAND_FAILED, message: 'api: Start command exited with code 1.' },
+                  },
+            clearStartupBudget: () => { budgets.push(name); },
+            cleanup: async () => (cleanups.push(name), { errors: [] }),
+          } as unknown as LaunchHandle;
+        },
+      } as unknown as ExecutionManager,
+    };
+  }
+
+  const manager = (e: ExecutionManager, warnings: string[] = []) =>
+    new SessionManager(e, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [svc('api', 'api', 4000), svc('web', 'web', 5173)], planSource: 'rule-based' },
+          skipped: [{ name: 'worker', reason: 'no plan could be produced' }],
+          warnings,
+        }),
+      } as never,
+    });
+
+  async function run(warnings: string[] = []) {
+    const e = exec();
+    const mgr = manager(e.manager, warnings);
+    const session = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(
+      () => session.state === ExecutionState.PARTIALLY_READY || session.state === ExecutionState.FAILED,
+      8000,
+    );
+    return { session, mgr, ...e };
+  }
+
+  it('keeps the services that work, and says which one does not', async () => {
+    const { session, cleanups, mgr } = await run();
+
+    expect(session.state).toBe(ExecutionState.PARTIALLY_READY);
+    // The whole point: nothing was torn down. A working container and the minutes of
+    // install behind it are not a reasonable price for announcing a sibling's failure.
+    expect(cleanups).toEqual([]);
+    expect(session.url).toBe('http://localhost:5173/');
+    // And the failure is still reported. Keeping what works is not the same as
+    // pretending the run succeeded.
+    expect(session.failure?.message).toMatch(/api/);
+    await mgr.shutdown();
+  });
+
+  it('is not terminal, so it can still be stopped and still holds the slot', async () => {
+    // It owns containers. A state that reads as finished while holding a port and the
+    // only session slot is how a session becomes unreachable.
+    const { session, mgr, cleanups } = await run();
+    expect(TERMINAL_STATES.includes(session.state)).toBe(false);
+
+    await mgr.cancel(session.id);
+    expect(session.state).toBe(ExecutionState.CANCELLED);
+    expect(cleanups.length).toBeGreaterThan(0);
+    await mgr.shutdown();
+  });
+
+  it('spares the survivors the startup ceiling they did meet', async () => {
+    // The budget stops a container that never became ready. These did, so leaving it
+    // armed stops them ten minutes later for a thing they are not guilty of.
+    const { session, budgets, mgr } = await run();
+    expect(budgets).toContain('web');
+    expect(session.readyAt).toBeGreaterThan(0);
+    await mgr.shutdown();
+  });
+
+  it('is not abandoned by the backstop for a readiness it did reach', async () => {
+    // The startup bound exists for a session that is not progressing at all. A partly
+    // running one has progressed as far as it is going to and owns live containers, so
+    // it hands over to the lifetime clock exactly as a wholly ready one does. Left in
+    // the bound's care it is torn down minutes later for a failure already reported.
+    const e = exec();
+    const mgr = new SessionManager(e.manager, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [svc('api', 'api', 4000), svc('web', 'web', 5173)], planSource: 'rule-based' },
+          skipped: [],
+          warnings: [],
+        }),
+      } as never,
+      startupBoundMs: 40,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => session.state === ExecutionState.PARTIALLY_READY, 8000);
+
+    // Well past the bound, which would have fired several times over.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(session.state).toBe(ExecutionState.PARTIALLY_READY);
+    expect(e.cleanups).toEqual([]);
+    await mgr.shutdown();
+  });
+
+  it('stays alive while somebody is watching it', async () => {
+    // Every read of a session touches it, which is what keeps a dashboard someone is
+    // looking at from being reclaimed for idleness. A partly running project is being
+    // looked at for exactly the same reason as a ready one — more, probably, since
+    // something on it is broken.
+    const { config } = await import('../config/index.js');
+    const original = config.timeouts.sessionIdleMs;
+    Object.defineProperty(config.timeouts, 'sessionIdleMs', { value: 120, configurable: true, writable: true });
+    try {
+      const { session, mgr } = await run();
+      expect(session.state).toBe(ExecutionState.PARTIALLY_READY);
+
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 40));
+        mgr.touch(session.id);
+      }
+      expect(session.state, 'a watched session must not be reclaimed for idleness').toBe(
+        ExecutionState.PARTIALLY_READY,
+      );
+
+      // And left alone, it is: the clock is real, not disabled.
+      await until(() => session.state === ExecutionState.COMPLETED, 2000);
+      expect(session.state).toBe(ExecutionState.COMPLETED);
+      await mgr.shutdown();
+    } finally {
+      Object.defineProperty(config.timeouts, 'sessionIdleMs', { value: original, configurable: true, writable: true });
+    }
+  });
+
+  it('is reclaimed when nobody is watching, like anything else holding containers', async () => {
+    // The counterpart to the test above, and the one that matters more: a state that
+    // owns a port, a container and the only session slot and has no clock on it is a
+    // leak. Nothing touches this one, so only the lifetime armed at the transition can
+    // end it.
+    const { config } = await import('../config/index.js');
+    const original = config.timeouts.sessionIdleMs;
+    Object.defineProperty(config.timeouts, 'sessionIdleMs', { value: 80, configurable: true, writable: true });
+    try {
+      const { session, mgr, cleanups } = await run();
+      expect(session.state).toBe(ExecutionState.PARTIALLY_READY);
+
+      await until(() => session.state === ExecutionState.COMPLETED, 3000);
+      expect(session.state).toBe(ExecutionState.COMPLETED);
+      expect(cleanups.length, 'and its containers go with it').toBeGreaterThan(0);
+      await mgr.shutdown();
+    } finally {
+      Object.defineProperty(config.timeouts, 'sessionIdleMs', { value: original, configurable: true, writable: true });
+    }
+  });
+
+  it('hands over the page\'s URL, not whichever service happened to survive first', async () => {
+    // A project can lose a service and still have several running. The one worth
+    // opening is the browser front door; an API\'s own URL is a fallback for when that
+    // is the thing that died, not a first choice ahead of it.
+    const cleanups: string[] = [];
+    const manager = {
+      docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+      async launch(o: { plan: { name?: string }; logs?: LogManager }) {
+        const name = o.plan.name ?? 'single';
+        const ok = name !== 'broken';
+        return {
+          logs: o.logs ?? new LogManager(),
+          waitForReady: async (): Promise<ReadyOutcome> =>
+            ok
+              ? { state: ExecutionState.READY, hostPort: '1', url: `http://localhost/${name}`, readiness: { ready: true, attempts: 1, elapsedMs: 1 } }
+              : { state: ExecutionState.FAILED, hostPort: null, readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                  failure: { code: FailureCode.START_COMMAND_FAILED, message: 'broken: exited 1' } },
+          clearStartupBudget: () => undefined,
+          cleanup: async () => (cleanups.push(name), { errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+
+    // `healthy-api` is planned first and survives; `web` is the entry and also survives.
+    // `broken` is an api rather than a worker: a worker has no port to wait on and is
+    // ready as soon as it runs, so it could not fail here even if it wanted to.
+    const mgr = new SessionManager(manager, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: {
+            services: [svc('healthy-api', 'api', 4000), svc('web', 'web', 5173), svc('broken', 'api', 7000)],
+            planSource: 'rule-based',
+          },
+          skipped: [], warnings: [],
+        }),
+      } as never,
+    });
+    const session = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(
+      () => session.state === ExecutionState.PARTIALLY_READY || session.state === ExecutionState.FAILED,
+      8000,
+    );
+
+    expect(session.state).toBe(ExecutionState.PARTIALLY_READY);
+    expect(session.url).toBe('http://localhost/web');
+    await mgr.shutdown();
+  });
+
+  it('carries the project planner\'s warnings, which only ever reached the log', async () => {
+    // `session.plan` is the single-service field, so a project left `planWarnings`
+    // empty and the dashboard's warning list with nothing in it — while the reasons a
+    // service starts from an odd directory scrolled past in the install output.
+    const { session, mgr } = await run(['api: starting from backend/, where its imports resolve']);
+
+    expect(session.planWarnings).toContain('api: starting from backend/, where its imports resolve');
+    // Including what was dropped: a service nobody planned is a thing to be told about,
+    // not a silent absence from a list.
+    expect(session.planWarnings).toContain('Skipping worker: no plan could be produced');
     await mgr.shutdown();
   });
 });

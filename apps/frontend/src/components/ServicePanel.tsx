@@ -2,6 +2,7 @@ import type { BackingView, ServiceStats, ServiceView } from '@devlaunch/shared';
 
 const STATE_STYLE: Record<string, string> = {
   READY: 'border-ok/60 text-ok',
+  PARTIALLY_READY: 'border-warn text-warn',
   FAILED: 'border-bad text-bad',
   CANCELLED: 'border-bad text-bad',
   STARTING: 'border-link text-link',
@@ -105,6 +106,34 @@ export function ServicePanel({
               </td>
             </tr>
           ))}
+
+          {/* The commands, under the table rather than in it.
+              A project's plan was never sent to the client at all — `session.plan` is
+              the single-service field — so the "Run plan" disclosure was empty for every
+              multi-service run, and `Start command exited with code 1` named no command.
+              A row that failed is the row somebody is reading, so its commands are the
+              ones worth the width. */}
+          {services.some((sv) => sv.plan) && (
+            <tr>
+              <td colSpan={7} className="pt-2">
+                <dl className="space-y-1 border-t border-edge pt-2 text-[12px]">
+                  {services.filter((sv) => sv.plan).map((sv) => (
+                    <div key={`${sv.name}-plan`} className="flex flex-wrap gap-x-3">
+                      <dt className="text-muted">{sv.name}</dt>
+                      <dd className="text-muted">
+                        <code className="text-fg">{sv.plan!.startCommand}</code>
+                        <span className="text-muted">
+                          {' '}in {sv.plan!.workingDirectory} on {sv.plan!.runtime}
+                          {sv.plan!.installCommand ? `, after ${sv.plan!.installCommand}` : ''}
+                          {sv.plan!.buildCommand ? ` and ${sv.plan!.buildCommand}` : ''}
+                        </span>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </td>
+            </tr>
+          )}
 
           {(backing ?? []).map((db) => (
             <tr key={db.kind} className="align-middle">

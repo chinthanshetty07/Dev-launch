@@ -19,6 +19,7 @@ import { BrowserWiringPanel } from './components/BrowserWiringPanel';
 const RUNNING = [
   'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING',
   'AWAITING_INPUT', 'BUILDING', 'STARTING', 'WAITING_FOR_READY', 'REPAIRING', 'READY',
+  'PARTIALLY_READY',
 ];
 
 /**
@@ -220,8 +221,12 @@ export default function App() {
           />
         )}
 
-        {state === 'READY' && session?.url && (
-          <ResultHero url={session.url} services={session.services} />
+        {(state === 'READY' || state === 'PARTIALLY_READY') && session?.url && (
+          <ResultHero
+            url={session.url}
+            services={session.services}
+            partial={state === 'PARTIALLY_READY'}
+          />
         )}
         {/* Directly under the URL it qualifies. A green result above a page that does
             not work is worse than a failure, because a failure sends somebody looking. */}
@@ -234,7 +239,7 @@ export default function App() {
             reasonable one is that it is impossible to miss. */}
         <RewritePanel rewrites={session?.rewrites} />
 
-        {state === 'READY' && (
+        {(state === 'READY' || state === 'PARTIALLY_READY') && (
           <EndpointsPanel url={session?.url} routes={session?.routes} readiness={session?.readiness} />
         )}
 
@@ -284,7 +289,7 @@ export default function App() {
           </Collapsible>
         )}
 
-        <LogTerminal lines={lines} connected={connected} grow={state !== 'READY'} />
+        <LogTerminal lines={lines} connected={connected} grow={state !== 'READY' && state !== 'PARTIALLY_READY'} />
       </div>
     </div>
   );

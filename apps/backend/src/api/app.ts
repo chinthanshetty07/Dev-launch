@@ -79,6 +79,15 @@ function present(session: Session) {
         containerPort: sv.plan.expectedPort,
         hostPort: sv.hostPort,
         failure: sv.failure,
+        // What it was actually run with — the repaired plan when it was repaired, since
+        // that is the one that produced the state beside it.
+        plan: {
+          installCommand: sv.plan.installCommand,
+          buildCommand: sv.plan.buildCommand,
+          startCommand: sv.plan.startCommand,
+          workingDirectory: sv.plan.workingDirectory,
+          runtime: `${sv.plan.runtime.language} ${sv.plan.runtime.version}`,
+        },
       }),
     ),
     // From either path: a single service gets its database provisioned the same way a

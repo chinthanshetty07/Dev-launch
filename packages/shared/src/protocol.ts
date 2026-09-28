@@ -22,6 +22,22 @@ export interface ServiceView {
   failure?: FailureDetail;
   /** Live resource use, when it has been sampled. */
   stats?: ServiceStats;
+  /**
+   * The commands this service was actually run with.
+   *
+   * A project's plan was never sent at all: `session.plan` is the single-service field,
+   * and a multi-service session leaves it undefined — so the dashboard's "Run plan"
+   * disclosure was empty for every project, and a service reporting `Start command
+   * exited with code 1` gave no way to see which command that was. Per service rather
+   * than per session because that is the unit each one failed as.
+   */
+  plan?: {
+    installCommand: string | null;
+    buildCommand: string | null;
+    startCommand: string;
+    workingDirectory: string;
+    runtime: string;
+  };
 }
 
 /** A database or cache DevLaunch started for the project. */

@@ -40,7 +40,7 @@ export function RunHeader({
   const running = RUNNING.includes(state);
   // The clock stops at READY as well: the run took what it took, and a duration that
   // keeps climbing while the application serves traffic is measuring something else.
-  const settled = finished || state === 'READY';
+  const settled = finished || SERVING.includes(state);
   const elapsed = useElapsed(startedAt, settled ? (readyAt ?? null) : undefined);
 
   return (
@@ -84,12 +84,12 @@ export function RunHeader({
               disabled={busy}
               className="rounded-md border border-edge px-3 py-1.5 text-[12px] hover:border-bad hover:text-bad disabled:opacity-40"
               title={
-                state === 'READY'
+                SERVING.includes(state)
                   ? 'Shut the application down and release the slot'
                   : 'Stop this run'
               }
             >
-              {state === 'READY' ? 'Shut down' : 'Stop'}
+              {SERVING.includes(state) ? 'Shut down' : 'Stop'}
             </button>
           )}
           {finished && (
@@ -120,7 +120,16 @@ const TERMINAL: string[] = ['FAILED', 'CANCELLED', 'COMPLETED'];
 const RUNNING: string[] = [
   'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING', 'AWAITING_INPUT',
   'BUILDING', 'STARTING', 'WAITING_FOR_READY', 'REPAIRING', 'CLEANING_UP', 'READY',
+  'PARTIALLY_READY',
 ];
+
+/**
+ * States where the run is over and containers are still up.
+ *
+ * Both of them: what the button offers is the same either way, because what there is to
+ * stop is the same either way.
+ */
+const SERVING: string[] = ['READY', 'PARTIALLY_READY'];
 
 const TONE = {
   ok: 'text-ok',
@@ -132,6 +141,7 @@ const TONE = {
 
 function toneOf(state: ExecutionState | 'IDLE'): keyof typeof TONE {
   if (state === 'READY' || state === 'COMPLETED') return 'ok';
+  if (state === 'PARTIALLY_READY') return 'warn';
   if (state === 'FAILED') return 'bad';
   if (state === 'AWAITING_INPUT' || state === 'REPAIRING' || state === 'CANCELLED') return 'warn';
   if (state === 'IDLE') return 'idle';

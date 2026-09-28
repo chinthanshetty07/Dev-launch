@@ -116,6 +116,20 @@ network error. In both the detector table and the signature table, a list walked
 wrong order produces a confident, wrong answer — so both are ordered most-specific-first
 and both have a test that fails if that ordering breaks.
 
+### A project is not all-or-nothing
+
+Readiness for a project used to be a single gate: every service ready, or the whole thing
+failed and was torn down. The gate is right — a frontend that answers while its API is
+still starting is not something a person can use — but the *consequence* was not. Losing
+one service is the common outcome, and taking down the working ones to announce it throws
+away containers and minutes of install to fix nothing.
+
+`PARTIALLY_READY` is the third answer. Deliberately not terminal: the session owns live
+containers, so it keeps the slot, keeps its clocks, and can still be stopped and
+restarted. Everything that asks "is something running here" asks `SERVING_STATES` rather
+than comparing against `READY`, which is what stops the second state being forgotten in
+the fifth place that checks.
+
 ## State machine
 
 ```

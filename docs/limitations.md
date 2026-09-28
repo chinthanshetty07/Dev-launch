@@ -119,6 +119,22 @@ what the source names against what was actually published, and reported above th
 with the file and both addresses. The project still reaches `READY`, because every
 service genuinely is running.
 
+## One broken service no longer takes the others with it
+
+A project whose API will not start used to go straight to `FAILED` and teardown, removing
+a frontend that had been serving for a minute for a reason that had nothing to do with it.
+That is the ordinary shape of a real failure, not an edge case: one service has a broken
+import or names a dependency that does not exist, and the rest are fine.
+
+Such a run now ends in `PARTIALLY_READY`. The services that work keep their containers and
+their URLs, the one that did not is named with its own diagnosis, and the session stays
+alive — so it holds the slot, answers `restart`, and is reclaimed by the same idle and
+lifetime clocks as any other running session. `restart <service>` is the intended next
+step once the repository is fixed.
+
+The failure is still reported, and reported first. Keeping what works is not the same as
+pretending the run succeeded.
+
 ## Readiness is not correctness
 
 READY means an HTTP server accepted a connection and returned a complete response. It

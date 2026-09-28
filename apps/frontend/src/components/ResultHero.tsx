@@ -13,22 +13,37 @@ import type { ServiceView } from '@devlaunch/shared';
 export function ResultHero({
   url,
   services,
+  partial,
 }: {
   url: string;
   services?: ServiceView[];
+  /**
+   * Some services are serving and at least one is not.
+   *
+   * The same panel rather than a second one, because it is the same answer with a
+   * qualification: here is what is running, here is where to open it. A separate hero
+   * would either repeat all of this or bury the URL, and the URL is the thing.
+   */
+  partial?: boolean;
 }) {
   // Which of several URLs is the one to open. The browser-facing service is the page;
   // the API beside it is something the page calls, and opening it shows a 404 at best.
   const web = (services ?? []).find((s) => s.role === 'web' && s.url);
   const primary = web?.url ?? url;
   const others = (services ?? []).filter((s) => s.url && s.url !== primary);
+  const down = (services ?? []).filter((s) => s.state !== 'READY');
+  const tone = partial ? 'warn' : 'ok';
 
   return (
-    <section className="border-b border-ok/40 bg-ok/5 px-4 py-5">
+    <section className={`border-b px-4 py-5 ${partial ? 'border-warn/40 bg-warn/5' : 'border-ok/40 bg-ok/5'}`}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.15em] text-ok">
-            {web ? 'Your application is running' : 'Running'}
+          <p className={`text-[11px] uppercase tracking-[0.15em] text-${tone}`}>
+            {partial
+              ? `Partly running — ${down.length} of ${services?.length ?? 0} services did not start`
+              : web
+                ? 'Your application is running'
+                : 'Running'}
           </p>
           <a
             href={primary}
@@ -46,12 +61,24 @@ export function ResultHero({
             href={primary}
             target="_blank"
             rel="noopener noreferrer"
-            className="rounded-md border border-ok bg-ok/10 px-5 py-2.5 text-[13px] font-medium text-ok hover:bg-ok/20"
+            className={
+              partial
+                ? 'rounded-md border border-warn bg-warn/10 px-5 py-2.5 text-[13px] font-medium text-warn hover:bg-warn/20'
+                : 'rounded-md border border-ok bg-ok/10 px-5 py-2.5 text-[13px] font-medium text-ok hover:bg-ok/20'
+            }
           >
             Open ↗
           </a>
         </div>
       </div>
+
+      {partial && down.length > 0 && (
+        <p className="mt-3 text-[12px] text-muted">
+          Still down: {down.map((s) => s.name).join(', ')}. Everything above kept its
+          container and will stay up — fix the repository and restart just that service,
+          or shut the session down when you are done.
+        </p>
+      )}
 
       {others.length > 0 && (
         <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted">
