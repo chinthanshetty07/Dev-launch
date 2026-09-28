@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -49,7 +51,7 @@ let running: Fingerprint | undefined;
 interface Fingerprint {
   /** HEAD, for display. Never compared — see `buildStamp`. */
   commit?: string;
-  /** Hash of the behavioural source, committed and not. */
+  /** Hash of the behavioural source files as they are on disk. */
   content?: string;
 }
 
@@ -89,31 +91,61 @@ export async function buildStamp(cwd: string): Promise<BuildStamp> {
  */
 async function fingerprint(cwd: string): Promise<Fingerprint> {
   const commit = await git(cwd, ['rev-parse', 'HEAD']);
-  // Tree hashes rather than the commit: identical for a reworded commit, different the
-  // moment a byte of committed source differs.
-  const trees = await git(cwd, ['rev-parse', ...BEHAVIOURAL_PATHS.map((p) => `HEAD:${p}`)]);
-  // The *diff*, not `status --porcelain`, and the difference is the whole point: status
-  // reports which files are modified and not what is in them, so a second edit to an
-  // already-modified file left the fingerprint identical — which is exactly the case
-  // this is for, somebody editing one file over and over while a server runs. A live
-  // check caught that; every unit test passed, because each happened to edit a file
-  // that was clean beforehand.
-  const diff = await git(cwd, ['diff', 'HEAD', '--', ...BEHAVIOURAL_PATHS]);
-  // An untracked file is in neither HEAD nor that diff, so its name still comes from
-  // here. Its *contents* are not covered, which is the smaller gap: a file nothing
-  // imports yet cannot change an answer.
-  const untracked = await git(cwd, [
-    'ls-files', '--others', '--exclude-standard', '--', ...BEHAVIOURAL_PATHS,
-  ]);
-
+  const content = await sourceHash(cwd);
   return {
     ...(commit ? { commit } : {}),
-    // Hashed, because a working tree's diff is unbounded and this is only ever compared.
-    ...(trees !== undefined
-      ? { content: createHash('sha1').update([trees, diff, untracked].join('\n')).digest('hex') }
-      : {}),
+    ...(content ? { content } : {}),
   };
 }
+
+/**
+ * A hash of the source files on disk, which is the only thing that decides behaviour.
+ *
+ * Reading the files, and not asking git about them, after two false positives that were
+ * both git artefacts rather than changes. The first compared commit SHAs, so rewording a
+ * commit fired the banner over a byte-identical tree. The second hashed tree objects plus
+ * `git diff HEAD`, so *committing* pending work fired it — content moved out of the diff
+ * and into the trees while not one file changed.
+ *
+ * Both were the same mistake: measuring how the code is recorded instead of what it says.
+ * A file's bytes are what this process loaded, so a file's bytes are what to compare. It
+ * needs no git at all, and it is right for a checkout with no repository, a shallow
+ * clone, a dirty tree, an untracked file, and a file written by something that has never
+ * heard of git.
+ *
+ * 92 files and 1.3 MB at the time of writing, read on a health request that a dashboard
+ * makes on mount and on a state change. If that ever becomes a cost, cache it against the
+ * newest mtime — but measure before believing it is one.
+ */
+async function sourceHash(cwd: string): Promise<string | undefined> {
+  const hash = createHash('sha1');
+  let seen = 0;
+
+  // Sorted at every level, so the hash depends on the files and not on the order a
+  // filesystem happened to return them in.
+  const walk = async (dir: string): Promise<void> => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (SOURCE_SUFFIXES.some((ext) => entry.name.endsWith(ext))) {
+        const body = await readFile(full).catch(() => null);
+        if (body === null) continue;
+        hash.update(full).update(body);
+        seen++;
+      }
+    }
+  };
+
+  for (const path of BEHAVIOURAL_PATHS) await walk(resolve(cwd, path));
+  // Nothing read means the paths are not there: a deployment without its sources beside
+  // it, not a change. Say nothing rather than compare emptiness to emptiness.
+  return seen > 0 ? hash.digest('hex') : undefined;
+}
+
+/** What the runtime actually loads. A `.md` beside the code changes no answer. */
+const SOURCE_SUFFIXES = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs', '.json'];
 
 async function git(cwd: string, args: string[]): Promise<string | undefined> {
   try {

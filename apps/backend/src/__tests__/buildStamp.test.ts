@@ -33,6 +33,9 @@ describe('whether this process is running the code on disk', () => {
     await git('config', 'user.email', 't@example.com');
     await git('config', 'user.name', 'T');
     await write('apps/backend/src/a.ts', 'export const x = 1;');
+    // Nested, because almost every real source file is: a walk that does not descend
+    // would hash the two files at the top and miss the other ninety.
+    await write('apps/backend/src/services/deep/nested.ts', 'export const d = 1;');
     await write('packages/shared/src/b.ts', 'export const y = 1;');
     await write('docs/limitations.md', '# docs');
     await write('apps/frontend/src/App.tsx', 'export const App = 0;');
@@ -144,6 +147,78 @@ describe('whether this process is running the code on disk', () => {
     await write('apps/backend/src/new.ts', 'export const z = 1;');
 
     expect((await buildStamp(dir)).stale).toBe(true);
+  });
+
+  it('is not stale when pending work is committed and nothing else changes', async () => {
+    // The third false positive, and the second of the same family. A server starts with
+    // uncommitted work; that work is then committed. Not one file changes — content
+    // moves from `git diff` into a tree object — and a fingerprint built from those two
+    // fired the banner anyway. Both earlier versions measured how the code was
+    // *recorded*; this one measures what it says.
+    const { dir, git, write } = await repo();
+    await write('apps/backend/src/a.ts', 'export const x = 2;');
+    await recordRunningCommit(dir);
+
+    await git('add', '-A');
+    await git('commit', '-qm', 'commit the pending work');
+
+    const stamp = await buildStamp(dir);
+    expect(stamp.stale, 'committing changes no file').toBe(false);
+    // The commit on display did move, which is the honest thing to show.
+    expect(stamp.head).not.toBe(stamp.running);
+  });
+
+  it('needs no git at all', async () => {
+    // A tarball, a shallow clone, a deployment with no repository beside it. The files
+    // are what this process loaded, and they are there whether or not git is.
+    const { dir, write } = await repo();
+    const { rm } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    await rm(join(dir, '.git'), { recursive: true, force: true });
+
+    await recordRunningCommit(dir);
+    expect((await buildStamp(dir)).stale).toBe(false);
+
+    await write('apps/backend/src/a.ts', 'export const x = 42;');
+    expect((await buildStamp(dir)).stale, 'a changed file is a changed file').toBe(true);
+  });
+
+  it('ignores a file the runtime never loads', async () => {
+    // A README beside the code changes no answer, and firing for one is how the real
+    // signal gets buried.
+    const { dir, write } = await repo();
+    await recordRunningCommit(dir);
+
+    await write('apps/backend/src/NOTES.md', '# a note');
+
+    expect((await buildStamp(dir)).stale).toBe(false);
+  });
+
+  it('notices a change in a nested file, which is where the code actually lives', async () => {
+    const { dir, write } = await repo();
+    await recordRunningCommit(dir);
+
+    await write('apps/backend/src/services/deep/nested.ts', 'export const d = 2;');
+
+    expect((await buildStamp(dir)).stale).toBe(true);
+  });
+
+  it('withholds a verdict when there are no sources to read', async () => {
+    // A deployment without its sources beside it, or a moment when they cannot be read.
+    // Hashing nothing produces a perfectly good hash of nothing, which then differs from
+    // a real one the moment the files appear — a banner fired by a directory that showed
+    // up rather than by code that changed. Knowing nothing has to stay distinguishable
+    // from knowing the answer is empty.
+    const { mkdtemp } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const empty = await mkdtemp(join(tmpdir(), 'devlaunch-nosrc-'));
+
+    await recordRunningCommit(empty);
+    const { dir } = await repo();
+    // The same process, now pointed at a checkout that does have sources. With no
+    // fingerprint recorded there is nothing to compare, and nothing is the honest answer.
+    expect((await buildStamp(dir)).stale).toBe(false);
   });
 
   it('says nothing at all outside a checkout', async () => {
