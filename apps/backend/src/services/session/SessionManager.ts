@@ -793,6 +793,70 @@ export class SessionManager extends EventEmitter {
       return false;
     }
 
+    // *After* the attempt ceiling, as on the single-service path, and the ordering is
+    // not cosmetic: the memory ceiling is the only other thing bounding this, and a
+    // mutation that disabled it made the repair loop for ever rather than fail a test.
+    // Two independent bounds, so neither is load-bearing alone.
+    // A limit that is ours, before a plan that is theirs — as on the single-service
+    // path, and reachable from here at last. The memory repair served only repositories
+    // that happened to contain one service, which is the exact criticism this file
+    // already makes of the repair architecture it replaced. A workspace is worse off
+    // than a lone application rather than better: every service installs the whole
+    // workspace, and they do it at the same time.
+    //
+    // This service only. Two containers at the raised ceiling exceed what the VM has,
+    // and the one that was killed is the only one that has shown it needs more.
+    if (failure.code === FailureCode.OUT_OF_MEMORY) {
+      const current = service.memoryMb ?? config.container.memoryMb;
+      const ceiling = config.container.memoryCeilingMb;
+      if (current >= ceiling) {
+        session.logs.buffer.push(
+          'stdout',
+          `Not raising ${service.name}'s memory again: ${current} MB is already the ` +
+            'ceiling (DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB). Give the VM more with ' +
+            '`colima stop && colima start --cpu 4 --memory 8` and raise the ceiling.',
+        );
+        return false;
+      }
+
+      service.memoryMb = ceiling;
+      session.repairAttempts = [...(session.repairAttempts ?? []), service.plan];
+      session.repairs = [
+        ...(session.repairs ?? []),
+        {
+          source: 'deterministic',
+          type: 'MEMORY_LIMIT_RAISED',
+          failureCode: FailureCode.OUT_OF_MEMORY,
+          before: { memoryMb: current },
+          after: { memoryMb: ceiling },
+          evidence: [
+            `${service.name} was killed at ${current} MB, which is DevLaunch's limit rather than the repository's`,
+          ],
+          confidence: 'high',
+          service: service.name,
+        },
+      ];
+      this.setState(session, ExecutionState.REPAIRING);
+      session.logs.buffer.push(
+        'stdout',
+        `Raising ${service.name}'s memory limit from ${current} MB to ${ceiling} MB and ` +
+          'starting it again. The limit is ours, not this repository\'s.',
+      );
+
+      try {
+        await service.restart();
+      } catch (err) {
+        session.logs.buffer.push(
+          'stderr',
+          `Could not restart ${service.name}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return false;
+      }
+      this.setState(session, ExecutionState.WAITING_FOR_READY);
+      await this.verifyProject(session, executor, sourceDir, req);
+      return true;
+    }
+
     const logs = service.logs.buffer.all().map((l) => l.text).join('\n');
 
     const deterministic =

@@ -289,6 +289,8 @@ export class RepositoryAnalyzer {
         engineNode: (parsed.engines as { node?: string } | undefined)?.node,
         workspaces,
         main: typeof parsed.main === 'string' ? parsed.main : undefined,
+        packageManager:
+          typeof parsed.packageManager === 'string' ? parsed.packageManager : undefined,
       };
     } catch (err) {
       // A malformed manifest is a fact about the repository, not a crash. The planner

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { RepositoryMetadata } from '@devlaunch/shared';
-import { RuleBasedPlanner, healthPathFor } from '../services/planning/RuleBasedPlanner.js';
+import {
+  RuleBasedPlanner,
+  detectPackageManager,
+  healthPathFor,
+  needsManagerToResolve,
+} from '../services/planning/RuleBasedPlanner.js';
 import { RunPlanValidator } from '../services/planning/RunPlanValidator.js';
 import { NODE_FRAMEWORKS } from '../services/planning/frameworks.js';
 import { RepositoryAnalyzer } from '../services/analysis/RepositoryAnalyzer.js';
@@ -916,5 +921,76 @@ describe('a requirement the manifest does not know it needs', () => {
         expect(warning).toMatch(/manifest does not ask for it/);
         expect(warning).toMatch(/versions/);
       });
+  });
+});
+
+/**
+ * `"packageManager": "yarn@4.6.0"` is an author saying which tool builds this project.
+ * Yarn 1 — the version every node image ships — reads that field, refuses to run, and
+ * prints a paragraph about corepack. A real repository died there twice over, both
+ * services, before installing a single dependency.
+ */
+describe('a project that pins its package manager', () => {
+  it('believes the declaration over the lockfile', () => {
+    // A lockfile says which tool ran last; this says which one is meant to. A project
+    // pinning pnpm with no lockfile committed was installed with npm, which does not
+    // resolve the `workspace:*` protocol at all.
+    expect(detectPackageManager([], 'pnpm@9.12.3')).toBe('pnpm');
+    expect(detectPackageManager(['package-lock.json'], 'yarn@4.6.0')).toBe('yarn');
+    expect(detectPackageManager(['yarn.lock'], 'npm@10.0.0')).toBe('npm');
+  });
+
+  it('falls back to the lockfile when nothing is declared', () => {
+    expect(detectPackageManager(['pnpm-lock.yaml'])).toBe('pnpm');
+    expect(detectPackageManager(['yarn.lock'])).toBe('yarn');
+    expect(detectPackageManager([])).toBe('npm');
+  });
+
+  it('ignores a declaration it cannot read', () => {
+    // A field with a hash suffix, a tool we do not have, or nonsense. Guessing from a
+    // string we do not understand is worse than the lockfile we do.
+    expect(detectPackageManager(['yarn.lock'], 'bun@1.0.0')).toBe('yarn');
+    expect(detectPackageManager(['yarn.lock'], 'not-a-manager')).toBe('yarn');
+    expect(detectPackageManager(['yarn.lock'], '')).toBe('yarn');
+    // A hash suffix is the documented form and must still parse.
+    expect(detectPackageManager([], 'pnpm@9.12.3+sha512.abc')).toBe('pnpm');
+  });
+});
+
+describe('Yarn Plug\'n\'Play', () => {
+  it('knows which Yarn needs its own runtime to resolve anything', () => {
+    // Measured in the runner image: a Yarn 4.6.0 install produces `.pnp.cjs` and no
+    // node_modules, and `node -e "require('lodash')"` fails where `yarn node` returns
+    // 4.17.21. Yarn 1 installs a real node_modules and needs none of this.
+    expect(needsManagerToResolve('yarn@4.6.0')).toBe(true);
+    expect(needsManagerToResolve('yarn@2.0.0')).toBe(true);
+    expect(needsManagerToResolve('yarn@1.22.22')).toBe(false);
+    expect(needsManagerToResolve('pnpm@9.12.3')).toBe(false);
+    expect(needsManagerToResolve(undefined)).toBe(false);
+  });
+
+  it('starts an entry file through yarn when nothing else can resolve it', () => {
+    const outcome = planner.plan(meta({
+      packageJson: {
+        name: 'x', scripts: {}, dependencies: { express: '^4' }, devDependencies: {},
+        packageManager: 'yarn@4.6.0', entryFiles: ['server.js'],
+      },
+      lockfiles: ['yarn.lock'],
+    }));
+    expect(outcome.plan?.startCommand).toBe('yarn node server.js');
+    expect(outcome.plan?.packageManager).toBe('yarn');
+  });
+
+  it('leaves a plain node start alone when node_modules is real', () => {
+    // The overwhelmingly common case. Prefixing every start with `yarn node` would make
+    // the package manager a runtime dependency of projects that do not have one.
+    const outcome = planner.plan(meta({
+      packageJson: {
+        name: 'x', scripts: {}, dependencies: { express: '^4' }, devDependencies: {},
+        entryFiles: ['server.js'],
+      },
+      lockfiles: ['yarn.lock'],
+    }));
+    expect(outcome.plan?.startCommand).toBe('node server.js');
   });
 });

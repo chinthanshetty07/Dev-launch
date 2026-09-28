@@ -109,6 +109,15 @@ export interface PackageJsonSummary {
   /** The manifest's `main`, when declared. */
   main?: string;
   /**
+   * The manifest's `packageManager`, verbatim — e.g. `yarn@4.6.0`.
+   *
+   * An author saying which tool builds this project, and not advice: Yarn 1, which every
+   * node image ships, reads this field, refuses to run, and prints a paragraph about
+   * corepack. It also outranks a lockfile: a lockfile says which tool ran last, and this
+   * says which one is meant to.
+   */
+  packageManager?: string;
+  /**
    * Conventional entry files that exist beside the manifest — `app.js`, `server.js`,
    * `index.js` and their `src/` equivalents.
    *

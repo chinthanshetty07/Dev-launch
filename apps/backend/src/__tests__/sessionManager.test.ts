@@ -1637,6 +1637,143 @@ describe('stopping a session that is still running', () => {
  * serving for a minute, and both had it removed — for a reason that had nothing to do
  * with it, leaving a person who wanted to look at it with nothing to look at.
  */
+/**
+ * A workspace is worse off than a lone application, not better: every service installs
+ * the whole workspace, and they do it at the same time. `horusyeung/nextjs-nestjs-
+ * fullstack-starter` got past Yarn 1's refusal, resolved with the Yarn 4 it pins, and
+ * then had both of its services killed mid-fetch — `web` pegged at 1024/1024 MB.
+ *
+ * The memory repair could not help, because it served only repositories that happened to
+ * contain one service. Which is the exact criticism this file already makes of the repair
+ * architecture that preceded it.
+ */
+describe('a project service killed by our own memory limit', () => {
+  const projectMeta = {
+    warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+    services: [
+      { name: 'web', dir: 'apps/web', role: 'web', language: 'node', scripts: ['dev'], evidence: 'x' },
+      { name: 'api', dir: 'packages/api', role: 'api', language: 'node', scripts: ['start:dev'], evidence: 'x' },
+    ],
+  };
+  const svc = (name: string, role: string, port: number) =>
+    ({ ...RunPlanSchema.parse({
+      runtime: { language: 'node', version: '20' },
+      packageManager: 'yarn', installCommand: 'yarn install', buildCommand: null,
+      startCommand: `npm run dev --port ${port}`, workingDirectory: name,
+      expectedPort: port, planSource: 'rule-based',
+    }), name, role }) as never;
+
+  /** `api` is OOM-killed until it is given more than the default. */
+  function exec() {
+    const limits: { name: string; memoryMb?: number }[] = [];
+    return {
+      limits,
+      manager: {
+        docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+        async launch(o: { plan: { name?: string }; logs?: LogManager; memoryMb?: number }) {
+          const name = o.plan.name ?? 'single';
+          limits.push({ name, memoryMb: o.memoryMb });
+          const raised = o.memoryMb !== undefined;
+          return {
+            logs: o.logs ?? new LogManager(),
+            waitForReady: async (): Promise<ReadyOutcome> =>
+              name !== 'api' || raised
+                ? { state: ExecutionState.READY, hostPort: '1', url: `http://localhost/${name}`, readiness: { ready: true, attempts: 1, elapsedMs: 1 } }
+                : { state: ExecutionState.FAILED, hostPort: null, readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                    failure: { code: FailureCode.OUT_OF_MEMORY, message: 'api: killed for exceeding the container memory limit.' } },
+            clearStartupBudget: () => undefined,
+            cleanup: async () => ({ errors: [] }),
+          } as unknown as LaunchHandle;
+        },
+      } as unknown as ExecutionManager,
+    };
+  }
+
+  const mgr = (e: ExecutionManager) =>
+    new SessionManager(e, {
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [svc('api', 'api', 3000), svc('web', 'web', 3001)], planSource: 'rule-based' },
+          skipped: [], warnings: [],
+        }),
+      } as never,
+      aiRepair: { repair: async () => { throw new Error('a model cannot change a HostConfig'); } } as never,
+    });
+
+  it('raises the limit for the service that died and reaches READY', async () => {
+    const e = exec();
+    const m = mgr(e.manager);
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.READY || s.state === ExecutionState.FAILED, 8000);
+
+    const { config } = await import('../config/index.js');
+    expect(s.state).toBe(ExecutionState.READY);
+    expect(s.repairs?.[0]).toMatchObject({
+      source: 'deterministic', type: 'MEMORY_LIMIT_RAISED', service: 'api',
+    });
+    // The restarted api got the ceiling.
+    expect(e.limits.filter((l) => l.name === 'api').map((l) => l.memoryMb))
+      .toEqual([undefined, config.container.memoryCeilingMb]);
+    await m.shutdown();
+  });
+
+  it('raises it for that service only, because the VM cannot afford both', async () => {
+    // Two containers at the ceiling exceed what Colima has, and only the one that was
+    // killed has shown it needs more. Raising the project would trade a reported failure
+    // for a wedged machine — which is the thing the ceiling exists to prevent.
+    const e = exec();
+    const m = mgr(e.manager);
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.READY || s.state === ExecutionState.FAILED, 8000);
+
+    expect(e.limits.filter((l) => l.name === 'web').map((l) => l.memoryMb)).toEqual([undefined]);
+    // And not merely unlaunched at the ceiling — unraised. A sibling carrying a raised
+    // limit would take it on its next restart, which is the same mistake arriving late.
+    expect(s.run?.services.find((sv) => sv.name === 'web')?.memoryMb).toBeUndefined();
+    expect(s.run?.services.find((sv) => sv.name === 'api')?.memoryMb).toBeGreaterThan(0);
+    await m.shutdown();
+  });
+
+  it('stops at the ceiling rather than restarting for ever', async () => {
+    // A service that is still killed with everything the VM can spare is a service this
+    // machine cannot run. Saying so beats a loop — and the survivors stay up, so the
+    // session is partly running rather than a total loss.
+    const limits: { name: string; memoryMb?: number }[] = [];
+    const alwaysOom = {
+      docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+      async launch(o: { plan: { name?: string }; logs?: LogManager; memoryMb?: number }) {
+        const name = o.plan.name ?? 'single';
+        limits.push({ name, memoryMb: o.memoryMb });
+        return {
+          logs: o.logs ?? new LogManager(),
+          waitForReady: async (): Promise<ReadyOutcome> =>
+            name !== 'api'
+              ? { state: ExecutionState.READY, hostPort: '1', url: `http://localhost/${name}`, readiness: { ready: true, attempts: 1, elapsedMs: 1 } }
+              : { state: ExecutionState.FAILED, hostPort: null, readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                  failure: { code: FailureCode.OUT_OF_MEMORY, message: 'api: killed for exceeding the container memory limit.' } },
+          clearStartupBudget: () => undefined,
+          cleanup: async () => ({ errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+
+    const m = mgr(alwaysOom);
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await until(
+      () => s.state === ExecutionState.PARTIALLY_READY || s.state === ExecutionState.FAILED,
+      8000,
+    );
+
+    // Started once, raised once, and then no more.
+    expect(limits.filter((l) => l.name === 'api')).toHaveLength(2);
+    expect(s.state).toBe(ExecutionState.PARTIALLY_READY);
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/already the\s+ceiling/);
+    await m.shutdown();
+  });
+});
+
 describe('a project that is partly running', () => {
   const projectMeta = {
     warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],

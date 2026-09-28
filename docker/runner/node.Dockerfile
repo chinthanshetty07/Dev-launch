@@ -35,10 +35,34 @@ RUN apt-get update \
 
 # pnpm, because a pnpm workspace can only be installed by pnpm: its packages reference
 # each other as `workspace:*`, a protocol npm refuses outright. Pinned and installed at
-# build time rather than fetched by corepack at run time, so a run needs no network to
-# obtain its own tooling and every container gets the same version.
+# build time so a repository that says nothing about its tooling still gets a fixed,
+# known version rather than whatever a network fetch returns today.
 RUN npm install -g pnpm@9.12.3 \
  && npm cache clean --force
+
+# Corepack, for the repositories that *do* say.
+#
+# `"packageManager": "yarn@4.6.0"` in package.json is not advice. Yarn 1 — the version
+# every node image ships — reads that field, refuses to proceed, and prints a paragraph
+# about enabling corepack. A real repository died there twice over, both services, before
+# installing a single dependency.
+#
+# This was deliberately avoided once, on the grounds that a run should need no network to
+# obtain its own tooling. That reasoning does not survive contact with the case it
+# excludes: the run already needs the network to install the dependencies themselves, and
+# corepack activates *only* when a repository pins a version — which is exactly the
+# situation where the pinned pnpm above is the wrong tool. The choice was never between
+# network and no network; it was between the version the author chose and a failure.
+#
+# COREPACK_HOME on the cache volume, so the download survives the container: /workspace is
+# discarded with the clone, and a repair re-fetching a 5 MB package manager is the same
+# waste that moved the npm and pip caches here. The prompt is disabled because there is
+# no terminal to answer it — left on, corepack blocks rather than downloads.
+RUN corepack enable \
+ && mkdir -p /cache/corepack \
+ && chown -R node:node /cache
+ENV COREPACK_HOME=/cache/corepack \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # /workspace   writable volume mount point; the repository is copied here at start
 # /devlaunch   read-only staging area for the wrapper and the pristine repo copy
@@ -53,7 +77,7 @@ RUN mkdir -p /workspace/.tmp /devlaunch/src \
 # the cache directory lived under /workspace, which is discarded with the clone: a repair
 # re-downloading every dependency from scratch is why one failing install becomes three,
 # and why the live log looks like it has stalled.
-RUN mkdir -p /cache/npm /cache/pnpm \
+RUN mkdir -p /cache/npm /cache/pnpm /cache/corepack \
  && chown -R node:node /cache
 
 ENV HOME=/workspace \

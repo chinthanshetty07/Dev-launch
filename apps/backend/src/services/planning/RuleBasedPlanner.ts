@@ -67,10 +67,43 @@ const BUILTIN_SINCE: Readonly<Record<string, number>> = Object.freeze({
   sqlite: 22,
 });
 
-function detectPackageManager(lockfiles: string[]): 'npm' | 'yarn' | 'pnpm' {
+/**
+ * Which tool installs this project.
+ *
+ * `packageManager` first, because it is the author saying so and a lockfile is only
+ * evidence of what ran last. A repository that pins `pnpm@9` and committed no lockfile
+ * was installed with npm, which resolves a `workspace:*` protocol not at all.
+ */
+export function detectPackageManager(
+  lockfiles: readonly string[],
+  declared?: string,
+): 'npm' | 'yarn' | 'pnpm' {
+  // The name is extracted loosely and judged once. Two guards doing the same job is one
+  // guard no test can distinguish — `bun@1.0.0` has to be declined *somewhere*, and the
+  // comparison below is where, so the pattern above does not need to repeat it.
+  const pinned = /^([a-z]+)@/.exec(declared ?? '')?.[1];
+  if (pinned === 'npm' || pinned === 'yarn' || pinned === 'pnpm') return pinned;
   if (lockfiles.includes('pnpm-lock.yaml')) return 'pnpm';
   if (lockfiles.includes('yarn.lock')) return 'yarn';
   return 'npm';
+}
+
+/**
+ * Whether this project's dependencies will only resolve through its package manager.
+ *
+ * Yarn 2 and later default to Plug'n'Play: there is no `node_modules`, resolution comes
+ * from a generated `.pnp.cjs`, and `node server.js` cannot find a single dependency —
+ * while `yarn node server.js` finds all of them. Measured in the runner image rather
+ * than assumed: a Yarn 4.6.0 install produced `.pnp.cjs` and no `node_modules`, and bare
+ * node failed on `require('lodash')` where `yarn node` returned 4.17.21.
+ *
+ * Yarn 1 is excluded because it installs a real `node_modules` and needs none of this.
+ * A repository that sets `nodeLinker: node-modules` also needs none of it, and is not
+ * harmed by it: `yarn node` works whichever linker produced the tree.
+ */
+export function needsManagerToResolve(declared?: string): boolean {
+  const major = /^yarn@(\d+)/.exec(declared ?? '')?.[1];
+  return major !== undefined && Number(major) >= 2;
 }
 
 function installFor(pm: 'npm' | 'yarn' | 'pnpm'): string {
@@ -328,7 +361,7 @@ export class RuleBasedPlanner {
     workingDirectory: string,
     warnings: string[],
   ): PlanningOutcome | null {
-    const pm = detectPackageManager(meta.lockfiles);
+    const pm = detectPackageManager(meta.lockfiles, pkg.packageManager);
     const nodeVersion = nodeVersionFor(meta);
     const versionWarning = nodeVersionWarning(pkg.engineNode, nodeVersion);
     if (versionWarning) warnings.push(versionWarning);
@@ -405,7 +438,11 @@ export class RuleBasedPlanner {
           packageManager: pm,
           installCommand: installFor(pm),
           buildCommand: null,
-          startCommand: `node ${entry}`,
+          // Through the manager when it is the only thing that can resolve the
+          // dependencies. See `needsManagerToResolve`.
+          startCommand: needsManagerToResolve(pkg.packageManager)
+            ? `yarn node ${entry}`
+            : `node ${entry}`,
           workingDirectory,
           expectedPort: port,
           // The file binds whatever it binds; nothing here forces 0.0.0.0. The verifier

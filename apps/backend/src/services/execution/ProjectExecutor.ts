@@ -49,6 +49,15 @@ export interface ServiceRun {
   state: ExecutionState;
   failure?: FailureDetail;
   /**
+   * Memory ceiling this service runs under, when a repair raised it.
+   *
+   * Per service and not per project, because the VM cannot afford otherwise: two
+   * services at the raised ceiling exceed what Colima has, and only the one that was
+   * killed has shown it needs more. Mutable for the same reason `plan` is — a restart
+   * that went back to the default would re-run the failure it was fixing.
+   */
+  memoryMb?: number;
+  /**
    * Start this service again on the same port, with the same resolved plan.
    *
    * The port is what makes a restart safe to offer: it was chosen by DevLaunch and
@@ -363,6 +372,9 @@ export class ProjectExecutor {
               packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
               networkAliases: aliasesFor(plan.name),
               hostPort: hostPorts[plan.name],
+              // Read off the entry rather than captured, for the same reason `plan` is:
+              // a restart that went back to the default would re-run the OOM it fixed.
+              ...(entry.memoryMb ? { memoryMb: entry.memoryMb } : {}),
             });
           },
         };
