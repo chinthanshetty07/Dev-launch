@@ -19,6 +19,17 @@ export interface SourceRewrite {
   reason: string;
 }
 
+/** Why a READY project will still not work in a browser. Never a failure. */
+export interface BrowserWiringProblem {
+  service: string;
+  file?: string;
+  /** The address the source names. */
+  expected: string;
+  /** The address the sibling actually got. */
+  actual: string;
+  problem: string;
+}
+
 export interface PendingInput {
   requiredEnv: RequiredEnvVar[];
   choices?: WorkspacePackage[];
@@ -38,6 +49,8 @@ export interface SessionView {
   repairs?: RepairRecord[];
   /** Edits DevLaunch made to the clone, when DEVLAUNCH_REWRITE_SOURCE is set. */
   rewrites?: SourceRewrite[];
+  /** Present when the project runs but the browser cannot wire it up. */
+  browserProblems?: BrowserWiringProblem[];
   routes?: HttpRoute[];
   readiness?: ReadinessView;
   endedReason?: string;

@@ -1407,3 +1407,205 @@ describe('rewriting a hardcoded database URL, behind the flag', () => {
     expect(session.rewrites).toBeUndefined();
   });
 });
+
+/**
+ * Stopping a run, from the outside, while it is still going.
+ *
+ * Nothing in the pipeline is interruptible: `cancel` removes the containers and sets the
+ * state, and the `await` chain that was mid-install knows none of it. It carried on,
+ * found its container gone and reported a crash — so a live run cancelled at
+ * WAITING_FOR_READY answered `{"state":"CANCELLED"}` and then, five seconds later, said
+ * the project had failed with UNKNOWN_RUNTIME_ERROR. The person who pressed Stop was
+ * told their project had crashed.
+ */
+describe('stopping a session that is still running', () => {
+  /** A launcher whose readiness wait blocks until the test releases it. */
+  function gatedExec(
+    outcome: () => ReadyOutcome,
+    gate: Promise<void>,
+    counters: { launches: number },
+  ): ExecutionManager {
+    return {
+      async launch(launchOpts: { logs?: LogManager }) {
+        counters.launches++;
+        const logs = launchOpts.logs ?? new LogManager();
+        return {
+          logs,
+          waitForReady: async () => {
+            await gate;
+            return outcome();
+          },
+          clearStartupBudget: () => undefined,
+          cleanup: async () => ({ errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+  }
+
+  it('stays CANCELLED when the pipeline finishes after the stop', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const counters = { launches: 0 };
+    const mgr = new SessionManager(gatedExec(failed, gate, counters));
+
+    const s = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.WAITING_FOR_READY);
+    expect(s.state).toBe(ExecutionState.WAITING_FOR_READY);
+
+    await mgr.cancel(s.id);
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+
+    // The step that was in flight now completes, and reports a failure nobody asked for.
+    release();
+    await settle();
+
+    expect(s.state, 'a stopped session must not be re-stated by the run it was stopping').toBe(
+      ExecutionState.CANCELLED,
+    );
+    expect(s.endedReason).toBe('cancelled by request');
+    // Not merely the right state with the wrong story attached: a person who pressed
+    // Stop should not find a diagnosis of their project sitting underneath it.
+    expect(s.failure?.code).not.toBe(FailureCode.UNKNOWN_RUNTIME_ERROR);
+    await mgr.shutdown();
+  });
+
+  it('does not start a replacement container for a session that was stopped', async () => {
+    // The race this closes is not hypothetical: `teardown` awaits Docker, and the
+    // pipeline step that was in flight reaches its next boundary during that wait. So
+    // the gate is released from inside cleanup — the step resumes while the stop is
+    // still happening, which is exactly when it used to relaunch.
+    //
+    // PORT_NOT_LISTENING is repairable by rule, and this session is analysed and
+    // planned rather than handed a plan, so `tryRepair` has the metadata it needs and
+    // genuinely would rewrite the plan and launch again. The second container would be
+    // an orphan: nobody is watching it and nothing left will clean it up.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let launches = 0;
+
+    const exec = {
+      async launch(launchOpts: { logs?: LogManager }) {
+        launches++;
+        const logs = launchOpts.logs ?? new LogManager();
+        return {
+          logs,
+          waitForReady: async () => { await gate; return failed(); },
+          clearStartupBudget: () => undefined,
+          cleanup: async () => { release(); return { errors: [] }; },
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [] }) } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'express', warnings: [] }) } as never,
+    });
+
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.WAITING_FOR_READY);
+    await mgr.cancel(s.id);
+    await settle();
+
+    expect(launches, 'a stopped session must not be repaired into a new container').toBe(1);
+    // Not merely that no container appeared: no repair was *attempted*. The rewritten
+    // plan is the work, and a session nobody is waiting for should not cost one — nor,
+    // where the policy allows it, a model call to produce one.
+    expect(s.repairAttempts ?? [], 'a stopped session must not be repaired at all').toEqual([]);
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    await mgr.shutdown();
+  });
+
+  it('starts nothing at all when the stop lands before the run does', async () => {
+    // Stopping during analysis or planning should cost nothing. There is no container
+    // yet, so honouring the stop means declining to make one — which is cheaper and
+    // safer than making it and cleaning up after, and is the only version that works
+    // when teardown has already run.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let launches = 0;
+    const exec = {
+      async launch() {
+        launches++;
+        return {
+          logs: new LogManager(),
+          waitForReady: async () => ready(),
+          clearStartupBudget: () => undefined,
+          cleanup: async () => ({ errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => { await gate; return { warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [] }; } } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'express', warnings: [] }) } as never,
+    });
+
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.ANALYZING);
+    await mgr.cancel(s.id);
+    release();
+    await settle();
+
+    expect(launches, 'nothing should be started for a session stopped before it ran').toBe(0);
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    await mgr.shutdown();
+  });
+
+  it('spends no model call on a session that was stopped', async () => {
+    // What the launch gate cannot catch. Repair asks the model *before* it re-enters
+    // the run, so a stopped session would still pay for a rewritten plan it will never
+    // use — money and thirty seconds, for an answer nobody is waiting for.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const calls: number[] = [];
+    const exec = {
+      async launch(launchOpts: { logs?: LogManager }) {
+        const logs = launchOpts.logs ?? new LogManager();
+        return {
+          logs,
+          waitForReady: async () => { await gate; return failed(); },
+          clearStartupBudget: () => undefined,
+          cleanup: async () => { release(); return { errors: [] }; },
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [] }) } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'express', warnings: [] }) } as never,
+      aiRepair: {
+        repair: async ({ previousAttempts }: { previousAttempts: RunPlan[] }) => {
+          calls.push(previousAttempts.length);
+          return { plan: RunPlanSchema.parse({ ...plan(), startCommand: 'node ai.js' }), attempt: 1 };
+        },
+      } as never,
+    });
+
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.WAITING_FOR_READY);
+    await mgr.cancel(s.id);
+    await settle();
+
+    expect(calls, 'a stopped session must not be diagnosed by a model').toEqual([]);
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    await mgr.shutdown();
+  });
+
+  it('frees the slot when a READY session is stopped', async () => {
+    // What the Stop button on a running application is for. Until it existed the only
+    // route was to launch something else, be refused, and stop it from the error.
+    const spied = spy();
+    const mgr = new SessionManager(fakeExec(ready, { spy: spied }));
+    const s = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.READY);
+
+    await mgr.cancel(s.id);
+
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    expect(spied.cleanups, 'the container must be removed, not merely forgotten').toBeGreaterThan(0);
+    // The slot is the point: a second launch was refused until this one ended.
+    const next = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    expect(next.id).not.toBe(s.id);
+    await mgr.shutdown();
+  });
+});

@@ -51,6 +51,15 @@ function present(session: Session) {
      * all is that the change is small, named, and visible.
      */
     rewrites: session.rewrites,
+    /**
+     * Why a READY project will not work in a browser. Always sent, never a failure.
+     *
+     * A run can reach READY, publish two real URLs, serve a page, and have every
+     * request that page makes refused. Withholding that leaves a dashboard that is
+     * green about a project that does not work — which is worse than a failure,
+     * because a failure at least sends somebody looking.
+     */
+    browserProblems: session.browserProblems,
     /** The routes the application declares, so an API's URL is not a blank 404. */
     routes: session.metadata?.httpRoutes,
     readiness: session.readiness,

@@ -28,8 +28,20 @@ export function RunHeader({
   onStop: () => void;
   onNew: () => void;
 }) {
+  // Two different questions, which were one flag and one answer.
+  //
+  // The clock stops when the run stops. The Stop button goes away only when there is
+  // nothing left to stop — and a READY session is the case where those differ: its
+  // containers are up, it holds the only slot, and it was the one state offering no way
+  // to end it. "Run another" simply cleared the view, leaving the session running and
+  // the next launch refused with "a session is already running", which had to be
+  // resolved through an error banner two screens later.
   const finished = TERMINAL.includes(state);
-  const elapsed = useElapsed(startedAt, finished ? (readyAt ?? null) : undefined);
+  const running = RUNNING.includes(state);
+  // The clock stops at READY as well: the run took what it took, and a duration that
+  // keeps climbing while the application serves traffic is measuring something else.
+  const settled = finished || state === 'READY';
+  const elapsed = useElapsed(startedAt, settled ? (readyAt ?? null) : undefined);
 
   return (
     <header className="sticky top-0 z-10 border-b border-edge bg-panel">
@@ -55,7 +67,7 @@ export function RunHeader({
         )}
 
         <span className={`flex items-center gap-2 text-[13px] ${TONE[toneOf(state)]}`}>
-          <Spinner active={!finished && state !== 'AWAITING_INPUT' && state !== 'IDLE'} />
+          <Spinner active={!settled && state !== 'AWAITING_INPUT' && state !== 'IDLE'} />
           {describeState(state)}
         </span>
 
@@ -65,14 +77,19 @@ export function RunHeader({
               {elapsed}
             </span>
           )}
-          {!finished && state !== 'IDLE' && (
+          {running && (
             <button
               type="button"
               onClick={onStop}
               disabled={busy}
               className="rounded-md border border-edge px-3 py-1.5 text-[12px] hover:border-bad hover:text-bad disabled:opacity-40"
+              title={
+                state === 'READY'
+                  ? 'Shut the application down and release the slot'
+                  : 'Stop this run'
+              }
             >
-              Stop
+              {state === 'READY' ? 'Shut down' : 'Stop'}
             </button>
           )}
           {finished && (
@@ -90,7 +107,20 @@ export function RunHeader({
   );
 }
 
-const TERMINAL: string[] = ['READY', 'FAILED', 'CANCELLED', 'COMPLETED'];
+/** Nothing left to stop: the clock is frozen and the slot is already free. */
+const TERMINAL: string[] = ['FAILED', 'CANCELLED', 'COMPLETED'];
+
+/**
+ * Something is running that stopping would end.
+ *
+ * READY is in both lists' spirit and neither's letter: the run is over, and the
+ * application it produced is still up. The clock treats it as finished; the button
+ * treats it as running, because it is the state with the most to stop.
+ */
+const RUNNING: string[] = [
+  'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING', 'AWAITING_INPUT',
+  'BUILDING', 'STARTING', 'WAITING_FOR_READY', 'REPAIRING', 'CLEANING_UP', 'READY',
+];
 
 const TONE = {
   ok: 'text-ok',

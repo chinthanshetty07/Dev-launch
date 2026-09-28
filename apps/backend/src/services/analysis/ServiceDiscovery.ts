@@ -1,5 +1,5 @@
 import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import type { BackingService, ServiceCandidate, ServiceRole } from '@devlaunch/shared';
 import type { EnvExampleVar } from '@devlaunch/shared';
 import { readCapped } from './readCapped.js';
@@ -261,6 +261,13 @@ async function inspectDir(
       const proxy = await findDevServerProxy(base, manifest);
       if (proxy) candidate.devProxy = proxy;
     }
+    // The other end of the same wire, and for a long time the end nobody looked at:
+    // this scan ran for `web` only, so an API's own CORS allowlist — the thing that
+    // decides whether the page's requests are answered — was never read at all.
+    if (role === 'api') {
+      const accepted = await findAcceptedOrigins(base);
+      if (accepted.length) candidate.acceptsOrigins = accepted;
+    }
     return { candidate, backing: backingFor(Object.keys(manifest.dependencies), envKeys) };
   }
 
@@ -269,6 +276,7 @@ async function inspectDir(
   const pythonEnvKeys = await serviceEnvKeys(base);
   const isApi = python.deps.some((d) => PYTHON_API_DEPS.includes(d)) || python.hasManagePy;
   if (!isApi) return null;
+  const pythonAccepts = await findAcceptedOrigins(base);
 
   return {
     candidate: {
@@ -281,6 +289,7 @@ async function inspectDir(
       declaredPort: python.hasManagePy ? 8000 : undefined,
       envKeys: pythonEnvKeys,
       envExample: await serviceEnvExample(base),
+      ...(pythonAccepts.length ? { acceptsOrigins: pythonAccepts } : {}),
     },
     backing: backingFor(python.deps, pythonEnvKeys),
   };
@@ -568,6 +577,37 @@ async function findCalledOrigins(base: string): Promise<string[]> {
   return [...origins];
 }
 
+/**
+ * The browser origins an API's own source will accept, when it names them literally.
+ *
+ * `cors({ origin: 'http://localhost:5173' })` and its list form are configuration
+ * written as code: no variable reaches them, so DevLaunch cannot hand the API the port
+ * its frontend actually got. What it can do is notice, and say which line to change.
+ *
+ * Deliberately the same loopback-literal shape `findCalledOrigins` looks for, and
+ * deliberately not narrowed to lines mentioning CORS. A service that hardcodes
+ * `http://localhost:5173` anywhere is a service that has an opinion about where its
+ * caller lives, and that opinion is what breaks. A port written as `${PORT}` is not
+ * matched, which excludes the common `listening on http://localhost:${PORT}` log line.
+ */
+async function findAcceptedOrigins(base: string): Promise<{ origin: string; file: string }[]> {
+  const files = await collectSourceFiles(base);
+  const seen = new Set<string>();
+  const out: { origin: string; file: string }[] = [];
+
+  for (const file of files) {
+    const raw = await readCapped(file);
+    if (raw === null) continue;
+    for (const match of raw.matchAll(/https?:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})/g)) {
+      const origin = match[0];
+      if (seen.has(origin)) continue;
+      seen.add(origin);
+      out.push({ origin, file: relative(base, file) });
+    }
+  }
+  return out;
+}
+
 async function collectSourceFiles(base: string, budget = MAX_SOURCE_FILES): Promise<string[]> {
   const out: string[] = [];
 
@@ -585,6 +625,25 @@ async function collectSourceFiles(base: string, budget = MAX_SOURCE_FILES): Prom
     }
   };
 
+  // The service's own top-level files, always — not only when nothing else was found.
+  //
+  // `vite.config.js`, `next.config.js`, `server.js` and `app.js` live here, and they are
+  // where a service's configuration is: proxy targets, ports, the variables it reads. A
+  // client with a populated `src/` filled the budget from there and never came back for
+  // its own root, so its `vite.config.js` was never read — and a repository whose proxy
+  // target is `process.env.API_URL || 'http://127.0.0.1:4000'` was recorded as declaring
+  // no variables at all. Nothing could be wired to it, and every request its page made
+  // through that proxy failed against an address inside its own container.
+  //
+  // Listed first because it is the smallest and most informative set here: if anything
+  // is going to exhaust the budget, it should not be these.
+  for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
+    if (out.length >= budget) break;
+    if (entry.isFile() && SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
+      out.push(join(base, entry.name));
+    }
+  }
+
   for (const dir of SOURCE_DIRS) await walk(join(base, dir), 0);
   // Some projects keep sources at the root of the service directory, in directories
   // named for what they hold rather than for being source: `config/`, `routes/`,
@@ -592,7 +651,7 @@ async function collectSourceFiles(base: string, budget = MAX_SOURCE_FILES): Prom
   // files and descended into none of them — and a repository whose entire database
   // configuration lives in `config/dbConnection.js` was read as declaring nothing.
   if (out.length === 0) await walk(base, 0);
-  return out;
+  return [...new Set(out)];
 }
 
 async function readManifest(path: string): Promise<Manifest | null> {

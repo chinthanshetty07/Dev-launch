@@ -35,6 +35,7 @@ import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { lastErrorLine } from '../execution/ExecutionManager.js';
 import { BackingProvisioner, type ProvisionResult } from '../execution/BackingProvisioner.js';
 import { ProjectExecutor, type ProjectRun } from '../execution/ProjectExecutor.js';
+import type { BrowserWiringProblem } from '../execution/CrossServiceWiring.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import type { AIPlanner } from '../ai/AIPlanner.js';
@@ -120,6 +121,19 @@ export interface Session {
    * fixture's own `vite.config.js` came back from a test run rewritten and staged.
    */
   ownsSource?: boolean;
+  /**
+   * Set the moment somebody asks for this session to end, before any teardown.
+   *
+   * A pipeline step is not interruptible from outside: `cancel` removes the containers
+   * and sets the state, and the `await` chain that was mid-install knows none of it. It
+   * carried on, found its container gone and reported a crash — so pressing Stop during
+   * a run answered `CANCELLED` and then, five seconds later, said the project had failed
+   * with `UNKNOWN_RUNTIME_ERROR`. The state is protected by the terminal guard in
+   * `setState`; this flag is what stops the *work*, so a stopped session does not go on
+   * to spend four minutes installing, create a replacement container after teardown, or
+   * spend a model call on a run nobody is waiting for.
+   */
+  stopped?: boolean;
 
   /** Plans already tried by the repair loop, so an attempt cannot repeat one. */
   repairAttempts?: RunPlan[];
@@ -135,6 +149,15 @@ export interface Session {
    * small, named, and visible.
    */
   rewrites?: SourceRewrite[];
+  /**
+   * Why a READY project will still not work in a browser.
+   *
+   * Carried on the session rather than inside the failure, because it is not one: every
+   * container is healthy and every URL is real. Two repositories reached READY in under
+   * ten seconds, served a page, and had every request that page made refused — and
+   * nothing anywhere said so. See `browserWiringProblems`.
+   */
+  browserProblems?: BrowserWiringProblem[];
   /** Model calls spent on repair, against the per-failure budget. */
   aiRepairCalls?: number;
   /** The model's own account of what it inferred. Displayed, never acted on. */
@@ -173,6 +196,34 @@ export class SessionConflict extends Error {
   ) {
     super(message);
     this.name = 'SessionConflict';
+  }
+}
+
+/**
+ * Thrown to unwind the pipeline of a session somebody stopped while it was running.
+ *
+ * Not a failure, and deliberately its own type rather than a sentinel return: every
+ * step in the pipeline already propagates a throw to one of two catch blocks, and both
+ * of them turn what they catch into a reported crash. A stop is neither a crash nor
+ * something to report — the person who asked for it knows what happened.
+ */
+/**
+ * The states a stop itself passes through, and the only ones it may still enter.
+ *
+ * COMPLETED as well as CANCELLED because `stop` and `cancel` differ only in what they
+ * are called: an idle session reclaimed by the lifetime clock has completed, and one a
+ * person ended was cancelled.
+ */
+const ENDING_STATES: readonly ExecutionState[] = [
+  ExecutionState.CLEANING_UP,
+  ExecutionState.CANCELLED,
+  ExecutionState.COMPLETED,
+];
+
+class SessionStopped extends Error {
+  constructor() {
+    super('Session stopped.');
+    this.name = 'SessionStopped';
   }
 }
 
@@ -309,6 +360,8 @@ export class SessionManager extends EventEmitter {
       session.sourceDir = dir;
       await this.analyseAndPlan(session, dir, req);
     } catch (err) {
+      // A stop is not a failure, and the state it wants is already set.
+      if (err instanceof SessionStopped) return;
       this.fail(session, {
         code: err instanceof Error && 'code' in err
           ? ((err as { code: FailureCode }).code)
@@ -525,6 +578,7 @@ export class SessionManager extends EventEmitter {
       session.pending = undefined;
       await this.startAndVerify(session, session.sourceDir, {});
     } catch (err) {
+      if (err instanceof SessionStopped) return;
       this.fail(session, {
         code: FailureCode.UNKNOWN_RUNTIME_ERROR,
         message: err instanceof Error ? err.message : String(err),
@@ -557,6 +611,9 @@ export class SessionManager extends EventEmitter {
     }
 
     this.setState(session, ExecutionState.STARTING);
+    // The project path's own gate. The same rule as `startAndVerify`'s, and separate
+    // because this is a different route to a different launcher.
+    this.throwIfStopped(session);
     const executor = new ProjectExecutor(this.exec);
     session.run = await executor.launch({
       sessionId: session.id,
@@ -571,6 +628,7 @@ export class SessionManager extends EventEmitter {
     });
 
     if (session.run.rewrites?.length) session.rewrites = session.run.rewrites;
+    if (session.run.browserProblems?.length) session.browserProblems = session.run.browserProblems;
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
     await this.verifyProject(session, executor, sourceDir, req);
@@ -641,6 +699,10 @@ export class SessionManager extends EventEmitter {
     sourceDir: string,
     req: LaunchRequest,
   ): Promise<boolean> {
+    // Nothing to repair for a session somebody ended: the containers are gone and a
+    // rewritten plan would start a replacement one nobody asked for.
+    if (session.stopped) return false;
+
     const service = session.run?.services.find((s) => s.state !== ExecutionState.READY);
     const failure = service?.failure;
     if (!service || !failure || !this.deps.analyzer) return false;
@@ -748,6 +810,18 @@ export class SessionManager extends EventEmitter {
     this.setState(session, ExecutionState.STARTING);
     const resolved = await this.provisionBacking(session);
     await this.rewriteHardcodedHosts(session, sourceDir);
+    // The one gate on the way into a container, and deliberately the only one.
+    //
+    // Everything before it — cloning, analysis, planning, and the provisioning wait
+    // above, which is the long one and the likeliest moment for somebody to give up —
+    // is cheap and leaves nothing behind, so a stop arriving during any of it is
+    // honoured here by declining to start rather than by cleaning up afterwards.
+    // Which is the only version that works: teardown has already run.
+    //
+    // Checks earlier in the pipeline were written first and then removed. Each was
+    // individually redundant — no test could tell whether it was there — and a guard no
+    // test can distinguish is a guard nobody can maintain.
+    this.throwIfStopped(session);
     const handle = await this.exec.launch({
       sessionId: session.id,
       plan: resolved,
@@ -958,6 +1032,7 @@ export class SessionManager extends EventEmitter {
     sourceDir: string,
     req: LaunchRequest,
   ): Promise<boolean> {
+    if (session.stopped) return false;
     if (!failure || !session.plan || !session.metadata) return false;
 
     // The plan's own directory, when it has one. Every rule here reads a manifest.
@@ -1420,6 +1495,9 @@ export class SessionManager extends EventEmitter {
   async stop(id: string, reason = 'stopped'): Promise<void> {
     const session = this.sessions.get(id);
     if (!session || TERMINAL_STATES.includes(session.state)) return;
+    // Before teardown, not after: teardown awaits Docker, and the pipeline step running
+    // beside it reaches its next boundary during that wait.
+    session.stopped = true;
     this.setState(session, ExecutionState.CLEANING_UP);
     await this.teardown(session);
     this.setState(session, ExecutionState.COMPLETED, reason);
@@ -1428,9 +1506,22 @@ export class SessionManager extends EventEmitter {
   async cancel(id: string): Promise<void> {
     const session = this.sessions.get(id);
     if (!session || TERMINAL_STATES.includes(session.state)) return;
+    session.stopped = true;
     this.setState(session, ExecutionState.CLEANING_UP);
     await this.teardown(session);
     this.setState(session, ExecutionState.CANCELLED, 'cancelled by request');
+  }
+
+  /**
+   * Stop advancing a session somebody ended.
+   *
+   * Called at each point where the pipeline is about to do something expensive or
+   * irreversible — start a container, install for minutes, spend a model call. The
+   * terminal guard in `setState` already makes the *state* safe; this is what makes the
+   * work stop rather than run to completion against a session that no longer exists.
+   */
+  private throwIfStopped(session: Session): void {
+    if (session.stopped) throw new SessionStopped();
   }
 
   private async teardown(session: Session): Promise<void> {
@@ -1479,6 +1570,21 @@ export class SessionManager extends EventEmitter {
   }
 
   private setState(session: Session, state: ExecutionState, reason?: string): void {
+    // Once somebody has ended this session, only ending it may move it.
+    //
+    // Nothing in the pipeline is interruptible, so cancelling one mid-run left an
+    // `await` chain still advancing a session that had already ended: it found its
+    // container removed and called `fail`, which overwrote CANCELLED with FAILED and
+    // `UNKNOWN_RUNTIME_ERROR`. Pressing Stop told you your project had crashed.
+    //
+    // The obvious guard — refuse to leave a terminal state — is not enough and gets it
+    // exactly backwards. A stop passes through CLEANING_UP, which is not terminal, so
+    // the resuming step still reached `fail`; FAILED arrived first, and *it* then became
+    // the terminal state that blocked CANCELLED. The session ended as a crash because of
+    // the guard meant to prevent one. What matters is not whether the session has
+    // finished but whether somebody asked it to.
+    if (session.stopped && !ENDING_STATES.includes(state)) return;
+
     session.state = state;
     if (reason !== undefined) session.endedReason = reason;
     this.emit('state', session, reason);
@@ -1531,10 +1637,12 @@ function discoveryByService(
   project: ProjectPlan,
 ): {
   callsOrigins: Record<string, string[]>;
+  acceptsOrigins: Record<string, { origin: string; file: string }[]>;
   envKeys: Record<string, string[]>;
   devProxies: Record<string, { file: string; target: string }>;
 } {
   const callsOrigins: Record<string, string[]> = {};
+  const acceptsOrigins: Record<string, { origin: string; file: string }[]> = {};
   const envKeys: Record<string, string[]> = {};
   const devProxies: Record<string, { file: string; target: string }> = {};
 
@@ -1542,10 +1650,11 @@ function discoveryByService(
     const found = session.metadata?.services?.find((c) => c.dir === plan.workingDirectory);
     if (!found) continue;
     if (found.callsOrigins) callsOrigins[plan.name] = found.callsOrigins;
+    if (found.acceptsOrigins) acceptsOrigins[plan.name] = found.acceptsOrigins;
     if (found.envKeys) envKeys[plan.name] = found.envKeys;
     if (found.devProxy) devProxies[plan.name] = found.devProxy;
   }
-  return { callsOrigins, envKeys, devProxies };
+  return { callsOrigins, acceptsOrigins, envKeys, devProxies };
 }
 
 /** The repository's own name, for naming its database after it rather than after nothing. */

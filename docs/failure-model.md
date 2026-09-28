@@ -3,6 +3,26 @@
 An execution that fails is not an error to be logged — it is a result to be explained.
 This document describes how DevLaunch decides *what went wrong*.
 
+## Stopping is not failing
+
+`cancel` removes the containers and sets the state; the pipeline step that was mid-install
+knows none of it. It used to carry on, find its container gone and report a crash — so a
+run stopped at `WAITING_FOR_READY` answered `CANCELLED` and then, five seconds later, said
+the project had failed with `UNKNOWN_RUNTIME_ERROR`. Pressing Stop told you your project
+had crashed.
+
+Two things fix it, and the obvious one is not enough. A guard refusing to leave a
+*terminal* state gets it exactly backwards: a stop passes through `CLEANING_UP`, which is
+not terminal, so the resuming step still reached `fail` — and `FAILED`, arriving first,
+became the terminal state that blocked `CANCELLED`. What matters is not whether a session
+has finished but whether somebody asked it to, so `stopped` is set before teardown and
+only the states a stop itself passes through may follow it.
+
+That makes the *state* safe. The *work* is stopped separately, at two places: the gate
+immediately before a container is created, and the entry to repair — which would otherwise
+spend a model call diagnosing a run nobody is waiting for.
+
+
 ## Three sources of truth
 
 Classification draws on three independent signals, because no one of them is sufficient:

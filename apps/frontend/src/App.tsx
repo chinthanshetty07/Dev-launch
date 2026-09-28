@@ -14,6 +14,7 @@ import { FailurePanel } from './components/FailurePanel';
 import { LogTerminal } from './components/LogTerminal';
 import { Collapsible } from './components/Collapsible';
 import { RewritePanel } from './components/RewritePanel';
+import { BrowserWiringPanel } from './components/BrowserWiringPanel';
 
 const RUNNING = [
   'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING',
@@ -222,6 +223,9 @@ export default function App() {
         {state === 'READY' && session?.url && (
           <ResultHero url={session.url} services={session.services} />
         )}
+        {/* Directly under the URL it qualifies. A green result above a page that does
+            not work is worse than a failure, because a failure sends somebody looking. */}
+        <BrowserWiringPanel problems={session?.browserProblems} />
         {state === 'COMPLETED' && <CompletedHero reason={session?.endedReason} />}
         {state === 'FAILED' && <FailurePanel failure={session?.failure} repairs={session?.repairs} />}
 

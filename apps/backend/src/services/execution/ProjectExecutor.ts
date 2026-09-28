@@ -11,7 +11,12 @@ import {
 import { config } from '../../config/index.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { BackingProvisioner, type BackingRun } from './BackingProvisioner.js';
-import { preferredApiHostPort, wireService } from './CrossServiceWiring.js';
+import {
+  browserWiringProblems,
+  preferredApiHostPort,
+  wireService,
+  type BrowserWiringProblem,
+} from './CrossServiceWiring.js';
 import { choosePort } from '../ports/HostPorts.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import { LogManager } from '../logs/LogManager.js';
@@ -62,6 +67,14 @@ export interface ProjectRun {
   backing: BackingRun[];
   /** Edits made to the clone, when DEVLAUNCH_REWRITE_SOURCE is set. Shown, always. */
   rewrites?: SourceRewrite[];
+  /**
+   * Why this project will not work in a browser, even if every service reaches READY.
+   *
+   * Not a failure: the containers are healthy and the URLs are real. It is the gap
+   * between a repository written to run on one laptop's default ports and a run that
+   * could not have them. See `browserWiringProblems`.
+   */
+  browserProblems?: BrowserWiringProblem[];
   /** The service a person is given the URL of: the web front door, or the only one. */
   entry(): ServiceRun | undefined;
   cleanup(): Promise<{ errors: Error[] }>;
@@ -77,6 +90,8 @@ export interface ProjectLaunchOptions {
   /** Per service: absolute origins its source hardcodes, and the variables it declares. */
   discovery?: {
     callsOrigins: Record<string, string[]>;
+    /** Per API: the browser origins its own source will accept, and where they are. */
+    acceptsOrigins?: Record<string, { origin: string; file: string }[]>;
     envKeys: Record<string, string[]>;
     /** Dev-server proxy targets pointing somewhere the container cannot reach. */
     devProxies?: Record<string, { file: string; target: string }>;
@@ -213,16 +228,29 @@ export class ProjectExecutor {
      * docker-compose — so it is claimed when it is free and declined when it is not,
      * because sharing it silently is worse than not having it.
      */
+    // Memoised, because it is now asked the same question from four places — the
+    // container's aliases, a restart's, the proxy rewrite's, and the sibling URLs below
+    // — and it explains itself in the log when it has to decline a name. Recomputing
+    // was harmless; saying it four times was not.
+    const aliasCache = new Map<string, string[]>();
     const aliasesFor = (name: string): string[] => {
+      const cached = aliasCache.get(name);
+      if (cached) return cached;
       const scoped = `${name}-${opts.sessionId.slice(0, 8)}`;
-      if (!claimed.has(name)) return [name, scoped];
-      opts.logs.write(
-        'stderr',
-        `Another running project already answers to "${name}", so this one is reachable ` +
-          `only as "${scoped}". Stop the other project if a service here expects the ` +
-          'plain name.',
-      );
-      return [scoped];
+      let aliases: string[];
+      if (!claimed.has(name)) {
+        aliases = [name, scoped];
+      } else {
+        opts.logs.write(
+          'stderr',
+          `Another running project already answers to "${name}", so this one is reachable ` +
+            `only as "${scoped}". Stop the other project if a service here expects the ` +
+            'plain name.',
+        );
+        aliases = [scoped];
+      }
+      aliasCache.set(name, aliases);
+      return aliases;
     };
 
     // A dev server's proxy target is resolved by the dev server process, inside its own
@@ -251,14 +279,30 @@ export class ProjectExecutor {
     }
     run.rewrites = rewrites;
 
+    const wiredKeys: Record<string, string[]> = {};
+
+    // Where each service answers on the container network, as opposed to on this
+    // machine. `aliasesFor` puts the name a repository expects first when this project
+    // holds it, so the value handed to a sibling is the one its own config already
+    // names. A service with no port has nothing to be reached at.
+    const internalUrls: Record<string, string> = {};
+    for (const plan of ordered) {
+      if (plan.expectedPort === null) continue;
+      internalUrls[plan.name] = `http://${aliasesFor(plan.name)[0]}:${plan.expectedPort}`;
+    }
+
     for (const base of ordered) {
       // A variable the repository already supplies wins: the user's own value for
       // MONGO_URI is a decision, and overwriting it would be DevLaunch overruling it.
       const declared = new Set(base.environmentVariables.filter((v) => v.value !== null).map((v) => v.key));
       const wired = wireService(base, ordered, {
         urls,
+        internalUrls,
         envKeys: opts.discovery?.envKeys ?? {},
       });
+      // Kept, because what was *not* wired is what decides whether a literal in the
+      // source still matters. See `browserWiringProblems`.
+      wiredKeys[base.name] = wired.map((v) => v.key);
       for (const v of wired) {
         opts.logs.write('stdout', `${base.name}: ${v.key}=${v.value} (${v.reason})`);
       }
@@ -329,6 +373,21 @@ export class ProjectExecutor {
         await run.cleanup();
         throw err;
       }
+    }
+
+    // Decidable only now: it compares what the source was written to expect against the
+    // ports this run actually got, and neither is known before both exist. Recorded
+    // rather than acted on — every one of these is a literal no plan can reach, so the
+    // honest thing is to publish the project and say what will not work in the browser.
+    run.browserProblems = browserWiringProblems({
+      services: ordered,
+      urls,
+      acceptsOrigins: opts.discovery?.acceptsOrigins ?? {},
+      callsOrigins: opts.discovery?.callsOrigins ?? {},
+      wired: wiredKeys,
+    });
+    for (const problem of run.browserProblems) {
+      opts.logs.write('stderr', `warning: ${problem.problem}`);
     }
 
     return run;

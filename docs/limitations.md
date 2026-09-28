@@ -61,11 +61,16 @@ Sessions and logs live in memory. Restarting the backend loses all session state
 log history. This is correct for a single-user local tool and keeps SQLite out of the
 dependency tree.
 
-## No database provisioning
+## Databases are provisioned; a database DevLaunch does not know is not
 
-Repositories requiring PostgreSQL, Redis, MySQL, or similar are detected and reported
-as `DATABASE_REQUIRED`. V1 does not provision them, and does not support multi-container
-Docker Compose.
+Postgres, MySQL, MongoDB and Redis are detected from the repository's own dependencies,
+connection strings and compose file, started beside the application, and injected under
+the variable names that repository actually reads. Anything outside that set is reported
+as `DATABASE_REQUIRED` and is not a plan problem.
+
+A compose file's *named* image is a preference rather than a promise: one that cannot
+start under the sandbox profile falls back once to the image DevLaunch verifies, and
+says so.
 
 ## Public GitHub repositories only
 
@@ -95,6 +100,25 @@ otherwise leave one project's frontend talking to the other's API. A bare name i
 only when nothing already answers to it; the loser keeps its session-scoped alias and is
 told why.
 
+## A frontend's API address may be a literal, and then it is reported
+
+Where a repository reads its API base and its allowed browser origin from variables,
+DevLaunch sets both: the frontend is told where the API was actually published, and the
+API is told where the frontend is actually served. Which of the two addresses a variable
+gets depends on who resolves it — a `VITE_`-prefixed name is inlined into the bundle and
+read on your machine, so it gets the published port, while anything else a frontend reads
+is read inside its own container, so it gets the container alias. A dev server's proxy
+target is the second kind, and giving it the first is a frontend that serves a page and
+cannot reach its API.
+
+Where the address is a literal instead, nothing reaches it. `cors({ origin:
+'http://localhost:5173' })` names the port Vite uses by default, and a run that could not
+have that port is refused by CORS on every request the page makes — which, from the
+browser, is indistinguishable from the API being down. These are detected by comparing
+what the source names against what was actually published, and reported above the URL
+with the file and both addresses. The project still reaches `READY`, because every
+service genuinely is running.
+
 ## Readiness is not correctness
 
 READY means an HTTP server accepted a connection and returned a complete response. It
@@ -123,13 +147,16 @@ genuinely is running; the page's requests are what fail.
 warns about it before the run, and the failure names the line to change — but nothing
 DevLaunch can do makes that application reachable through a Docker port mapping.
 
-## Only one runtime version per language
+## Three runtime images, and no more
 
-Node 20 and Python 3.12, and nothing else. A repository pinning a dependency that has no
-wheel for 3.12 — or importing `imp`, `distutils` or another module the standard library
-removed — cannot be run here. This is now classified as `WRONG_RUNTIME_VERSION` and
-reported at once rather than repaired, because no plan reaches a runtime that is not
-present.
+Node 20, Node 22 and Python 3.12. 20 is the default and 22 is chosen from evidence — a
+`node:` built-in import, or an `engines.node` lower bound — so `WRONG_RUNTIME_VERSION` is
+repairable by rule between them, and never by a model: no plan a model writes can conjure
+an image the allowlist does not carry.
+
+Python has one version, so it has nowhere to move. A repository pinning a dependency with
+no wheel for 3.12 — or importing `imp`, `distutils` or another module the standard library
+removed — is reported at once rather than repaired.
 
 ## Installing from imports is unpinned
 

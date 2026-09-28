@@ -283,6 +283,20 @@ export interface ServiceCandidate {
   callsOrigins?: string[];
 
   /**
+   * Loopback origins an `api` service hardcodes — in practice, its CORS allowlist.
+   *
+   * The mirror image of `callsOrigins`, and the other half of the same failure. A page
+   * can be served, an API can be published, every container can be healthy, and every
+   * request still be refused — because `cors({ origin: 'http://localhost:5173' })` names
+   * a port the frontend is no longer on. From the browser that is indistinguishable from
+   * an API that is down, which is why a run like it reached READY and looked fine.
+   *
+   * Recorded with the file, because when nothing reads a variable the only remedy is to
+   * name the line.
+   */
+  acceptsOrigins?: { origin: string; file: string }[];
+
+  /**
    * A dev-server proxy pointing at an address its own container cannot reach.
    *
    * `proxy: { '/api': 'http://localhost:8000' }` is resolved by the dev server process,
