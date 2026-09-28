@@ -135,6 +135,32 @@ step once the repository is fixed.
 The failure is still reported, and reported first. Keeping what works is not the same as
 pretending the run succeeded.
 
+## The container memory limit is ours, and a retry says so
+
+`DEVLAUNCH_CONTAINER_MEMORY_MB` defaults to 1024 — right for one container at a time on a
+4 GB VM with a database beside it, and simply too small for some real projects: a Next.js
+dev build is killed by it every time. That was reported as `OUT_OF_MEMORY` and
+non-repairable, on the reasoning that a container limit is changed by configuration
+rather than by a plan. True, and an odd thing to say about configuration DevLaunch writes.
+
+A run killed by the limit is now retried once under
+`DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB` (2048), and the retry is recorded as a repair like
+any other. Never by a model, which cannot change a container's `HostConfig` by writing a
+plan. At the ceiling it stops and reports honestly — give the VM more with
+`colima stop && colima start --cpu 4 --memory 8` and raise the ceiling.
+
+## A backend running old code says so
+
+Sessions and logs live in memory and the dev server is long-lived, which means it can
+outlive the code it was started from. One ran here for five days while a fix landed
+twenty-nine minutes after it started; every launch afterwards was planned and diagnosed
+by the old version, with the same panels and the same confidence as a real failure.
+
+`/api/health` now reports the commit the process started from and the commit the working
+tree is on, and the dashboard shows a banner when they differ. Outside a git checkout it
+says nothing at all: no repository is not evidence of staleness, and a banner that fires
+every time is one nobody reads.
+
 ## Readiness is not correctness
 
 READY means an HTTP server accepted a connection and returned a complete response. It

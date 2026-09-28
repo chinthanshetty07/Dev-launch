@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ServiceStats } from '@devlaunch/shared';
-import { api, ConflictError } from './api';
+import { api, ConflictError, type BuildStamp } from './api';
 import { useSession } from './useSession';
 import { LaunchView } from './components/LaunchView';
 import { RunHeader } from './components/RunHeader';
@@ -15,6 +15,7 @@ import { LogTerminal } from './components/LogTerminal';
 import { Collapsible } from './components/Collapsible';
 import { RewritePanel } from './components/RewritePanel';
 import { BrowserWiringPanel } from './components/BrowserWiringPanel';
+import { StaleBuildBanner } from './components/StaleBuildBanner';
 
 const RUNNING = [
   'QUEUED', 'CLONING', 'ANALYZING', 'PLANNING', 'VALIDATING',
@@ -38,6 +39,13 @@ export default function App() {
   const [stats, setStats] = useState<Record<string, ServiceStats>>({});
   /** A session blocking a launch, so it can be stopped from here rather than hunted for. */
   const [blockedBy, setBlockedBy] = useState<string | null>(null);
+  /**
+   * Whether the backend answering is running the code on disk.
+   *
+   * Checked on mount and again whenever a session finishes, which are the two moments
+   * it matters: before trusting a run, and before trusting its result.
+   */
+  const [build, setBuild] = useState<BuildStamp | undefined>();
 
   /*
    * Reconnect to whatever is already running.
@@ -61,6 +69,12 @@ export default function App() {
   }, []);
 
   const { state, furthest, lines, session, connected, refresh } = useSession(sessionId);
+
+  useEffect(() => {
+    api.health().then((h) => setBuild(h.build)).catch(() => undefined);
+    // Re-checked when a run ends: a rebuild that happened mid-session is exactly the
+    // case where a result should not be trusted, and the result is on screen by then.
+  }, [state]);
 
   const launch = useCallback(async (body: { repoUrl?: string; fixture?: string }) => {
     setBusy(true);
@@ -181,6 +195,7 @@ export default function App() {
   if (!sessionId) {
     return (
       <div className="flex h-full flex-col overflow-auto">
+        <StaleBuildBanner build={build} />
         {errorBanner}
         <LaunchView busy={busy} onLaunch={launch} onOpenSession={setSessionId} />
       </div>
@@ -207,6 +222,7 @@ export default function App() {
       />
 
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+        <StaleBuildBanner build={build} />
         {errorBanner}
 
         {/* The result leads, because it is what the pipeline exists to produce. A

@@ -93,7 +93,17 @@ export interface SessionSummary {
   active: boolean;
 }
 
+/** Whether the backend answering is running the code in the working tree. */
+export interface BuildStamp {
+  running?: string;
+  head?: string;
+  stale: boolean;
+  startedAt: number;
+}
+
 export const api = {
+  health: () => fetch('/api/health').then((r) => json<{ build?: BuildStamp }>(r)),
+
   fixtures: () => fetch('/api/fixtures').then((r) => json<string[]>(r)),
 
   sessions: () => fetch('/api/sessions').then((r) => json<SessionSummary[]>(r)),

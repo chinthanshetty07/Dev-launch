@@ -28,7 +28,15 @@ const POLICIES: Readonly<Record<FailureCode, RepairPolicy>> = Object.freeze({
 
   // --- the environment, not the repository ---------------------------------------
   [FailureCode.NETWORK_FAILURE]: none('a registry or network outage; retrying the same download with a different plan changes nothing'),
-  [FailureCode.OUT_OF_MEMORY]: none('a container limit, changed by configuration rather than by a plan'),
+  // Not a plan change, and not the repository's fault either: the limit is DevLaunch's
+  // own configuration. A real Next.js dev build does not fit in the 1 GB default and
+  // never will, and reporting that as the project failing is blaming somebody else for
+  // a number we chose. One rule-driven retry at the ceiling; never a model, which cannot
+  // change a `HostConfig` by writing a plan.
+  [FailureCode.OUT_OF_MEMORY]: rules(
+    0,
+    'the limit is DevLaunch\'s own, and a bounded retry under a larger one is a rule',
+  ),
   [FailureCode.ARCH_INCOMPATIBLE]: none('an x86-only dependency cannot be rewritten by any plan'),
   [FailureCode.DOCKER_SOCKET_REQUIRED]: none('the sandbox withholds the daemon on purpose; no configuration hands it over'),
   [FailureCode.REPOSITORY_TOO_LARGE]: none('the intake cap is a limit, not a symptom'),
@@ -39,6 +47,9 @@ const POLICIES: Readonly<Record<FailureCode, RepairPolicy>> = Object.freeze({
   [FailureCode.INVALID_AI_PLAN]: none('the model has already produced an unusable plan; asking again is how it thrashes'),
   [FailureCode.PLAN_REJECTED_UNSAFE_COMMAND]: none('a plan the allowlist refused is not retried with a model that wrote it'),
   [FailureCode.APPLICATION_EXITED]: none('it ran, then stopped: the command was right and the answer is in the log tail'),
+  [FailureCode.BROKEN_IMPORT]: none(
+    'a path inside the repository that is not there; no install, command or plan reaches it',
+  ),
 
   // --- a different plan could plausibly fix it ---------------------------------
   [FailureCode.START_COMMAND_FAILED]: rules(1, 'the command or entry point may be wrong; scripts and entry files say which'),

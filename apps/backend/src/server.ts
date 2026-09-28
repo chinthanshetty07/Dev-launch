@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createApp } from './api/app.js';
+import { recordRunningCommit } from './services/build/BuildStamp.js';
 import { DockerManager } from './services/docker/DockerManager.js';
 import { ExecutionManager } from './services/execution/ExecutionManager.js';
 import { SessionManager } from './services/session/SessionManager.js';
@@ -94,8 +95,14 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
   const swept = await CleanupManager.sweepAllOrphans(docker).catch(() => 0);
   if (swept > 0) console.log(`Removed ${swept} container(s) orphaned by a previous run.`);
 
+  // Before anything can serve a request, so the commit reported is the one this
+  // process actually started from rather than whatever the tree drifts to later.
+  const repoRoot = resolve(HERE, '../../..');
+  await recordRunningCommit(repoRoot);
+
   const app = createApp({
     sessions,
+    repoRoot,
     fixturesDir: resolve(HERE, '../../../fixtures'),
     staticDirs: [
       resolve(HERE, '../../frontend/dist'),

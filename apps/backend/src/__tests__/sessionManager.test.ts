@@ -1884,3 +1884,201 @@ describe('a project that is partly running', () => {
     await mgr.shutdown();
   });
 });
+
+/**
+ * A limit DevLaunch chose, reported as the repository's failure.
+ *
+ * `cerbos/nextjs-prisma-cerbos` is killed by the 1 GB container default every time a
+ * Next.js dev build runs, and the verdict was OUT_OF_MEMORY, non-repairable, on the
+ * reasoning that a container limit is "changed by configuration rather than by a plan".
+ * Every word true, and an odd thing to say about configuration DevLaunch writes.
+ */
+describe('running out of memory under our own ceiling', () => {
+  const oom = (): ReadyOutcome => ({
+    state: ExecutionState.FAILED,
+    hostPort: null,
+    readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+    failure: {
+      code: FailureCode.OUT_OF_MEMORY,
+      message: 'The process was killed for exceeding the container memory limit.',
+    } as ReadyOutcome['failure'],
+  });
+
+  /** Records the memory limit each container was created with. */
+  function limitSpy(outcome: () => ReadyOutcome) {
+    const limits: (number | undefined)[] = [];
+    return {
+      limits,
+      exec: {
+        async launch(o: { logs?: LogManager; memoryMb?: number }) {
+          limits.push(o.memoryMb);
+          return {
+            logs: o.logs ?? new LogManager(),
+            waitForReady: async () => outcome(),
+            clearStartupBudget: () => undefined,
+            cleanup: async () => ({ errors: [] }),
+          } as unknown as LaunchHandle;
+        },
+      } as unknown as ExecutionManager,
+    };
+  }
+
+  const deps = (exec: ExecutionManager) => ({
+    analyzer: { analyze: async () => ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [] }) } as never,
+    planner: { planRepository: async () => ({ plan: plan(), detected: 'next', warnings: [] }) } as never,
+    aiRepair: { repair: async () => { throw new Error('a model cannot change a HostConfig'); } } as never,
+  });
+
+  it('raises the limit once and starts again, rather than blaming the project', async () => {
+    const { exec, limits } = limitSpy(oom);
+    const mgr = new SessionManager(exec, deps(exec));
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 6000);
+
+    const { config } = await import('../config/index.js');
+    // First container at the default, second at the ceiling.
+    expect(limits[0]).toBeUndefined();
+    expect(limits[1]).toBe(config.container.memoryCeilingMb);
+    expect(s.repairs?.[0]).toMatchObject({
+      source: 'deterministic',
+      type: 'MEMORY_LIMIT_RAISED',
+      failureCode: FailureCode.OUT_OF_MEMORY,
+    });
+    await mgr.shutdown();
+  });
+
+  it('stops at the ceiling instead of climbing forever', async () => {
+    // One session at a time on a 4 GB VM with a database possibly beside it. An
+    // unbounded retry trades a reported failure for a wedged machine.
+    const { exec, limits } = limitSpy(oom);
+    const mgr = new SessionManager(exec, deps(exec));
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 6000);
+
+    expect(limits).toHaveLength(2);
+    expect(s.state).toBe(ExecutionState.FAILED);
+    expect(s.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
+    // And says so, rather than stopping silently at a number nobody can see.
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/already the ceiling/);
+    await mgr.shutdown();
+  });
+
+  it('keeps the raised limit across a later repair', async () => {
+    // The limit lives on the session rather than the plan, and a later repair replaces
+    // the plan wholesale. A retry that quietly went back to the default would re-run
+    // the failure it had just fixed.
+    let call = 0;
+    const { exec, limits } = limitSpy(() => (++call === 1 ? oom() : failed()));
+    const mgr = new SessionManager(exec, deps(exec));
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 6000);
+
+    const { config } = await import('../config/index.js');
+    expect(limits.length).toBeGreaterThanOrEqual(2);
+    for (const limit of limits.slice(1)) expect(limit).toBe(config.container.memoryCeilingMb);
+    await mgr.shutdown();
+  });
+});
+
+/**
+ * Refusing a plan that names a command this repository cannot run.
+ *
+ * `Preeti-Dalawai6/dataforge` imports a file of its own that is not there, so the rule
+ * plan failed honestly. The model then got its one call and answered `npm run serve` —
+ * a script in no package.json anywhere. DevLaunch built the container, installed the
+ * dependency tree and waited to be told `Missing script: "serve"`.
+ */
+describe('a plan naming a script the manifest does not have', () => {
+  const metadata = (scripts: Record<string, string>) => ({
+    warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+    packageJson: { scripts, dependencies: {}, devDependencies: {} },
+  });
+
+  function spyExec() {
+    const launches: string[] = [];
+    return {
+      launches,
+      exec: {
+        async launch(o: { plan: { startCommand: string }; logs?: LogManager }) {
+          launches.push(o.plan.startCommand);
+          return {
+            logs: o.logs ?? new LogManager(),
+            waitForReady: async () => ready(),
+            clearStartupBudget: () => undefined,
+            cleanup: async () => ({ errors: [] }),
+          } as unknown as LaunchHandle;
+        },
+      } as unknown as ExecutionManager,
+    };
+  }
+
+  it('starts nothing, and says which scripts do exist', async () => {
+    const { exec, launches } = spyExec();
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => metadata({ start: 'node server.js', dev: 'nodemon server.js' }) } as never,
+      planner: {
+        planRepository: async () => ({
+          plan: RunPlanSchema.parse({ ...plan(), startCommand: 'npm run serve', planSource: 'ai-fallback' }),
+          detected: 'express',
+          warnings: [],
+        }),
+      } as never,
+    });
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 4000);
+
+    expect(launches, 'nothing should be built to run a command that cannot exist').toEqual([]);
+    expect(s.failure?.message).toMatch(/no such script/);
+    // The actionable half: not just that `serve` is wrong, but what is right.
+    expect(s.failure?.message).toMatch(/dev, start/);
+    await mgr.shutdown();
+  });
+
+  it('blames the model when a model wrote it, and DevLaunch when a rule did', async () => {
+    // Opposite conclusions from the same evidence. A model that has produced an
+    // unusable plan is not asked again; a *rule* producing one is a bug here rather
+    // than in the repository, and should say so rather than look like the project's
+    // fault.
+    const forSource = async (planSource: string) => {
+      const { exec } = spyExec();
+      const mgr = new SessionManager(exec, {
+        analyzer: { analyze: async () => metadata({ start: 'node server.js' }) } as never,
+        planner: {
+          planRepository: async () => ({
+            plan: RunPlanSchema.parse({ ...plan(), startCommand: 'npm run serve', planSource }),
+            detected: 'express',
+            warnings: [],
+          }),
+        } as never,
+      });
+      const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+      await until(() => s.state === ExecutionState.FAILED, 4000);
+      await mgr.shutdown();
+      return s;
+    };
+
+    expect((await forSource('ai-fallback')).failure?.code).toBe(FailureCode.INVALID_AI_PLAN);
+    const ruled = await forSource('rule-based');
+    expect(ruled.failure?.code).toBe(FailureCode.UNSUPPORTED_PROJECT);
+    expect(ruled.failure?.remedy).toMatch(/DevLaunch bug/);
+  });
+
+  it('lets through a plan whose script is really there', async () => {
+    const { exec, launches } = spyExec();
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => metadata({ dev: 'vite' }) } as never,
+      planner: {
+        planRepository: async () => ({
+          plan: RunPlanSchema.parse({ ...plan(), startCommand: 'npm run dev' }),
+          detected: 'vite',
+          warnings: [],
+        }),
+      } as never,
+    });
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.READY, 4000);
+
+    expect(launches).toEqual(['npm run dev']);
+    await mgr.shutdown();
+  });
+});

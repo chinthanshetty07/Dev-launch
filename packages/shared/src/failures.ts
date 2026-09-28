@@ -8,6 +8,17 @@ export const FailureCode = {
   DEPENDENCY_INSTALL_FAILED: 'DEPENDENCY_INSTALL_FAILED',
   BUILD_FAILED: 'BUILD_FAILED',
   START_COMMAND_FAILED: 'START_COMMAND_FAILED',
+  /**
+   * The repository imports one of its own files by a path that is not there.
+   *
+   * Split out of START_COMMAND_FAILED because the two have opposite answers. A *bare*
+   * specifier that cannot be found is a dependency, and installing it is a plan change
+   * a rule can make. A *relative* one — `require('./routes/users')` in a repository
+   * whose file is `users.js` at the root — is the repository being wrong about itself,
+   * and no plan reaches it. Conflated, it cost a model call per occurrence, and the
+   * model answered by inventing `npm run serve`, a script that does not exist.
+   */
+  BROKEN_IMPORT: 'BROKEN_IMPORT',
   PORT_NOT_LISTENING: 'PORT_NOT_LISTENING',
   /** Added: app bound 127.0.0.1 inside the container, so port mapping resolves to
    *  nothing. Distinct from PORT_NOT_LISTENING because the remedy differs entirely. */
@@ -106,6 +117,15 @@ export type RepairType =
   | 'PORT_CORRECTION'
   | 'HOST_BINDING_CORRECTION'
   | 'HEALTHCHECK_CORRECTION'
+  /**
+   * The container was given more memory and started again.
+   *
+   * The odd one out: every other repair changes the plan, and this one changes nothing
+   * about it. It belongs here anyway, because a person looking at why a run took two
+   * attempts deserves the same account of this as of any other — and because the thing
+   * that was wrong was DevLaunch's configuration rather than their repository.
+   */
+  | 'MEMORY_LIMIT_RAISED'
   | 'PLAN_REWRITE';
 
 /**

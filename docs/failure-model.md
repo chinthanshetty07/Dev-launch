@@ -3,6 +3,46 @@
 An execution that fails is not an error to be logged — it is a result to be explained.
 This document describes how DevLaunch decides *what went wrong*.
 
+## A missing module is two failures wearing one sentence
+
+`Cannot find module 'express'` is a dependency: installing it is a plan change a rule
+can make. `Cannot find module './routes/users'` in a repository whose file is `users.js`
+at the root is the repository being wrong about itself, and no plan reaches it. The
+second is `BROKEN_IMPORT` and non-repairable; conflated, it cost a model call per
+occurrence, and the model answered by inventing `npm run serve`.
+
+The distinction is the leading dot, and it is narrower than it first looks. Node reports
+a `require` exactly as written, and resolves a *command-line entry* to an absolute path
+first — so `node wrong-entry.js` fails with `'/workspace/wrong-entry.js'`, which is the
+plan naming the wrong file and is precisely what repair is good at. An early version of
+this rule claimed absolute paths too and took that fix away; an integration test that had
+exercised it for months is what said so.
+
+## The runner's epilogue is not a diagnosis
+
+`error Command failed with exit code 1.` is yarn restating the exit code, and it is the
+last line of the log — so it became the evidence for a real repository's failure, under a
+heading that already said the command exited 1. `Node.js v20.20.2` is the same thing in
+Node's voice, and it is the final line of every Node crash there is.
+
+These are epilogues: true, not news, and printed after the thing worth reading. Walking
+past them turned one real failure's report from a version number into
+`code: 'SQLITE_CANTOPEN'`. Skipping noise must not become withholding evidence, so when
+the epilogue is genuinely all there is, it is still quoted — at low confidence.
+
+## A plan is checked for whether it is possible
+
+The validator asked whether a plan was well-formed and whether it was safe, and never
+whether the repository could run it. So `npm run serve`, against a manifest defining
+`start` and `dev`, built a container and installed a dependency tree before failing.
+
+`Feasibility` compares a plan's commands against the manifest's script names and refuses
+the run in a second, naming the scripts that do exist. Deliberately narrow: it reports
+only what it can prove from a manifest it has, and `yarn start`, `yarn test` and
+`yarn build` are exempt because the word alone cannot say whether they mean a script or
+the package manager's own verb. A missed check costs a minute; a wrong one refuses a plan
+that would have worked.
+
 ## Stopping is not failing
 
 `cancel` removes the containers and sets the state; the pipeline step that was mid-install

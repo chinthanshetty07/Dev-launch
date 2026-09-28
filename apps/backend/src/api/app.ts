@@ -6,12 +6,15 @@ import { SessionConflict, type Session, type SessionManager } from '../services/
 import { assertSafeRelativePath } from '../services/security/PathValidator.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 import { TERMINAL_STATES, type BackingView, type ServiceView } from '@devlaunch/shared';
+import { buildStamp } from '../services/build/BuildStamp.js';
 
 export interface AppOptions {
   sessions: SessionManager;
   fixturesDir: string;
   /** Directories tried in order for static assets; the first that exists wins. */
   staticDirs: string[];
+  /** The checkout to compare this process against. See `BuildStamp`. */
+  repoRoot?: string;
 }
 
 function positiveInt(raw: unknown, fallback: number): number {
@@ -108,8 +111,20 @@ export function createApp(opts: AppOptions): Express {
   const served = opts.staticDirs.find((dir) => existsSync(dir));
   if (served) app.use(express.static(served));
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, sessions: opts.sessions.list().length });
+  /**
+   * Liveness, and whether this process is running the code on disk.
+   *
+   * The second part is not decoration. A development server ran for five days here
+   * while a fix landed twenty-nine minutes after it started, and every launch after
+   * that was served by the old code — producing failures indistinguishable from real
+   * ones. Nothing could have said so, because nothing knew what it was running.
+   */
+  app.get('/api/health', async (_req, res) => {
+    res.json({
+      ok: true,
+      sessions: opts.sessions.list().length,
+      build: await buildStamp(opts.repoRoot ?? process.cwd()),
+    });
   });
 
   /**

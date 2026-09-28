@@ -5,12 +5,15 @@ import { APPROVED_IMAGES } from '../services/security/ImageAllowlist.js';
 
 describe('what repair is allowed to do about a failure', () => {
   it('never spends a model call on a failure no plan can fix', () => {
-    // Two retries for every failure spent model calls on a missing secret, an outage and
-    // a memory ceiling, then arrived where it started. Each of these stops with a reason.
+    // Two retries for every failure spent model calls on a missing secret and an
+    // outage, then arrived where it started. Each of these stops with a reason.
+    //
+    // OUT_OF_MEMORY used to be in this list and is not any more; see below. It was here
+    // on the strength of "a container limit, changed by configuration rather than by a
+    // plan", which is true and was the wrong conclusion: the configuration is ours.
     for (const code of [
       FailureCode.MISSING_ENV,
       FailureCode.NETWORK_FAILURE,
-      FailureCode.OUT_OF_MEMORY,
       FailureCode.ARCH_INCOMPATIBLE,
       FailureCode.DOCKER_SOCKET_REQUIRED,
       FailureCode.INVALID_AI_PLAN,
@@ -57,6 +60,21 @@ describe('what repair is allowed to do about a failure', () => {
     const somethingToChoose = [...perLanguage.values()].some((n) => n > 1);
     const policy = repairPolicyFor(FailureCode.WRONG_RUNTIME_VERSION);
     expect(policy.repairability).toBe(somethingToChoose ? 'DETERMINISTIC' : 'NON_REPAIRABLE');
+  });
+
+  it('treats a memory limit as DevLaunch\'s problem, and never a model\'s', () => {
+    // This was NON_REPAIRABLE, with the reason "a container limit, changed by
+    // configuration rather than by a plan". Every word true, and an odd thing to say
+    // about configuration DevLaunch writes: a real Next.js dev build is killed by the
+    // 1 GB default every time and was told its own project had failed. The premise
+    // changed — a rule can raise our own number — so the policy changed with it, and
+    // the intent is restated rather than the assertion flipped.
+    //
+    // What holds either way: a model is never asked. It cannot change a container's
+    // HostConfig by writing a plan, so a call spent here buys nothing at all.
+    const policy = repairPolicyFor(FailureCode.OUT_OF_MEMORY);
+    expect(policy.repairability).toBe('DETERMINISTIC');
+    expect(policy.aiCalls).toBe(0);
   });
 
   it('never asks a model to solve a runtime-version mismatch', () => {

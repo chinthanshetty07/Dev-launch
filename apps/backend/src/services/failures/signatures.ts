@@ -336,6 +336,35 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
   },
 
   // --- application startup ---------------------------------------------------
+  // Before `module-not-found`, and the ordering is the whole point: a relative
+  // specifier and a bare one produce the same sentence and have opposite answers.
+  {
+    id: 'relative-module-not-found',
+    code: FailureCode.BROKEN_IMPORT,
+    phases: ['start', 'build'],
+    patterns: [
+      // Only a *relative* specifier, and the distinction is load-bearing rather than
+      // cosmetic. Node reports a `require` exactly as it was written — `'./routes/users'`
+      // — and resolves a command-line entry to an absolute path first, so
+      // `node wrong-entry.js` fails with `'/workspace/wrong-entry.js'`.
+      //
+      // Which is the difference between the two failures. A relative specifier is the
+      // repository's own source importing a sibling that is not there, and no plan
+      // reaches it. An absolute one is usually the *plan* naming the wrong entry file,
+      // which is precisely what repair exists to correct — and treating it as
+      // unrepairable took away the fix for the commonest thing repair is good at.
+      /Cannot find module\s+['"]\.{1,2}\/[^'"]*['"]/,
+      /Error \[ERR_MODULE_NOT_FOUND\][^\n]*['"](?:file:)?\.{1,2}\/[^'"]*['"]/,
+      /ImportError: attempted relative import/,
+    ],
+    remedy:
+      'This is a path inside the repository, relative to the file importing it, so no ' +
+      'install or plan change reaches it. The file is named differently, is in another ' +
+      'directory, or was never committed — check the spelling and the case, which ' +
+      'matters here even where it does not on macOS.',
+    describe: (e) =>
+      `The repository imports one of its own files by a path that is not there: ${e.trim().slice(0, 160)}`,
+  },
   {
     id: 'module-not-found',
     code: FailureCode.START_COMMAND_FAILED,

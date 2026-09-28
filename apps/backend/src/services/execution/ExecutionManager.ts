@@ -46,6 +46,14 @@ export interface LaunchOptions {
    * to a session's log stream while it is still queued and miss nothing.
    */
   logs?: LogManager;
+  /**
+   * Memory ceiling for this container, overriding the configured default.
+   *
+   * Set by the one repair that changes no command: a run killed by the limit is retried
+   * under a larger one, because the limit is DevLaunch's own number rather than
+   * anything the repository did.
+   */
+  memoryMb?: number;
 }
 
 export interface ReadyOutcome {
@@ -228,6 +236,8 @@ export function classifyExit(
 export function classifyPostReadyExit(
   liveness: ContainerLiveness,
   evidence?: string,
+  /** The limit this container actually ran under, when a repair raised it. */
+  memoryMb?: number,
 ): { state: ExecutionState; failure?: FailureDetail } | null {
   if (liveness.kind === 'running' || liveness.kind === 'unknown') return null;
 
@@ -255,7 +265,7 @@ export function classifyPostReadyExit(
         code: FailureCode.OUT_OF_MEMORY,
         message:
           `The application was killed for exceeding the container's ` +
-          `${config.container.memoryMb} MB memory limit after it had become ready.`,
+          `${memoryMb ?? config.container.memoryMb} MB memory limit after it had become ready.`,
         exitCode,
         phase: 'start',
         remedy:
@@ -360,6 +370,7 @@ export class ExecutionManager {
           sessionId: opts.sessionId,
           packageCacheVolume: opts.packageCacheVolume,
           networkName,
+          ...(opts.memoryMb ? { memoryMb: opts.memoryMb } : {}),
         }),
         workingDir: workdir,
         exposePort: opts.plan.expectedPort,

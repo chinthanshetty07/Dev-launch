@@ -78,6 +78,15 @@ export const config = {
 
   container: {
     memoryMb: intEnv('DEVLAUNCH_CONTAINER_MEMORY_MB', 1024),
+    /**
+     * How far a single retry may raise that limit after an OOM kill.
+     *
+     * 1 GB is the right default — one container at a time on a 4 GB VM, with room for a
+     * database beside it — and it is also simply too small for some real projects: a
+     * Next.js dev build is killed by it every time. The ceiling is what keeps the retry
+     * from trading a reported failure for a wedged VM.
+     */
+    memoryCeilingMb: intEnv('DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB', 2048),
     cpus: intEnv('DEVLAUNCH_CONTAINER_CPUS', 2),
     /** Fork-bomb ceiling. */
     pidsLimit: intEnv('DEVLAUNCH_CONTAINER_PIDS_LIMIT', 256),

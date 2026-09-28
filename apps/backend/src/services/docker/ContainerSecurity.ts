@@ -13,17 +13,28 @@ export interface SecurityOptions {
   packageCacheVolume?: string;
   /** User-defined network carrying the RFC1918 egress policy, when installed. */
   networkName?: string;
+  /**
+   * Memory ceiling for this one container, overriding the configured default.
+   *
+   * Exists so a run killed by the limit can be retried under a larger one. The limit is
+   * DevLaunch's own configuration, not a property of the repository, and reporting
+   * `OUT_OF_MEMORY` as though the project were at fault was blaming somebody else for a
+   * number we chose — a Next.js dev build does not fit in 1 GB and never did.
+   */
+  memoryMb?: number;
 }
 
 export function buildHostConfig(opts: SecurityOptions): Dockerode.HostConfig {
   const binds: string[] = [];
   if (opts.packageCacheVolume) binds.push(`${opts.packageCacheVolume}:/cache`);
 
+  const memoryMb = opts.memoryMb ?? config.container.memoryMb;
+
   return {
     // --- Resource ceilings -----------------------------------------------------
-    Memory: config.container.memoryMb * 1024 * 1024,
+    Memory: memoryMb * 1024 * 1024,
     // Equal to Memory: without this the container escapes its cap through swap.
-    MemorySwap: config.container.memoryMb * 1024 * 1024,
+    MemorySwap: memoryMb * 1024 * 1024,
     NanoCpus: config.container.cpus * 1_000_000_000,
     PidsLimit: config.container.pidsLimit,
 

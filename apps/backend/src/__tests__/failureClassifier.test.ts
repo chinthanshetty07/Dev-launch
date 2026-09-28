@@ -277,3 +277,117 @@ describe('a Node crash', () => {
     expect(out.confidence).toBe('high');
   });
 });
+
+/**
+ * A package runner's epilogue is not a diagnosis.
+ *
+ * `nicholasdavidbrown/sern-compose-template` failed with its backend exiting 1, and the
+ * report's evidence was `error Command failed with exit code 1.` — yarn restating the
+ * exit code, under a heading that already said the command exited 1. The report was the
+ * exit code twice and the cause not at all.
+ */
+describe('what the application said, not what ran it', () => {
+  const classify = (lines: string[]) =>
+    new FailureClassifier().classify({
+      logs: lines.join('\n'),
+      exitCode: 1,
+      phase: 'start',
+      fallback: { code: FailureCode.START_COMMAND_FAILED, message: 'Start command exited with code 1.' },
+    });
+
+  it('walks past yarn\'s epilogue to the sentence that names the problem', () => {
+    // Deliberately a sentence no signature matches and that is not exception-shaped:
+    // the two earlier passes would otherwise find it on their own and this would test
+    // nothing. What is left is exactly the case that was broken — an application whose
+    // last useful words are prose, followed by the runner's accounting.
+    const verdict = classify([
+      'yarn run v1.22.22',
+      '$ nodemon src/index.js',
+      'Configuration is invalid: no database name was supplied and none could be inferred.',
+      'error Command failed with exit code 1.',
+      'info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.',
+    ]);
+    expect(verdict.evidence).toMatch(/no database name was supplied/);
+    expect(verdict.evidence).not.toMatch(/Command failed with exit code/);
+  });
+
+  it('walks past npm\'s, which is the same epilogue in a different accent', () => {
+    const verdict = classify([
+      '> app@1.0.0 start',
+      'Fatal: the configuration file names a provider this build does not include.',
+      'npm ERR! code ELIFECYCLE',
+      'npm ERR! Failed at the app@1.0.0 start script.',
+      'npm ERR! This is probably not a problem with npm. There is likely additional logging output above.',
+    ]);
+    expect(verdict.evidence).toMatch(/names a provider/);
+    expect(verdict.evidence).not.toMatch(/npm ERR!/);
+  });
+
+  it('walks past the runtime\'s own sign-off, which is the last line of every crash', () => {
+    // Node prints its version after an uncaught error, so `Node.js v20.20.2` is the
+    // final line of every Node crash there is. A live run picked it as the evidence for
+    // a real failure — a version number, offered as the cause.
+    const verdict = classify([
+      '> backend@1.0.0 dev',
+      'The database connection string is required but was not provided.',
+      '',
+      'Node.js v20.20.2',
+    ]);
+    expect(verdict.evidence).toMatch(/database connection string/);
+    expect(verdict.evidence).not.toMatch(/Node\.js v/);
+  });
+
+  it('still quotes the runner when the runner is genuinely all there is', () => {
+    // Skipping noise must not become withholding evidence. When nothing else was said,
+    // the epilogue is a worse answer than a good one and a better answer than silence
+    // — but only the heading is left, and it already carries the exit code.
+    const verdict = classify(['yarn run v1.22.22', 'error Command failed with exit code 1.']);
+    expect(verdict.code).toBe(FailureCode.START_COMMAND_FAILED);
+    expect(verdict.confidence).toBe('low');
+  });
+});
+
+/**
+ * A missing module is two different failures wearing the same sentence.
+ *
+ * `require('express')` that cannot be found is a dependency, and installing it is a
+ * plan change a rule can make. `require('./routes/users')` in a repository whose file
+ * is `users.js` at the root is the repository being wrong about itself, and no plan
+ * reaches it. Conflated, the second one cost a model call, and the model answered by
+ * inventing a script that does not exist.
+ */
+describe('a broken import of the repository\'s own file', () => {
+  const classify = (line: string) =>
+    new FailureClassifier().classify({
+      logs: `Error: ${line}`,
+      exitCode: 1,
+      phase: 'start',
+      fallback: { code: FailureCode.UNKNOWN_RUNTIME_ERROR, message: 'x' },
+    });
+
+  it('is told apart from a missing dependency by the leading dot', () => {
+    expect(classify("Cannot find module './routes/users'").code).toBe(FailureCode.BROKEN_IMPORT);
+    expect(classify("Cannot find module '../lib/db'").code).toBe(FailureCode.BROKEN_IMPORT);
+    // And a bare specifier stays what it was: something that can be installed.
+    expect(classify("Cannot find module 'express'").code).toBe(FailureCode.START_COMMAND_FAILED);
+  });
+
+  it('leaves an absolute path repairable, because it is usually the plan\'s', () => {
+    // Node reports a `require` as written and resolves a command-line entry to an
+    // absolute path first — so `/workspace/wrong-entry.js` is `node wrong-entry.js`
+    // with the wrong file, which a corrected start command fixes and repair is good at.
+    // Calling it unrepairable took away the fix for the commonest thing repair does,
+    // and an integration test that had exercised that fix for months caught it.
+    expect(classify("Cannot find module '/workspace/wrong-entry.js'").code).toBe(
+      FailureCode.START_COMMAND_FAILED,
+    );
+  });
+
+  it('says the remedy is a file, not an install', () => {
+    const verdict = classify("Cannot find module './routes/users'");
+    expect(verdict.message).toMatch(/one of its own files/);
+    expect(verdict.remedy).toMatch(/relative to the file importing it/);
+    // Case, because this is the half of it that only bites in a container.
+    expect(verdict.remedy).toMatch(/case/);
+  });
+});

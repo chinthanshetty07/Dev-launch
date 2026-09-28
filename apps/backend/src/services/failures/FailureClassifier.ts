@@ -114,6 +114,20 @@ const EXCEPTION_LINE =
   /^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Failure)\b(?:\s*\[[^\]]+\])?[^\s]*:\s\S/;
 
 /**
+ * What a package runner says after the thing it ran has already failed.
+ *
+ * `error Command failed with exit code 1.` is yarn restating the exit code, and it is
+ * the last line of the log — so it became the evidence for a real repository's failure,
+ * under a heading that already said the command exited 1. The report was the exit code
+ * twice and the cause not at all, while the sentence naming it sat four lines above.
+ *
+ * These are epilogues rather than diagnoses: every one of them is true, none of them is
+ * news, and all of them are printed *after* the thing worth reading.
+ */
+const RUNNER_EPILOGUE =
+  /^(?:error Command failed with exit code|info Visit https:\/\/yarnpkg\.com|error This is probably not a problem with npm|npm ERR! (?:code |errno |syscall |path |command |Failed at |This is probably not a problem)|ELIFECYCLE|Command failed with exit code|Node\.js v\d)/;
+
+/**
  * The last line worth showing a person.
  *
  * A traceback's final line is the exception; the lines above it are the frames that got
@@ -135,6 +149,7 @@ function lastMeaningfulLine(lines: readonly string[]): string | undefined {
     // Stack frames, and the shell's own accounting of what it ran.
     if (/^(?:at |File "|\s{2,}\^+\s*$|\.{3}|\[nodemon\]|npm ERR! A complete log)/.test(line)) continue;
     if (/^(?:Traceback \(most recent call last\)|During handling of)/.test(line)) continue;
+    if (RUNNER_EPILOGUE.test(line)) continue;
     if (line.length < 8) continue;
     return line;
   }

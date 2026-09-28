@@ -44,6 +44,7 @@ import type { AIRepair } from '../ai/AIRepair.js';
 import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
 import { repairPolicyFor } from '../failures/RepairPolicy.js';
 import { tryDeterministicRepair } from '../planning/DeterministicRepair.js';
+import { impossibleCommand } from '../planning/Feasibility.js';
 import {
   applySourceRewrites,
   databaseUrlRewrite,
@@ -159,6 +160,15 @@ export interface Session {
    * nothing anywhere said so. See `browserWiringProblems`.
    */
   browserProblems?: BrowserWiringProblem[];
+  /**
+   * Memory ceiling this session's containers run under, when a repair raised it.
+   *
+   * On the session rather than the plan, because it is not a plan: no command changes,
+   * and a `RunPlan` describes what to run rather than what to run it in. It also has to
+   * outlive a plan — a later repair replaces the plan wholesale, and a retry that
+   * quietly went back to 1 GB would re-run the failure it had just fixed.
+   */
+  memoryMb?: number;
   /** Model calls spent on repair, against the per-failure budget. */
   aiRepairCalls?: number;
   /** The model's own account of what it inferred. Displayed, never acted on. */
@@ -617,6 +627,8 @@ export class SessionManager extends EventEmitter {
         plan,
         image: imageForRuntime(plan.runtime.language, plan.runtime.version),
       });
+      const found = session.metadata?.services?.find((c) => c.dir === plan.workingDirectory);
+      if (found && this.refuseImpossiblePlan(session, plan, found.scripts)) return;
     }
 
     this.setState(session, ExecutionState.STARTING);
@@ -851,6 +863,8 @@ export class SessionManager extends EventEmitter {
     const image = req.image ?? imageForRuntime(plan.runtime.language, plan.runtime.version);
     // One gate for every plan, whatever produced it.
     this.validator.validate({ plan, image });
+    const manifest = (session.planMetadata ?? session.metadata)?.packageJson?.scripts;
+    if (this.refuseImpossiblePlan(session, plan, manifest && Object.keys(manifest))) return;
 
     // A single service needs its database as much as a project does. Until this ran
     // here, a lone API detected as needing Postgres was started with no server and no
@@ -892,6 +906,7 @@ export class SessionManager extends EventEmitter {
       sourceDir,
       image,
       logs: session.logs,
+      ...(session.memoryMb ? { memoryMb: session.memoryMb } : {}),
     });
     session.handle = handle;
 
@@ -971,6 +986,91 @@ export class SessionManager extends EventEmitter {
     session.failure = kept && attempts > 0 ? { ...kept, repairAttemptsAfter: attempts } : kept;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
+  }
+
+  /**
+   * Give the container more memory, once, up to a ceiling.
+   *
+   * Once, and bounded: one session at a time on a 4 GB VM with a database possibly
+   * beside it, so an unbounded retry trades a reported failure for a wedged machine.
+   * Returns false when the ceiling is already reached, which puts the session back on
+   * the honest report — `OUT_OF_MEMORY` naming a limit that was genuinely tried.
+   *
+   * `repairAttempts` is appended to with the unchanged plan, which is what keeps this
+   * inside the same attempt ceiling as every other repair. It is not a plan change, but
+   * it is an attempt, and an attempt that does not count is how a loop becomes infinite.
+   */
+  private raiseMemory(session: Session, previous: readonly RunPlan[]): boolean {
+    const current = session.memoryMb ?? config.container.memoryMb;
+    const ceiling = config.container.memoryCeilingMb;
+    if (current >= ceiling) {
+      session.logs.buffer.push(
+        'stdout',
+        `Not raising the memory limit again: ${current} MB is already the ceiling ` +
+          `(DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB). Give the VM more with ` +
+          '`colima stop && colima start --cpu 4 --memory 8` and raise the ceiling.',
+      );
+      return false;
+    }
+
+    session.memoryMb = ceiling;
+    session.repairAttempts = [...previous, session.plan!];
+    session.repairs = [
+      ...(session.repairs ?? []),
+      {
+        source: 'deterministic',
+        type: 'MEMORY_LIMIT_RAISED',
+        failureCode: FailureCode.OUT_OF_MEMORY,
+        before: { memoryMb: current },
+        after: { memoryMb: ceiling },
+        evidence: [`the container was killed at ${current} MB, which is DevLaunch's limit rather than the repository's`],
+        confidence: 'high',
+      },
+    ];
+    session.logs.buffer.push(
+      'stdout',
+      `Raising the container memory limit from ${current} MB to ${ceiling} MB and ` +
+        'starting again. The limit is ours, not this repository\'s.',
+    );
+    return true;
+  }
+
+  /**
+   * Stop before building a container to run a command that cannot exist.
+   *
+   * The validator asks whether a plan is well-formed and whether it is safe, and never
+   * asked whether it is *possible*. A model handed a repository whose own import was
+   * broken answered `npm run serve` — a script in no package.json anywhere — and
+   * DevLaunch built the container, installed the tree, and waited a minute to be told
+   * `Missing script: "serve"`. Answering in a second, from a manifest already read, is
+   * strictly better, and saying which scripts do exist is the part somebody can act on.
+   *
+   * Non-repairable either way, and for opposite reasons: a model that has produced an
+   * unusable plan is not asked again, and a *rule* producing one is a bug here rather
+   * than in the repository, so it should be loud rather than retried.
+   */
+  private refuseImpossiblePlan(
+    session: Session,
+    plan: RunPlan,
+    declaredScripts: readonly string[] | undefined,
+  ): boolean {
+    const problem = impossibleCommand(plan, declaredScripts);
+    if (!problem) return false;
+
+    const fromModel = plan.planSource === 'ai-fallback';
+    this.fail(session, {
+      code: fromModel ? FailureCode.INVALID_AI_PLAN : FailureCode.UNSUPPORTED_PROJECT,
+      message: problem,
+      confidence: 'high',
+      remedy: fromModel
+        ? 'The fallback planner proposed a command this repository cannot run. Nothing ' +
+          'was started. Add the script it named, or run the project by hand to find the ' +
+          'command that works.'
+        : 'This is a DevLaunch bug rather than a problem with the repository: a ' +
+          'deterministic plan is built from the manifest and should never name a script ' +
+          'the manifest does not have.',
+    });
+    return true;
   }
 
   /**
@@ -1107,6 +1207,17 @@ export class SessionManager extends EventEmitter {
     if (previous.length >= MAX_REPAIR_ATTEMPTS) {
       session.logs.buffer.push('stderr', `Repair limit of ${MAX_REPAIR_ATTEMPTS} reached.`);
       return false;
+    }
+
+    // Attempt: raise a limit that is ours, before touching a plan that is theirs.
+    //
+    // OUT_OF_MEMORY was non-repairable, with the reason "a container limit, changed by
+    // configuration rather than by a plan" — true, and an odd thing to say about
+    // configuration DevLaunch writes. A real Next.js repository is killed by the 1 GB
+    // default every time, and was told its own project had failed.
+    if (failure.code === FailureCode.OUT_OF_MEMORY && this.raiseMemory(session, previous)) {
+      await this.startAndVerify(session, sourceDir, req);
+      return true;
     }
 
     const logs = session.logs.buffer.all().map((l) => l.text).join('\n');
@@ -1419,7 +1530,7 @@ export class SessionManager extends EventEmitter {
       }
       unknowns = 0;
 
-      const verdict = classifyPostReadyExit(liveness, lastLogLine(session));
+      const verdict = classifyPostReadyExit(liveness, lastLogLine(session), session.memoryMb);
       if (!verdict) {
         schedule();
         return;
