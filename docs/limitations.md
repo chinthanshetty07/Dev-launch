@@ -200,6 +200,28 @@ Python has one version, so it has nowhere to move. A repository pinning a depend
 no wheel for 3.12 — or importing `imp`, `distutils` or another module the standard library
 removed — is reported at once rather than repaired.
 
+## A submodule can need what its distribution does not install
+
+`pip install sqlalchemy` installs no greenlet, and `sqlalchemy.ext.asyncio` does not work
+without it — SQLAlchemy ships that support behind an `asyncio` extra. A repository
+declaring plain `sqlalchemy` and importing the async engine therefore installs cleanly,
+starts, passes readiness, and dies on its first query.
+
+The import scan reduces every import to the name pip installs, which is right for
+installing and loses exactly the evidence that matters here. It is kept separately now,
+and the requirement is appended beside the manifest — never over it, so every version the
+repository pinned still decides. The warning names the import rather than only the
+package, so the judgement can be checked.
+
+What gets installed is `greenlet` and not `sqlalchemy[asyncio]`, which would be the truer
+expression of the intent. Commands run through `sh -c`, where `[` is a glob character,
+and an argument whose expansion depends on what files a repository happens to contain is
+not worth having; widening the command whitelist for it would trade a real boundary for
+tidiness. The cost is that this drifts if the extra ever gains a second member.
+
+The table has one entry. Each addition should be able to name the repository that proved
+it — a guessed entry adds a download to every run that imports a popular package.
+
 ## Installing from imports is unpinned
 
 A Python project with no requirements.txt or pyproject.toml is planned from what its

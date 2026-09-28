@@ -132,6 +132,18 @@ export interface PythonSummary {
    */
   imports?: string[];
   /**
+   * Distributions the source's imports prove it needs, which the manifest will not get.
+   *
+   * `imports` reduces every import to the name pip installs, which is right for
+   * installing and throws away the only evidence that a *part* of a distribution was
+   * asked for. `from sqlalchemy.ext.asyncio import create_async_engine` becomes
+   * `sqlalchemy`, and `pip install sqlalchemy` installs no greenlet — so the application
+   * starts, answers nothing, and dies on its first query.
+   *
+   * `because` is the module that implied it, so the warning can name its evidence.
+   */
+  impliedRequirements?: { requirement: string; because: string }[];
+  /**
    * A database URL written into the source with a loopback host.
    *
    * It reads no environment variable, so there is nothing for DevLaunch to set — and

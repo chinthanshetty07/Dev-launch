@@ -114,7 +114,7 @@ export function importedDistributions(source: string, local: readonly string[] =
   const own = new Set(local);
   const out: string[] = [];
 
-  const add = (module: string): void => {
+  forEachImportedModule(source, (module) => {
     const top = module.split('.')[0]!;
     if (!top || STDLIB.has(top) || own.has(top)) return;
     // A conditional or lazily-imported name is still a name pip must fetch, but one
@@ -122,24 +122,95 @@ export function importedDistributions(source: string, local: readonly string[] =
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(top)) return;
     const dist = DISTRIBUTION_FOR[top] ?? top;
     if (!out.includes(dist)) out.push(dist);
-  };
+  });
 
+  return out;
+}
+
+/**
+ * Distributions a source file's imports prove it needs, which its manifest will not get.
+ *
+ * `importedDistributions` reduces every import to its top-level name, because that is
+ * what pip installs — and in doing so it throws away the only evidence that a *part* of
+ * a distribution was asked for. `from sqlalchemy.ext.asyncio import create_async_engine`
+ * becomes `sqlalchemy`, and `pip install sqlalchemy` installs no greenlet, so the
+ * application starts, serves, and dies on its first query with "the SQLAlchemy asyncio
+ * module requires that the Python 'greenlet' library is installed".
+ *
+ * Measured rather than assumed, in the runner image: `pip install sqlalchemy asyncpg`
+ * leaves no greenlet, and `pip install 'sqlalchemy[asyncio]'` installs 3.5.6.
+ *
+ * The concrete distribution, not the extra that contains it. `sqlalchemy[asyncio]` is
+ * the truer expression of the intent and is not what gets installed, because commands
+ * run through `sh -c` and `[` is a glob character there — an argument whose expansion
+ * depends on what files the repository happens to contain is not an argument worth
+ * having. Widening the command whitelist for it would trade a real boundary for
+ * tidiness. The cost is that this drifts if the extra ever gains a second member, which
+ * is a thing to notice rather than a thing to guess about now.
+ *
+ * Strictly, the repository under-declared: it should say `sqlalchemy[asyncio]`. That is
+ * the same verdict the missing-package rule already reached about a repository importing
+ * `flasgger` and listing four other things — right about whose bug it is, and wrong
+ * about what DevLaunch can see. The safety argument is the same too: the requirement
+ * comes from a module the project's own source imports, never from a log line, and it is
+ * added beside the manifest rather than over it.
+ *
+ * One entry per submodule genuinely unusable without it, each able to name the
+ * repository that proved it. A guessed entry adds a download to every run that imports
+ * a popular package.
+ */
+export function impliedRequirements(
+  source: string,
+  local: readonly string[] = [],
+): { requirement: string; because: string }[] {
+  const own = new Set(local);
+  const out: { requirement: string; because: string }[] = [];
+
+  forEachImportedModule(source, (module) => {
+    if (own.has(module.split('.')[0]!)) return;
+    for (const [submodule, requirement] of Object.entries(REQUIRED_BY_MODULE)) {
+      // The submodule itself, or anything under it: `sqlalchemy.ext.asyncio.session`
+      // needs greenlet for the same reason its parent does.
+      if (module !== submodule && !module.startsWith(`${submodule}.`)) continue;
+      // The importing module travels with it. A warning saying only "installing
+      // greenlet" is a thing DevLaunch did; one saying which import asked for it is a
+      // thing somebody can check, disagree with, or fix in their own manifest.
+      if (!out.some((r) => r.requirement === requirement)) {
+        out.push({ requirement, because: submodule });
+      }
+    }
+  });
+
+  return out;
+}
+
+/**
+ * A submodule that does not work unless something its parent does not install is there.
+ *
+ * `sqlalchemy.ext.asyncio` needs greenlet, which SQLAlchemy declares under its `asyncio`
+ * extra and installs no other way — found by `fixtures/python-async-postgres`, whose
+ * requirements.txt names plain `sqlalchemy`, exactly as the repositories it stands for do.
+ */
+const REQUIRED_BY_MODULE: Readonly<Record<string, string>> = Object.freeze({
+  'sqlalchemy.ext.asyncio': 'greenlet',
+});
+
+/** Every module named by an import in this file, with its dots intact. */
+function forEachImportedModule(source: string, visit: (module: string) => void): void {
   for (const line of source.split('\n')) {
     // A leading dot is a relative import and never a distribution.
     const from = /^\s*from\s+([A-Za-z_][\w.]*)\s+import\b/.exec(line);
     if (from) {
-      add(from[1]!);
+      visit(from[1]!);
       continue;
     }
     const plain = /^\s*import\s+(.+)$/.exec(line);
     if (!plain) continue;
     for (const part of plain[1]!.split(',')) {
       const name = /^\s*([A-Za-z_][\w.]*)/.exec(part);
-      if (name) add(name[1]!);
+      if (name) visit(name[1]!);
     }
   }
-
-  return out;
 }
 
 /**

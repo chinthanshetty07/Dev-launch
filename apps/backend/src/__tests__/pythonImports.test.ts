@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { importedDistributions } from '../services/analysis/pythonImports.js';
+import { impliedRequirements, importedDistributions } from '../services/analysis/pythonImports.js';
 
 /**
  * Reading imports is the last resort for a project that declares nothing, and the one
@@ -113,5 +113,58 @@ describe('a database URL written into the source', () => {
   it('says nothing when the URL comes from the environment', async () => {
     const { hardcodedDatabaseUrl } = await import('../services/analysis/pythonImports.js');
     expect(hardcodedDatabaseUrl('URL = os.getenv("DATABASE_URL")')).toBeUndefined();
+  });
+});
+
+/**
+ * A part of a distribution that its parent does not install.
+ *
+ * `importedDistributions` reduces every import to the name pip installs, which is right
+ * for installing and throws away the only evidence that a *submodule* was asked for.
+ * `fixtures/python-async-postgres` declares plain `sqlalchemy` and imports
+ * `sqlalchemy.ext.asyncio`; the install succeeded, the server started, and the first
+ * query died with "the SQLAlchemy asyncio module requires that the Python 'greenlet'
+ * library is installed". Measured in the runner image: `pip install sqlalchemy asyncpg`
+ * leaves no greenlet, `pip install 'sqlalchemy[asyncio]'` installs 3.5.6.
+ */
+describe('requirements a submodule implies', () => {
+  it('reads greenlet out of an async SQLAlchemy import', () => {
+    const source = 'from sqlalchemy.ext.asyncio import create_async_engine\n';
+    expect(impliedRequirements(source)).toEqual([
+      { requirement: 'greenlet', because: 'sqlalchemy.ext.asyncio' },
+    ]);
+  });
+
+  it('says nothing about the synchronous half of the same distribution', () => {
+    // The overwhelmingly common case, and the one where an extra download every run
+    // would be pure cost. `sqlalchemy` alone works perfectly without greenlet.
+    expect(impliedRequirements('from sqlalchemy import create_engine, text\n')).toEqual([]);
+    expect(impliedRequirements('import sqlalchemy\n')).toEqual([]);
+  });
+
+  it('matches anything under the submodule, not only the submodule itself', () => {
+    // `sqlalchemy.ext.asyncio.session` needs greenlet for the same reason its parent does.
+    expect(impliedRequirements('from sqlalchemy.ext.asyncio.session import AsyncSession\n')).toEqual([
+      { requirement: 'greenlet', because: 'sqlalchemy.ext.asyncio' },
+    ]);
+  });
+
+  it('does not confuse a prefix for a submodule', () => {
+    // `sqlalchemy.ext.asyncioqueue` is not under `sqlalchemy.ext.asyncio`, and a
+    // startsWith without the dot would say it was.
+    expect(impliedRequirements('import sqlalchemy.ext.asyncioqueue\n')).toEqual([]);
+  });
+
+  it('leaves the repository\'s own modules alone', () => {
+    // A local package called `sqlalchemy` is somebody\'s own code, however unwise.
+    expect(impliedRequirements('from sqlalchemy.ext.asyncio import x\n', ['sqlalchemy'])).toEqual([]);
+  });
+
+  it('names each requirement once, however many files ask for it', () => {
+    const source = [
+      'from sqlalchemy.ext.asyncio import create_async_engine',
+      'from sqlalchemy.ext.asyncio import AsyncSession',
+    ].join('\n');
+    expect(impliedRequirements(source)).toHaveLength(1);
   });
 });

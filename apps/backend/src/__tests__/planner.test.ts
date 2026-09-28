@@ -3,6 +3,9 @@ import type { RepositoryMetadata } from '@devlaunch/shared';
 import { RuleBasedPlanner, healthPathFor } from '../services/planning/RuleBasedPlanner.js';
 import { RunPlanValidator } from '../services/planning/RunPlanValidator.js';
 import { NODE_FRAMEWORKS } from '../services/planning/frameworks.js';
+import { RepositoryAnalyzer } from '../services/analysis/RepositoryAnalyzer.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
 const planner = new RuleBasedPlanner();
 const validator = new RunPlanValidator();
@@ -878,5 +881,40 @@ describe('a Flask application in a subdirectory', () => {
     ).plan;
     expect(plan?.workingDirectory).toBe('.');
     expect(plan?.installDirectory).toBeNull();
+  });
+});
+
+/**
+ * `fixtures/python-async-postgres` declares plain `sqlalchemy` in requirements.txt and
+ * imports `sqlalchemy.ext.asyncio`. The install succeeded, uvicorn started, readiness
+ * passed — and the first query died on a missing greenlet, because SQLAlchemy ships its
+ * asyncio support behind an extra and installs it no other way.
+ */
+describe('a requirement the manifest does not know it needs', () => {
+  const analyzer = new RepositoryAnalyzer();
+  const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../fixtures');
+
+  it('appends it to a requirements.txt install without touching the file', () => {
+    // Beside the manifest, not over it: `-r requirements.txt` still decides every
+    // version, and this adds only the thing the repository did not know to ask for.
+    return new RuleBasedPlanner(analyzer)
+      .planRepository(`${FIXTURES}/python-async-postgres`)
+      .then((outcome) => {
+        expect(outcome.plan?.installCommand).toBe('pip install -r requirements.txt greenlet');
+        expect(outcome.warnings.join('\n')).toMatch(/imports sqlalchemy\.ext\.asyncio/);
+      });
+  });
+
+  it('says why, naming the import rather than only the package', () => {
+    // A warning saying "installing greenlet" is a thing DevLaunch did. One naming the
+    // import is a thing somebody can check, disagree with, or fix in their own manifest.
+    return new RuleBasedPlanner(analyzer)
+      .planRepository(`${FIXTURES}/python-async-postgres`)
+      .then((outcome) => {
+        const warning = outcome.warnings.find((w) => w.includes('greenlet'));
+        expect(warning).toMatch(/sqlalchemy\.ext\.asyncio/);
+        expect(warning).toMatch(/manifest does not ask for it/);
+        expect(warning).toMatch(/versions/);
+      });
   });
 });

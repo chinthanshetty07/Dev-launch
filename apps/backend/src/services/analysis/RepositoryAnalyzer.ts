@@ -27,6 +27,7 @@ import { readCompose, type ComposeService, type ComposeSummary } from './Compose
 import {
   driversForConnectionUrls,
   hardcodedDatabaseUrl,
+  impliedRequirements,
   importedDistributions,
   localImports,
 } from './pythonImports.js';
@@ -483,6 +484,7 @@ export class RepositoryAnalyzer {
     // and duly proposed to pip as a distribution to install.
     const local = new Set([...pyFiles.map((n) => n.replace(/\.py$/, '')), ...dirNames]);
     const imported: string[] = [];
+    const extras: { requirement: string; because: string }[] = [];
     let hardcodedDb: { file: string; url: string } | undefined;
 
     // Walked, not merely scanned: a FastAPI tutorial's main.py imports `fastapi` and
@@ -512,6 +514,11 @@ export class RepositoryAnalyzer {
 
         for (const dist of importedDistributions(source, [...local])) {
           if (!imported.includes(dist)) imported.push(dist);
+        }
+        // What a *part* of a distribution needs, which the line above cannot see: it
+        // reduces every import to its top-level name, because that is what pip installs.
+        for (const implied of impliedRequirements(source, [...local])) {
+          if (!extras.some((e) => e.requirement === implied.requirement)) extras.push(implied);
         }
         // A connection URL names its driver in the scheme, and SQLAlchemy loads it by name
         // at connect time — so nothing imports it and the import scan cannot see it.
@@ -557,6 +564,7 @@ export class RepositoryAnalyzer {
     return {
       requirements,
       ...(imported.length ? { imports: imported } : {}),
+      ...(extras.length ? { impliedRequirements: extras } : {}),
       ...(hardcodedDb ? { hardcodedDatabaseUrl: hardcodedDb } : {}),
       ...(pyproject
         ? {

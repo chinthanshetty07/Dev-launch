@@ -546,6 +546,30 @@ export class RuleBasedPlanner {
       );
     }
 
+    // An extra the source proves it needs, appended whatever the manifest says.
+    //
+    // `pip install -r requirements.txt sqlalchemy[asyncio]` is not a contradiction of
+    // the file: pip merges the two requirements for the same distribution, so a pin in
+    // requirements.txt still decides the version and the extra only adds what the extra
+    // adds. Which is the whole safety argument — the repository keeps every decision it
+    // made, and gains only the one it did not know it had to make.
+    //
+    // Appended rather than substituted because the manifest may name the distribution in
+    // a form this has no business rewriting: a pin, a marker, a URL.
+    const implied = (py.impliedRequirements ?? []).filter(
+      (r) => install !== null && !new RegExp(`(?:^|\\s)${r.requirement}(?:$|[\\s<>=!~])`).test(install),
+    );
+    if (implied.length > 0 && install !== null) {
+      install = `${install} ${implied.map((r) => r.requirement).join(' ')}`;
+      for (const r of implied) {
+        warnings.push(
+          `Installing ${r.requirement} as well: the source imports ${r.because}, which ` +
+            'does not work without it, and the manifest does not ask for it. Everything ' +
+            'the manifest does say is unchanged, including its versions.',
+        );
+      }
+    }
+
     // A file that imports the framework, or failing that one *named* like an entry
     // point. Not simply the first candidate: the scan deliberately reads every top-level
     // `.py` file so a Streamlit dashboard called `dashboard.py` is found, and one
