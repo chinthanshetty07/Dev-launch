@@ -1,5 +1,104 @@
 # Changelog
 
+## 2026-09-28 — Production-readiness verification
+
+No behavioural change to DevLaunch. This entry records a verification and what it found,
+including what the first attempt at it got wrong.
+
+Artifacts: `docs/production-readiness.md`, `scripts/verify-readiness.sh`,
+`.claude/tasks/2026-09-28-production-readiness/`.
+
+### 1. The API is reachable from the local network, and executes what it is given
+
+Not a regression — it has always been true, and nobody had looked.
+
+`apps/backend/src/server.ts:117` calls `http.listen(port, r)` with no host argument, so
+Node binds `::`. `POST /api/sessions` clones a URL and runs its contents, and there is no
+authentication anywhere, by design, on the reasoning that a local tool does not need it.
+That reasoning holds only while the tool is local, and the bind makes it not.
+
+- **Impact:** anyone on the same network can run arbitrary code in a container on this
+  machine, and stream the log output of whatever else is running — the WebSocket shares
+  the listener and has no origin check either.
+- **Verified:** `lsof -nP -iTCP:3939 -sTCP:LISTEN` → `TCP *:3939 (LISTEN)`;
+  `curl -o /dev/null -w '%{http_code}' http://192.168.0.2:3939/api/health` → `200` from
+  the LAN address; `grep -cE "origin|verifyClient" LogSocketServer.ts` → `0`.
+- **Known limitation:** not fixed here. This task was a measurement, and fixing is a
+  separate approved change. One line plus a config entry.
+
+### 2. Cache volumes are never reaped
+
+Teardown removes containers. Nothing removes the per-repository cache volumes, and the
+orphan sweep at startup covers containers only.
+
+- **Impact:** unbounded disk growth on a tool whose job is cloning arbitrary
+  repositories, plus a writable surface that persists across runs of the same repository.
+- **Verified:** `docker volume ls -q | grep -c devlaunch` → `99`;
+  `docker system df` → `Local Volumes 106 / ACTIVE 1 / 5.116GB / RECLAIMABLE 5.032GB (98%)`.
+  One of the 99 was created by this verification's own smoke test.
+- **Known limitation:** found by the independent verifier, not by me. The first draft of
+  the report claimed the machine was left as it was, on the strength of a container count.
+
+### 3. The egress policy does not survive a VM restart
+
+`docs/limitations.md` says the rules "do not survive recreating that VM". They do not
+survive restarting it either, which is far more common, and nothing notices.
+
+- **Impact:** containers run with weaker isolation than documented, silently.
+- **Verified:** after `colima stop && colima start --cpu 4 --memory 6`,
+  `colima ssh -- sudo iptables -S DOCKER-USER` → `-N DOCKER-USER` and nothing else.
+  After `./scripts/setup-network-policy.sh` → `-A DOCKER-USER -s 172.31.250.0/24 -j DEVLAUNCH`.
+- **Known limitation:** reapplied manually during this session; no automatic check added.
+
+### 4. The AI path is not exercised by the suite
+
+`814 passed | 3 skipped` reads as complete coverage. The three skips are the entirety of
+`integration/groqLive.test.ts` — the only tests of the component that turns untrusted
+repository content into a plan that is then executed.
+
+- **Verified:** `vitest run --reporter=json`, filtered for skipped, names all three.
+
+### Testing
+
+- New: `scripts/verify-readiness.sh`, 15 assertions derived from `requirements.md` rather
+  than from the report. Proven able to fail: dropping `CapDrop: ['ALL']`, changing the
+  intake host default, and removing the credentials check each turn it red; `STRICT=1`
+  exits 1 while any finding is open.
+- Baseline before and after, unchanged: backend `814 passed | 3 skipped`, unit
+  `727 passed`, frontend `63 passed`, zero failures throughout. No source file was
+  modified, so no regression was possible; the baseline exists to prove that.
+- Smoke, end to end against a real repository: `https://github.com/pj8912/todo-app` →
+  READY at `http://localhost:32873/` → `HTTP 200`, 323 bytes of the application's own
+  HTML → cancelled → `0` managed containers.
+- Not verified: `docker compose up -d` and the Ubuntu 22.04 / Docker 24.x target the brief
+  assumed, because the project ships no compose file and no such host exists here.
+
+### What the first draft of the report got wrong
+
+Kept because a verification report that cannot admit its own misses is not evidence of
+anything. An independent verifier with fresh context found:
+
+- **Nine claims asserted without a command or output**, including the container-hardening
+  and egress results, which were presented as observations but printed like source reads.
+- **A smoke test that never exercised the path it claimed to.** It submitted
+  `{"fixture":"node-http-basic"}`; that branch bypasses cloning and intake entirely, so
+  the primary workflow was never demonstrated. Redone with a repository URL.
+- **An arithmetic error**: 15 READY + 2 partial + 10 failed = 27, not the 28 swept. The
+  missing row was `AWAITING_INPUT`.
+- **Intake messages quoted as verbatim that were silently truncated.**
+- **F1 graded HIGH in a document whose top band was HIGH** — a ceiling, not a judgement.
+  Now CRITICAL, with the log socket included in its blast radius.
+- **The volume leak above, missed entirely.**
+
+### Known open items, deliberately not addressed
+
+- **The bind address (F1)** — the fix is one line plus a config entry; this task was
+  explicitly a measurement, and changing behaviour needs its own approval.
+- **Prompt injection through repository content** — named in the report as F2, not
+  demonstrated. No fixture carrying adversarial README text exists yet.
+- **Supply-chain scanning** — no `npm audit`, no image CVE scan, no `gitleaks` run.
+- **Startup with Docker absent** — never tested.
+
 ## 2026-09-18 — Readiness was timing the wrong thing
 
 Reported from a real run against a large FastAPI project:
