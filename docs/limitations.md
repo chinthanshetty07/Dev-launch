@@ -196,6 +196,11 @@ Node 20, Node 22 and Python 3.12. 20 is the default and 22 is chosen from eviden
 repairable by rule between them, and never by a model: no plan a model writes can conjure
 an image the allowlist does not carry.
 
+There is no Bun. A repository whose start script runs `bun` or `bunx` is declined before
+anything is built, naming the script — rather than planned, failed on `bun: not found`,
+and handed to a model to repair a runtime that is not there. A `bun.lock` alone is not
+that: such repositories usually install and run under npm, and do.
+
 Python has one version, so it has nowhere to move. A repository pinning a dependency with
 no wheel for 3.12 — or importing `imp`, `distutils` or another module the standard library
 removed — is reported at once rather than repaired.

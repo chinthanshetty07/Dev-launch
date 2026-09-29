@@ -38,6 +38,8 @@ export interface PlanningOutcome {
    * rather than about the repository. Saying so at once is both faster and true.
    */
   unrunnable?: boolean;
+  /** What a person can do about an unrunnable repository, when the reason is specific. */
+  remedy?: string;
   /** Several runnable packages: a person picks, rather than a model guessing. */
   choices?: WorkspacePackage[];
   warnings: string[];
@@ -218,6 +220,11 @@ export function nodeVersionFor(meta: RepositoryMetadata): string {
   // Nothing high enough: the default, and the failure names what is missing. Pretending
   // to satisfy a floor we cannot reach would replace one honest error with a confusing one.
   return match ?? NODE_IMAGE_VERSION;
+}
+
+/** Whether a script body invokes `bun` or `bunx` as a command. */
+export function runsBun(body: string): boolean {
+  return /(?:^|&&|\|\||;|\s)bunx?(?=\s|$)/.test(body);
 }
 
 function pickScript(pkg: PackageJsonSummary, candidates: string[]): string | undefined {
@@ -429,9 +436,35 @@ export class RuleBasedPlanner {
     }
 
     const framework = matchNodeFramework(pkg, meta.frameworkConfigs);
-    const script = framework
-      ? pickScript(pkg, framework.scripts)
-      : pickScript(pkg, ['dev', 'start', 'serve']);
+    const candidates = framework ? framework.scripts : ['dev', 'start', 'serve'];
+    let script = pickScript(pkg, candidates);
+
+    // A script that runs Bun cannot start here: DevLaunch ships Node, and no Bun. It was
+    // planned anyway, died on `sh: 1: bun: not found`, and a model was asked to repair a
+    // missing runtime. Another candidate that does not need Bun is taken instead; with
+    // none, the repository is declined by name. A `bun.lock` alone is not evidence — two
+    // corpus repositories carry one and install and run under npm.
+    if (script !== undefined && runsBun(pkg.scripts[script]!)) {
+      const instead = candidates.find((n) => pkg.scripts[n] !== undefined && !runsBun(pkg.scripts[n]!));
+      if (instead === undefined) {
+        return {
+          plan: null,
+          detected: null,
+          unrunnable: true,
+          reason:
+            `The \`${script}\` script runs \`${pkg.scripts[script]!.slice(0, 80)}\`, which needs ` +
+            'the Bun runtime. DevLaunch runs Node 20 and 22 and ships no Bun, so no plan it ' +
+            'can make starts this project.',
+          remedy:
+            'Run it with Bun directly, or give it a script that starts under Node — for a Vite ' +
+            'app, `vite` rather than `bunx --bun vite`. Running Bun here would need an approved ' +
+            'Bun image, which DevLaunch does not have.',
+          warnings,
+        };
+      }
+      warnings.push(`The \`${script}\` script runs Bun, which DevLaunch does not ship; starting \`${instead}\` instead.`);
+      script = instead;
+    }
 
     if (!script) {
       const entry = pkg.entryFiles?.[0];

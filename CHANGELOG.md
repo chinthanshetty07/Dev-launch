@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-09-29 — A project that needs Bun is told so, at once
+
+Two corpus repositories cannot run here, by contract: `bun-hono-app` is written for the
+Bun runtime, and `Bun-React-Template` starts Vite through `bunx --bun`. DevLaunch ships
+Node and no Bun. Both were planned anyway, died on `sh: 1: bun: not found`, and one went
+to a model to repair a runtime that does not exist. A repository DevLaunch cannot support
+should get a specific failure, not a generic one after minutes of work.
+
+The planner now checks the script it would run. If it invokes `bun` or `bunx` as a
+command, another candidate that does not is started instead, with a warning; with none,
+the repository is declined as unrunnable — so no model is asked — with the script named
+and a Bun-specific remedy. `PlanningOutcome` gained an optional `remedy` for that, which
+the session uses in place of the library-shaped default.
+
+Deliberately not a lockfile rule. `bun.lock` sits in two corpus repositories that install
+and run under npm (a Vite app, and `angular-realworld`, whose unused `setup` script calls
+bun); both still pass. Supporting Bun itself would mean an approved image and a new
+binary on the allowlist, which is a decision rather than a fix.
+
+- **Fixture:** `node-bun-runtime`. Before: planned as `npm run dev`. After: FAILED,
+  `UNSUPPORTED_PROJECT`, naming the script, with the model never asked.
+- **Mutations:** five — never detecting Bun, matching `bun` inside a word, no fallback
+  to another script, the specific remedy dropped, and the outcome not marked unrunnable
+  (which asks the model). All killed, each by the test that names it.
+- `scripts/corpus/plan.mts` built its `ProjectPlanner` without a planner; fixed, and it
+  now falls through to the root planner the way a session does.
+
 ## 2026-09-29 — The variable a server binds by, when it is not HOST
 
 `jellydn/fastify-starter` listens on `host: process.env.SERVER_HOSTNAME ?? '127.0.0.1'`.

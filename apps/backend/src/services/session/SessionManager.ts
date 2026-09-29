@@ -528,11 +528,11 @@ export class SessionManager extends EventEmitter {
           // Two different situations, and offering the wrong remedy for either one sends
           // a person after a problem they do not have. A repository that is not an
           // application is not waiting for a better planner.
-          remedy: outcome.unrunnable
+          remedy: outcome.remedy ?? (outcome.unrunnable
             ? 'Nothing here starts a server. If one of its packages does, point DevLaunch ' +
               'at that directory; otherwise this repository is not something to run.'
             : 'The rule-based planner recognised no known pattern, and no AI fallback is ' +
-              'configured. Set GROQ_API_KEY to enable it.',
+              'configured. Set GROQ_API_KEY to enable it.'),
           confidence: 'high',
         });
         await this.teardown(session);
