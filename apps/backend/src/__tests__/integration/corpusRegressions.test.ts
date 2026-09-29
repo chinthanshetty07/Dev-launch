@@ -113,4 +113,13 @@ describe('failures the real-world corpus found', () => {
     expect(idle.failure?.evidence ?? '', JSON.stringify(idle.failure)).not.toMatch(/git command not found/);
     expect(idle.failure?.code).not.toBe(FailureCode.START_COMMAND_FAILED);
   }, 300_000);
+
+  it('installs a one-app workspace at its root, where workspace:* resolves (dan5py/turborepo-shadcn-ui)', async () => {
+    // Planned from the package alone, the plan was `npm install` inside apps/web — no
+    // lockfile and no packageManager there — and npm refuses `workspace:*` outright.
+    const plan = await planFixture('node-workspace-one-app');
+    expect(plan.installDirectory).toBe('.');
+    const outcome = await runFixture('node-workspace-one-app', plan);
+    expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+  }, 300_000);
 });

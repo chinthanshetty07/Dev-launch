@@ -8,6 +8,7 @@ import type {
 } from '@devlaunch/shared';
 import { RunPlanSchema } from '@devlaunch/shared';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
+import { workspaceInstall } from '../analysis/ServiceDiscovery.js';
 import {
   NODE_FRAMEWORKS,
   PYTHON_FRAMEWORKS,
@@ -322,7 +323,25 @@ export class RuleBasedPlanner {
       const target = runnable[0]!;
       const subMeta = await this.analyzer.analyze(root, target.dir);
       const outcome = this.plan(subMeta, target.dir);
-      return { ...outcome, warnings: [...rootMeta.warnings, ...outcome.warnings] };
+
+      // Installed at the root, the way the project planner installs a workspace. Planned
+      // from the package alone, this took the package's own evidence — no lockfile, no
+      // `packageManager` — and ran `npm install` inside `apps/docs` of a pnpm workspace,
+      // where `workspace:*` cannot resolve: `EUNSUPPORTEDPROTOCOL`, before a model was
+      // asked to guess. Only one package runs, but the tree it depends on is the root's.
+      const workspace = outcome.plan ? await workspaceInstall(root) : null;
+      if (!outcome.plan || !workspace) {
+        return { ...outcome, warnings: [...rootMeta.warnings, ...outcome.warnings] };
+      }
+      return {
+        ...outcome,
+        plan: RunPlanSchema.parse({ ...outcome.plan, installCommand: workspace.command, installDirectory: '.' }),
+        warnings: [
+          ...rootMeta.warnings,
+          `Workspace detected; installing once at the repository root with ${workspace.manager}.`,
+          ...outcome.warnings,
+        ],
+      };
     }
 
     const atRoot = this.plan(rootMeta);

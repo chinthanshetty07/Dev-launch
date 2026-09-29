@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-29 — A workspace with one application installs at its root
+
+`dan5py/turborepo-shadcn-ui` is a pnpm workspace with one runnable package, `apps/docs`.
+`planRepository` planned that package from its own metadata: no lockfile and no
+`packageManager` there, so npm, installed inside `apps/docs` — and npm refuses
+`workspace:*` with `EUNSUPPORTEDPROTOCOL`. The root's `pnpm-lock.yaml` and
+`packageManager` were never consulted. The project planner has installed a workspace at
+its root since workspaces were supported; this path, which runs when only one package is
+runnable, never did.
+
+It now uses the same `workspaceInstall(root)` and the same override: the root's install
+command, run at `.`, with the package's own start command.
+
+- **Fixture:** `node-workspace-one-app`, a pnpm workspace whose one app imports a sibling.
+  Before: `DEPENDENCY_INSTALL_FAILED`, `Unsupported URL Type "workspace:"` — the corpus's
+  evidence, verbatim. After: READY, serving the sibling's string.
+- **Mutations:** no override, the root command in the package directory, and the
+  package's command at the root. All killed.
+
 ## 2026-09-29 — MySQL is reported ready when it is
 
 No MySQL had ever been reported ready. The readiness check was `mysqladmin ping` run

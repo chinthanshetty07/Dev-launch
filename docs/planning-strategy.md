@@ -93,7 +93,9 @@ running non-root and every Python start command otherwise fails with exit 127.
 Handled by a narrow deterministic rule, **not** routed to AI. If `workspaces` or
 `pnpm-workspace.yaml` exists, find packages with a `dev`/`start` script:
 
-- Exactly one candidate → use it.
+- Exactly one candidate → use it, installed at the workspace root with the root's
+  manager. Its dependencies on siblings are `workspace:*`, which only a root install
+  resolves; planned from the package alone it took npm and failed on the protocol.
 - More than one → **ask the user to pick in the UI** (state `AWAITING_INPUT`).
 
 A human picking from a list beats a model guessing, and it is less code.
