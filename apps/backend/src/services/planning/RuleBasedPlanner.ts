@@ -485,6 +485,12 @@ export class RuleBasedPlanner {
     if (framework?.id === 'cra') {
       // CRA opens a browser on start, which inside a container just wastes time.
       env.push({ key: 'BROWSER', value: 'none', required: false });
+      // And from react-scripts 3.4.1 it closes the dev server when stdin ends — unless
+      // CI=true. A container has no stdin, so the server printed "Starting the
+      // development server..." and exited 0, and the run was reported COMPLETED. CI=true
+      // changes nothing else about `start`; it makes `build` treat warnings as errors,
+      // which a dev-server plan never runs.
+      env.push({ key: 'CI', value: 'true', required: false });
     }
     if (framework?.note) warnings.push(framework.note);
 

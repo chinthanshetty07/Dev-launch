@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-29 — A Create React App dev server survives having no stdin
+
+`ahfarmer/calculator` printed "Starting the development server..." and ended `COMPLETED`
+— "the expected shape for a script" — about a plan DevLaunch had just built as a CRA dev
+server on port 3000. From 3.4.1, `react-scripts/scripts/start.js` closes the dev server
+when stdin ends, unless `CI=true`; a container's stdin has ended before the server starts.
+CRA plans now set `CI=true` beside `BROWSER=none`. It changes nothing else about `start`
+(it makes `build` treat warnings as errors, which a dev-server plan never runs).
+
+- **Fixture:** `node-cra-stdin`, whose stand-in `react-scripts` reproduces that handler.
+  Before: `COMPLETED`. After: READY.
+- **Mutations:** `CI` unset, and set to `false`. Both killed.
+- **Not changed, and worth a decision:** a single-service plan that exits 0 before
+  readiness is `COMPLETED` by design (`failure-model.md`, "Exiting 0 is not a failure"),
+  while a project's service in the same position is a failure ("the start command
+  finished instead of serving"). For a plan DevLaunch built as a dev server the second
+  reading is the true one, and it would have named this bug instead of calling it success.
+
 ## 2026-09-29 — A failure is explained by the phase that failed
 
 Three corpus repositories were misdiagnosed, and each misdiagnosis cost something:

@@ -1,0 +1,6 @@
+{
+  "name": "react-scripts",
+  "version": "0.0.0-fixture",
+  "description": "Stands in for react-scripts. Reproduces one behaviour only: the dev server exits 0 when stdin closes, unless CI=true.",
+  "bin": { "react-scripts": "bin/react-scripts.js" }
+}

@@ -56,6 +56,16 @@ describe('failures the real-world corpus found', () => {
     await CleanupManager.sweepOrphans(docker);
   });
 
+  it('keeps a Create React App dev server running with no stdin (ahfarmer/calculator)', async () => {
+    // react-scripts >= 3.4.1 closes its dev server when stdin ends, unless CI=true. A
+    // container has no stdin, so the server printed "Starting the development server..."
+    // and exited 0 — and the session reported COMPLETED, "the expected shape for a
+    // script", about a plan that had just been built as a dev server on port 3000.
+    const plan = await planFixture('node-cra-stdin');
+    const outcome = await runFixture('node-cra-stdin', plan);
+    expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+  }, 300_000);
+
   it('passes binding flags to a pnpm script as options (sveltejs/realworld)', async () => {
     // pnpm forwards a literal `--` to the script, where npm strips it — measured in the
     // runner image for pnpm 9, 10 and 12. Vite's parser reads everything after `--` as

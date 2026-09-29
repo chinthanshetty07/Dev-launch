@@ -126,6 +126,9 @@ describe('RuleBasedPlanner — Node frameworks', () => {
     expect(env.HOST).toBe('0.0.0.0');
     expect(env.PORT).toBe('3000');
     expect(env.BROWSER).toBe('none');
+    // react-scripts >= 3.4.1 closes the dev server on stdin EOF unless CI=true, and a
+    // container's stdin is at EOF from the start.
+    expect(env.CI).toBe('true');
   });
 
   it('marks Fastify as unverified, since it binds loopback in code', () => {

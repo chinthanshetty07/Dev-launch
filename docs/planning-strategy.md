@@ -44,7 +44,7 @@ specific first, always.
 | `@docusaurus/core` | Docusaurus | 3000 | `--host 0.0.0.0 --port 3000` |
 | `@angular/cli` or `angular.json` | Angular | 4200 | `--host 0.0.0.0 --port 4200`, plus `--disable-host-check` unless the builder is `@angular/build` |
 | `@vue/cli-service` | Vue CLI | 8080 | `--host 0.0.0.0 --port 8080` |
-| `react-scripts` | CRA | 3000 | `HOST` / `PORT` / `BROWSER=none` |
+| `react-scripts` | CRA | 3000 | `HOST` / `PORT` / `BROWSER=none` / `CI=true` |
 | `vite` | Vite | 5173 | `--host 0.0.0.0 --port 5173` |
 | `parcel` | Parcel | 1234 | `--host 0.0.0.0 --port 1234` |
 | `webpack-dev-server` | Webpack | 8080 | `--host 0.0.0.0 --port 8080` |
@@ -74,7 +74,9 @@ Four details that are the difference between a plan that works and one that hang
   the builder `angular.json` names decides.
 - **Streamlit needs `--server.headless`**, or it prompts for an email address on first
   run and blocks forever. Readiness would report a timeout that says nothing useful.
-- **CRA needs `BROWSER=none`**, since it otherwise tries to open a browser in a container.
+- **CRA needs `BROWSER=none`**, since it otherwise tries to open a browser in a container,
+  **and `CI=true`**: from react-scripts 3.4.1 the dev server closes when stdin ends, and a
+  container's stdin has ended before the server starts.
 
 Fastify and the generic Node fallback declare `hostBinding: "unknown"` rather than
 `"forced"`: Fastify binds `127.0.0.1` in code, and a generic script could do anything.

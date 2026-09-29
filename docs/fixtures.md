@@ -59,6 +59,7 @@ reproduces the one behaviour at issue, quoted from the real tool in its source.
 
 | Fixture | Reproduces |
 |---|---|
+| `node-cra-stdin` | `ahfarmer/calculator`: a Create React App dev server that closes when stdin ends unless `CI=true`, as `react-scripts/scripts/start.js` does from 3.4.1 |
 | `node-pnpm-vite-args` | `sveltejs/realworld`: pnpm forwards a literal `--` to the script, and a Vite-like parser reads the flags after it as positional — so the server binds loopback |
 | `node-angular-build` | `gothinkster/angular-realworld-example-app`: an `ng serve` that validates flags against its builder's schema, as the real CLI does, on `@angular/build:dev-server` — which has no `--disable-host-check` |
 | `node-install-noise` | `fastify/demo` and `angular-realworld`: an install that succeeds while printing npm's `EBADENGINE` warnings and husky's `git command not found`, then a start that fails for its own reason — `node --env-file=.env` with only `.env.example`, a refused flag, or a process that never listens |
