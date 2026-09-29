@@ -1,0 +1,42 @@
+{
+  "ahfarmer/calculator": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "webpack 4 under OpenSSL 3 (Node >= 17). Now diagnosed as such — WRONG_RUNTIME_VERSION, runtime too new, remedy naming webpack 5 or Node 16 — with no retry on Node 22 and no model call."
+  },
+  "gothinkster/angular-realworld-example-app": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Bundles a stylesheet from the `realworld/` git submodule, which intake does not fetch by design. The plan now warns about it before the run; the failure itself still quotes esbuild."
+  },
+  "fastify/demo": {
+    "label": "REPO_FAILURE",
+    "reason": "Its dev script is `tsx --env-file=.env` and the repository ships only .env.example; its README tells a person to copy it. Now reported as MISSING_ENV naming .env, and MySQL is correctly reported ready."
+  },
+  "ljlm0402/typescript-express-starter": {
+    "label": "REPO_FAILURE",
+    "reason": "A project-generator CLI, not an application. COMPLETED is the correct answer."
+  },
+  "miguelgrinberg/microblog": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Pins a multidict with no Python 3.12 wheel; DevLaunch ships one Python."
+  },
+  "max-pfeiffer/uvicorn-poetry-fastapi-project-template": {
+    "label": "REPO_FAILURE",
+    "reason": "A cookiecutter template; its pyproject.toml is not valid TOML until rendered."
+  },
+  "nsidnev/fastapi-realworld-example-app": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Its declared ranges are now honoured, so it fails where it truly does: asyncpg ^0.26 has no Python 3.12 wheel and does not build. Still classified as a generic DEPENDENCY_INSTALL_FAILED, and a model was still asked — a specific signature for a C extension that will not build on 3.12 is the candidate."
+  },
+  "sadrozzy/Bun-React-Template": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Its dev script is `bunx --bun vite`. Now declined in 3 seconds with the script named, and no model call."
+  },
+  "patelharsh9797/bun-hono-app": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Written for the Bun runtime. Now declined in 3 seconds with the script named, and no model call."
+  },
+  "nrwl/nx-examples": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "A polyglot Nx workspace: its @nx/dotnet plugin needs a .NET toolchain, and fails without one on Node 22 and on Node 20 alike — measured outside DevLaunch, where the install also fit in 2955 MB. So its .node-version (22.2.0) is not what stops it. Under DevLaunch the install first hit the memory ceiling and then Nx failed with `WorkspaceContext is not a constructor`, which the looser experiment did not reproduce and which is not isolated."
+  }
+}
