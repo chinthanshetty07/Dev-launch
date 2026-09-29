@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-09-29 — A static site is planned by rule
+
+`mdn/beginner-html-site-styled` and `-scripted` are HTML, CSS and a script with no
+manifest. Both reached READY in the baseline only because a model planned them — one as
+`python -m http.server`, the other as `npx http-server` — and without a key, which is
+DevLaunch's shipped default, both are `UNSUPPORTED_PROJECT`. A page with nothing to build
+is the simplest application there is, and it needed a model.
+
+An `index.html` at the working directory is now `staticIndex`, and with no `package.json`
+it is served by `python -m http.server 8000` from the Python image DevLaunch already
+ships — no new binary and no new image. The detector count is 23.
+
+- **Never beside a `package.json`,** even one that could not be planned: a Vite app's
+  `index.html` is a template pointing at `/src/main.tsx`, and serving it raw would be a
+  READY page that cannot work.
+- **Beside Python files that plan to nothing, it is served:** that is a site with a
+  helper script. The first version declined this too; no test could tell the guard was
+  there, and on reflection nothing justified it.
+- **No `--bind 0.0.0.0`:** the fixture served identically without it, because
+  `http.server` listens on every interface by default. A flag that changes nothing a test
+  can see was removed rather than kept for show.
+- **Fixture:** `static-site`. Before: no rule-based plan. After: READY, rule-based.
+- **Mutations:** the analyzer never seeing `index.html`, and the two guards. All killed.
+
 ## 2026-09-29 — A project that needs Bun is told so, at once
 
 Two corpus repositories cannot run here, by contract: `bun-hono-app` is written for the

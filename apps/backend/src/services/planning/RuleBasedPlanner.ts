@@ -55,6 +55,8 @@ export interface PlanningOutcome {
 const NODE_IMAGE_VERSIONS = ['20', '22'] as const;
 const NODE_IMAGE_VERSION = NODE_IMAGE_VERSIONS[0];
 const PYTHON_IMAGE_VERSION = '3.12';
+/** `http.server`'s own default, which is what a person running it by hand would see. */
+const STATIC_PORT = 8000;
 
 /**
  * Built-in modules that do not exist in every Node DevLaunch ships, and when they arrived.
@@ -390,6 +392,33 @@ export class RuleBasedPlanner {
     if (meta.python) {
       const outcome = this.planPython(meta, meta.python, workingDirectory, warnings);
       if (outcome) return outcome;
+    }
+
+    // A page with nothing to build is served as it stands. Never beside a package.json,
+    // even one that could not be planned: a Vite app's index.html is a template whose
+    // `<script src="/src/main.tsx">` no browser can run, so serving it would be a READY
+    // page that cannot work. Beside Python files that planned to nothing it is served:
+    // that is a site with a helper script, not an application.
+    if (meta.staticIndex && !meta.packageJson) {
+      return {
+        detected: 'static',
+        warnings,
+        plan: RunPlanSchema.parse({
+          runtime: { language: 'python', version: PYTHON_IMAGE_VERSION },
+          packageManager: 'pip',
+          installCommand: null,
+          buildCommand: null,
+          // No --bind: http.server listens on every interface unless told otherwise,
+          // measured — the flag made no difference a test could see.
+          startCommand: `python -m http.server ${STATIC_PORT}`,
+          workingDirectory,
+          expectedPort: STATIC_PORT,
+          hostBinding: 'forced',
+          environmentVariables: [],
+          healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200] },
+          planSource: 'rule-based',
+        }),
+      };
     }
 
     return {

@@ -980,6 +980,48 @@ describe('a project that pins its package manager', () => {
   });
 });
 
+describe('a page with nothing to build', () => {
+  it('is served as it stands when there is no manifest', () => {
+    const out = planner.plan(meta({ staticIndex: true }));
+    expect(out.detected).toBe('static');
+    expect(out.plan?.startCommand).toBe('python -m http.server 8000');
+    expect(out.plan?.runtime).toEqual({ language: 'python', version: '3.12' });
+    expect(() => validator.validate({ plan: out.plan })).not.toThrow();
+  });
+
+  it('is left to the manifest when there is one', () => {
+    // A Vite app's index.html is a template the dev server fills in, not the page.
+    const out = planner.plan(node({ vite: '^5' }, { dev: 'vite' }, { staticIndex: true }));
+    expect(out.detected).toBe('vite');
+  });
+
+  it('is never served beside a package.json, even one that could not be planned', () => {
+    // A Vite app with no scripts: its index.html points at /src/main.tsx, which only the
+    // dev server can compile. Served raw, it would be READY and blank.
+    const out = planner.plan(meta({
+      staticIndex: true,
+      packageJson: { scripts: {}, dependencies: {}, devDependencies: { vite: '^5' } },
+    }));
+    expect(out.plan).toBeNull();
+  });
+
+  it('is left to a Python project that plans', () => {
+    const out = planner.plan(meta({
+      staticIndex: true,
+      python: { requirements: ['flask'], hasPyproject: false, hasPipfile: false, hasManagePy: false, entryCandidates: [{ file: 'app.py', framework: 'flask' }] } as never,
+    }));
+    expect(out.detected).toBe('flask');
+  });
+
+  it('is served beside Python files that plan to nothing — a site with a helper script', () => {
+    const out = planner.plan(meta({
+      staticIndex: true,
+      python: { requirements: [], hasPyproject: false, hasPipfile: false, hasManagePy: false, entryCandidates: [{ file: 'build.py' }] } as never,
+    }));
+    expect(out.detected).toBe('static');
+  });
+});
+
 describe('arguments that reach a package script', () => {
   it('uses `--` under npm, which strips it, and nowhere else', () => {
     // pnpm and Yarn 2+ hand a literal `--` to the script, and Vite reads everything after

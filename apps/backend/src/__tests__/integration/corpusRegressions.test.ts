@@ -130,4 +130,13 @@ describe('failures the real-world corpus found', () => {
     const outcome = await runFixture('node-bind-env', plan, 30_000);
     expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
   }, 300_000);
+
+  it('serves a static site by rule (mdn/beginner-html-site-styled)', async () => {
+    // It passed in the corpus only because a model planned it — two ways in two runs —
+    // and with no key configured, DevLaunch's shipped default, it was UNSUPPORTED_PROJECT.
+    const plan = await planFixture('static-site');
+    expect(plan.planSource).toBe('rule-based');
+    const outcome = await runFixture('static-site', plan, 30_000);
+    expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+  }, 300_000);
 });

@@ -24,7 +24,7 @@ GitManager ──────────── shallow clone, bounded by size a
 RepositoryAnalyzer ──── reads manifests, lockfiles, configs, .env.example
     │                   (describes; never decides)
     ▼
-RuleBasedPlanner ────── 22 detectors → Run Plan, zero model calls
+RuleBasedPlanner ────── 23 detectors → Run Plan, zero model calls
     │                        │
     │                        └── no match → AIProvider (opt-in; off without a key)
     ▼

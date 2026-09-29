@@ -58,6 +58,7 @@ specific first, always.
 | `fastapi` | FastAPI | 8000 | `uvicorn mod:app --host 0.0.0.0` |
 | `streamlit` | Streamlit | 8501 | `--server.address 0.0.0.0 --server.headless` |
 | `gradio` | Gradio | 7860 | `GRADIO_SERVER_NAME` |
+| `index.html` and no manifest | static site | 8000 | `python -m http.server` (all interfaces by default) |
 
 Four details that are the difference between a plan that works and one that hangs:
 
@@ -390,7 +391,7 @@ confidence: the kernel's OOM killer gives the process no chance to explain itsel
 
 Two entry points, both narrow:
 
-- **`generateRunPlan`** runs only when the rule-based planner declines. With 22
+- **`generateRunPlan`** runs only when the rule-based planner declines. With 23
   deterministic detectors that is the uncommon case, which is the point.
 - **`diagnoseFailure`** proposes a bounded correction from failure context.
 

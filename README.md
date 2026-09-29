@@ -53,7 +53,7 @@ The AI fallback, **opt-in and deliberately narrow**. Without `GROQ_API_KEY` noth
 changes: planning stays fully deterministic and unrecognised repositories are reported
 as `UNSUPPORTED_PROJECT`.
 
-- **Fallback planner** — runs *only* when the rule-based planner declines. With 22
+- **Fallback planner** — runs *only* when the rule-based planner declines. With 23
   detectors that is the uncommon case, which is the whole argument
 - **Bounded repair** — at most 2 attempts, each of which must differ from the last, and
   only for failures a different plan could plausibly fix. A missing database or an
@@ -110,10 +110,10 @@ clone → analyse → plan → validate → [ask the user] → run → verify
 
 ### What Phase 6 delivers
 
-- `RuleBasedPlanner` — **22 deterministic detectors**, zero AI calls. Next, Nuxt,
+- `RuleBasedPlanner` — **23 deterministic detectors**, zero AI calls. Next, Nuxt,
   SvelteKit, Astro, Remix, Gatsby, Docusaurus, Angular, Vue CLI, CRA, Vite, Parcel,
   Webpack, NestJS, Fastify, Koa, Express and a generic Node fallback; Django, Flask,
-  FastAPI, Streamlit and Gradio
+  FastAPI, Streamlit and Gradio; and a plain static site
 - Table order places meta-frameworks ahead of the build tools they are built on —
   SvelteKit, Astro and Nuxt all depend on Vite, so the naive check misidentifies all three
 - `RunPlanValidator` — one gate every plan passes through, whatever produced it

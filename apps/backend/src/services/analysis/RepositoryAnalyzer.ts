@@ -163,6 +163,7 @@ export class RepositoryAnalyzer {
       packageJson,
       lockfiles: LOCKFILES.filter((l) => fileNames.includes(l)),
       frameworkConfigs: fileNames.filter((n) => FRAMEWORK_CONFIG_PATTERNS.some((p) => p.test(n))),
+      ...(fileNames.includes('index.html') ? { staticIndex: true } : {}),
       python,
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,

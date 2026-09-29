@@ -103,6 +103,15 @@ export interface RepositoryMetadata {
    * reachable server and `PORT_BOUND_TO_LOCALHOST`.
    */
   bindHostEnv?: { key: string; file: string };
+  /**
+   * An `index.html` at the working directory.
+   *
+   * With no manifest beside it, the page *is* the application: a static site, which a
+   * browser can open as it stands. Planned by rule — `http.server` from the Python image
+   * DevLaunch already ships — rather than handed to a model, which served the same kind of
+   * repository two different ways in two runs, and without a key cannot serve it at all.
+   */
+  staticIndex?: boolean;
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
 }
