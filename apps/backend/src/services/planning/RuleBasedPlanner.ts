@@ -123,6 +123,11 @@ export function runScript(pm: 'npm' | 'yarn' | 'pnpm', script: string, args: rea
   return pm === 'npm' ? `npm run ${script} -- ${args.join(' ')}` : `${pm} run ${script} ${args.join(' ')}`;
 }
 
+/** The application's own name for its bind address, set alongside `HOST`. */
+function bindHostEnv(meta: RepositoryMetadata): EnvVar[] {
+  return meta.bindHostEnv ? [{ key: meta.bindHostEnv.key, value: '0.0.0.0', required: false }] : [];
+}
+
 function installFor(pm: 'npm' | 'yarn' | 'pnpm'): string {
   // `npm ci` would be stricter but fails outright when a lockfile is out of step with
   // package.json, which is common in repositories nobody has run in a while.
@@ -486,6 +491,7 @@ export class RuleBasedPlanner {
           environmentVariables: [
             { key: 'HOST', value: '0.0.0.0', required: false },
             { key: 'PORT', value: String(port), required: false },
+            ...bindHostEnv(meta),
           ],
           healthCheck: { path: healthPathFor(meta), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
           planSource: 'rule-based',
@@ -500,6 +506,7 @@ export class RuleBasedPlanner {
     const env: EnvVar[] = [
       { key: 'HOST', value: '0.0.0.0', required: false },
       { key: 'PORT', value: String(port), required: false },
+      ...bindHostEnv(meta),
     ];
     if (framework?.id === 'cra') {
       // CRA opens a browser on start, which inside a container just wastes time.

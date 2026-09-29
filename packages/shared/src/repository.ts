@@ -95,6 +95,14 @@ export interface RepositoryMetadata {
    * names the line to edit.
    */
   hardcodedBind?: { file: string; line: string };
+  /**
+   * The variable the application reads its bind address from, when it is not `HOST`.
+   *
+   * `host: process.env.SERVER_HOSTNAME ?? '127.0.0.1'` binds loopback unless told
+   * otherwise, and it is told by that name alone. Setting it is the difference between a
+   * reachable server and `PORT_BOUND_TO_LOCALHOST`.
+   */
+  bindHostEnv?: { key: string; file: string };
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
 }

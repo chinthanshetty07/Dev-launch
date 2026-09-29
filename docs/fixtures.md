@@ -59,6 +59,7 @@ reproduces the one behaviour at issue, quoted from the real tool in its source.
 
 | Fixture | Reproduces |
 |---|---|
+| `node-bind-env` | `jellydn/fastify-starter`: a server bound by `process.env.SERVER_HOSTNAME ?? '127.0.0.1'`, which reads no `HOST` |
 | `node-cra-stdin` | `ahfarmer/calculator`: a Create React App dev server that closes when stdin ends unless `CI=true`, as `react-scripts/scripts/start.js` does from 3.4.1 |
 | `node-pnpm-vite-args` | `sveltejs/realworld`: pnpm forwards a literal `--` to the script, and a Vite-like parser reads the flags after it as positional — so the server binds loopback |
 | `node-workspace-one-app` | `dan5py/turborepo-shadcn-ui`: a pnpm workspace whose one runnable package imports a sibling through `workspace:*` |

@@ -556,6 +556,45 @@ export async function findHardcodedLoopbackBind(
 }
 
 /**
+ * The environment variable an application reads its bind address from, when it is not
+ * one DevLaunch already sets.
+ *
+ * `server.listen({ port, host: process.env.SERVER_HOSTNAME ?? '127.0.0.1' })` is a server
+ * that can be told where to bind — just not by `HOST`, the only name DevLaunch set. It
+ * bound loopback and the run ended `PORT_BOUND_TO_LOCALHOST`, while the variable that
+ * would have fixed it sat in the same call.
+ *
+ * Only where the listen call itself names the variable, or names a `host` constant built
+ * from it: a `process.env.X` elsewhere in the file could be a database host, and pointing
+ * that at 0.0.0.0 would break the one thing that was working.
+ */
+export async function findBindHostVariable(base: string): Promise<{ key: string; file: string } | undefined> {
+  const ENV = String.raw`process\.env\.([A-Z_][A-Z0-9_]*)`;
+  for (const file of NODE_ENTRY_FILES) {
+    for (const candidate of [file, join('src', file)]) {
+      const raw = await readCapped(join(base, candidate));
+      if (raw === null) continue;
+
+      // The call's arguments, bounded: an options object spans lines, and a `)` inside
+      // a default like `Number(process.env.PORT)` must not end it early.
+      for (const call of raw.matchAll(/\.listen\s*\(([\s\S]{0,400}?)\)\s*(?:[;.]|$)/gm)) {
+        const args = call[1]!;
+        const found =
+          new RegExp(String.raw`\bhost(?:name)?\s*:\s*${ENV}`).exec(args) ??
+          new RegExp(String.raw`^[^,]+,\s*${ENV}`).exec(args);
+        if (found && found[1] !== 'HOST') return { key: found[1]!, file: candidate };
+
+        const named = new RegExp(String.raw`\b(?:const|let|var)\s+(host|hostname)\s*=\s*${ENV}`, 'i').exec(raw);
+        if (named && named[2] !== 'HOST' && new RegExp(String.raw`\b${named[1]}\b`).test(args)) {
+          return { key: named[2]!, file: candidate };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Absolute origins a browser-facing service has hardcoded.
  *
  * `fetch('http://localhost:5001/api/...')` runs in the *browser*, so no container alias

@@ -17,6 +17,7 @@ import { readCapped } from './readCapped.js';
 import { parseEnvExample } from './parseEnvExample.js';
 import {
   backingFromEnvKeys,
+  findBindHostVariable,
   discoverServices,
   findDeclaredPort,
   findHardcodedLoopbackBind,
@@ -186,18 +187,23 @@ export class RepositoryAnalyzer {
   private async readBinding(
     base: string,
     pkg: PackageJsonSummary | undefined,
-  ): Promise<Pick<RepositoryMetadata, 'declaredPort' | 'hardcodedBind' | 'nodeBuiltins'>> {
+  ): Promise<Pick<RepositoryMetadata, 'declaredPort' | 'hardcodedBind' | 'bindHostEnv' | 'nodeBuiltins'>> {
     if (!pkg) return {};
     const declaredPort = await findDeclaredPort(base, {
       name: pkg.name,
       scripts: pkg.scripts,
       dependencies: pkg.dependencies,
     });
-    const hardcodedBind = await findHardcodedLoopbackBind(base);
+    // The variable first. `host: process.env.SERVER_HOSTNAME ?? '127.0.0.1'` contains a
+    // loopback literal, and read as a hardcoded bind it was reported as unfixable — when
+    // it is only the default of a variable DevLaunch can set.
+    const bindHostEnv = await findBindHostVariable(base);
+    const hardcodedBind = bindHostEnv ? undefined : await findHardcodedLoopbackBind(base);
     const nodeBuiltins = await findNodeBuiltins(base, pkg.entryFiles ?? [], pkg.main);
     return {
       ...(declaredPort ? { declaredPort } : {}),
       ...(hardcodedBind ? { hardcodedBind } : {}),
+      ...(bindHostEnv ? { bindHostEnv } : {}),
       ...(nodeBuiltins.length ? { nodeBuiltins } : {}),
     };
   }

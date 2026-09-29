@@ -122,4 +122,12 @@ describe('failures the real-world corpus found', () => {
     const outcome = await runFixture('node-workspace-one-app', plan);
     expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
   }, 300_000);
+
+  it('sets the variable an application reads its bind address from (jellydn/fastify-starter)', async () => {
+    // `host: process.env.SERVER_HOSTNAME ?? '127.0.0.1'` — the server can be told where to
+    // bind, just not by HOST, the only name DevLaunch set.
+    const plan = await planFixture('node-bind-env');
+    const outcome = await runFixture('node-bind-env', plan, 30_000);
+    expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+  }, 300_000);
 });

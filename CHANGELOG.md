@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-09-29 — The variable a server binds by, when it is not HOST
+
+`jellydn/fastify-starter` listens on `host: process.env.SERVER_HOSTNAME ?? '127.0.0.1'`.
+DevLaunch set `HOST`, which it does not read, so it bound loopback and ended
+`PORT_BOUND_TO_LOCALHOST` — after a model call that changed nothing — while the variable
+that fixes it sat in the same call.
+
+`findBindHostVariable` reads the entry file's `.listen(...)` arguments for a
+`process.env.X` used as the host: in an options object, as the second argument, or
+through a `host`/`hostname` constant the call is given. The planner sets `X=0.0.0.0`
+beside `HOST`, on both the script path and the entry-file path. Deliberately nothing
+wider: `process.env.DB_HOST || 'localhost'` has the same shape, and a test holds it out.
+
+The variable is looked for *before* the hardcoded-bind check, which read the default
+`'127.0.0.1'` in a one-line form of the same call as a literal bind and reported a fixable
+server as unfixable.
+
+- **Precision, measured:** across all forty corpus clones it matches one repository —
+  this one.
+- **Fixture:** `node-bind-env`. Before: `PORT_BOUND_TO_LOCALHOST` on `127.0.0.1:3000`.
+  After: READY.
+- **Mutations:** eight — each argument form unread, `HOST` not excluded, a constant taken
+  without the call using it, the literal checked first, and each planner path losing the
+  variable. All killed. The entry-file path was first reported killed by a flaky Docker
+  test matched by the same `-t` filter; rerun it survived, and gained the test that kills
+  it. Mutation runs now name the test that failed, and every integration-only kill in
+  this session was re-verified that way.
+
 ## 2026-09-29 — A workspace with one application installs at its root
 
 `dan5py/turborepo-shadcn-ui` is a pnpm workspace with one runnable package, `apps/docs`.

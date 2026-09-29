@@ -225,6 +225,16 @@ scanning, so it does not violate the "never scan host ports" rule.
 `PORT_BOUND_TO_LOCALHOST` is a **distinct failure class** from `PORT_NOT_LISTENING`:
 it will be the most common real failure and its remedy is completely different.
 
+### The variable a server binds by
+
+`HOST` is set for every Node plan, and a server that reads a variable of its own naming
+ignores it: `host: process.env.SERVER_HOSTNAME ?? '127.0.0.1'` bound loopback in a real
+repository. Where the entry file's `.listen(...)` call names a `process.env.X` as its
+host — in an options object, as the second argument, or through a `host` constant it is
+given — `X=0.0.0.0` is set beside `HOST`. Only then: `process.env.DB_HOST || 'localhost'`
+is the same shape, and pointing a database host at 0.0.0.0 would break what worked. A
+loopback literal that is the *default* of such a variable is not a hardcoded bind.
+
 ## Readiness
 
 **READY = TCP connect succeeds AND a complete HTTP response is returned — any status,
