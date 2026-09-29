@@ -66,4 +66,13 @@ describe('failures the real-world corpus found', () => {
     const outcome = await runFixture('node-pnpm-vite-args', plan);
     expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
   }, 300_000);
+
+  it('serves an Angular project on @angular/build without a flag it rejects (angular-realworld)', async () => {
+    // `--disable-host-check` belongs to @angular-devkit/build-angular. Every project
+    // generated since Angular 18 serves through @angular/build, whose schema has never
+    // declared it, and `ng serve` refused to start: `Unknown argument: disable-host-check`.
+    const plan = await planFixture('node-angular-build');
+    const outcome = await runFixture('node-angular-build', plan);
+    expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+  }, 300_000);
 });

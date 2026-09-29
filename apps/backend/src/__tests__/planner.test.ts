@@ -91,6 +91,25 @@ describe('RuleBasedPlanner — Node frameworks', () => {
     expect(out.plan?.startCommand).toContain('--disable-host-check');
   });
 
+  it('leaves --disable-host-check off for @angular/build, which rejects it', () => {
+    // `ng serve` validates its flags against the builder's schema, and @angular/build's
+    // has never declared this one: `Unknown argument: disable-host-check`, before
+    // anything serves. Every project generated since Angular 18 uses it.
+    const out = planner.plan(
+      node({ '@angular/cli': '21' }, { start: 'ng serve' }, { angularDevServer: '@angular/build:dev-server' }),
+    );
+    expect(out.plan?.startCommand).toBe('npm run start -- --host 0.0.0.0 --port 4200');
+  });
+
+  it('keeps --disable-host-check for the webpack dev server builder, which needs it', () => {
+    const out = planner.plan(
+      node({ '@angular/cli': '16' }, { start: 'ng serve' }, {
+        angularDevServer: '@angular-devkit/build-angular:dev-server',
+      }),
+    );
+    expect(out.plan?.startCommand).toContain('--disable-host-check');
+  });
+
   it('detects Angular from angular.json even without the dependency listed', () => {
     const out = planner.plan(meta({
       packageJson: { scripts: { start: 'ng serve' }, dependencies: {}, devDependencies: {} },

@@ -167,6 +167,7 @@ export class RepositoryAnalyzer {
       readmeExcerpt: readme,
       ...(await this.readRoutes(base, fileNames, packageJson?.entryFiles ?? [], python?.entryCandidates.map((e) => e.file) ?? [])),
       ...(await this.readBinding(base, packageJson)),
+      ...(fileNames.includes('angular.json') ? await readAngularDevServer(join(base, 'angular.json')) : {}),
       workspace: await this.readWorkspace(base, packageJson, fileNames, warnings),
       ...(await this.readServices(base, envRaw ? parseEnvExample(envRaw) : [], python)),
       warnings,
@@ -909,4 +910,24 @@ function hardcodedBacking(url: string | undefined): Omit<BackingService, 'needed
     evidence: `the source hardcodes a ${kind} URL`,
     ...(driver ? { driver } : {}),
   };
+}
+
+/**
+ * The builder behind `ng serve`, read from the serve target of the first project that has
+ * one. `architect` and `targets` are the same thing under two names.
+ */
+async function readAngularDevServer(file: string): Promise<{ angularDevServer?: string }> {
+  const raw = await readCapped(file);
+  if (raw === null) return {};
+  try {
+    const projects = (JSON.parse(raw) as { projects?: Record<string, Record<string, unknown>> }).projects ?? {};
+    for (const project of Object.values(projects)) {
+      const targets = (project.architect ?? project.targets) as Record<string, { builder?: unknown }> | undefined;
+      const builder = targets?.serve?.builder;
+      if (typeof builder === 'string') return { angularDevServer: builder };
+    }
+  } catch {
+    /* An unreadable angular.json says nothing about the builder; the default stands. */
+  }
+  return {};
 }

@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-29 — `--disable-host-check` only where Angular accepts it
+
+Every Angular plan ended in `--disable-host-check`, and `gothinkster/angular-realworld-example-app`
+(Angular 21) refused to start: `Error: Unknown argument: disable-host-check`. `ng serve`
+validates its flags against the schema of the builder `angular.json` names, and reading
+the published schemas settled which builders have it: `@angular-devkit/build-angular`'s
+dev server declares `disableHostCheck` in every version from 15 to 20;
+`@angular/build:dev-server` — the builder every project generated since Angular 18 uses —
+has never declared it, in 18, 19, 20 or 21.
+
+The analyzer now reads the serve target's builder (`architect` or `targets`, the first
+project that has one) into `angularDevServer`, and the flag is dropped for
+`@angular/build`. An older builder, or one that cannot be read, keeps it: those need it to
+answer through a port mapping at all. The Vite-based server behind `@angular/build`
+accepts `localhost` and IP Host headers, which is what reaches it here.
+
+- **Fixture:** `node-angular-build`, whose stand-in `ng` validates flags against the
+  builder the way the real CLI does. Before: `START_COMMAND_FAILED`, evidence
+  `Unknown argument: disable-host-check`. After: READY.
+- **Mutations:** six — the flag never dropped, always dropped, the builder not passed to
+  the planner, never read, read only under `architect`, and taken from a project with no
+  serve target. All killed.
+
 ## 2026-09-29 — Flags reach a pnpm or Yarn 4 script as options
 
 `sveltejs/realworld` ended `PORT_BOUND_TO_LOCALHOST` against a plan reading

@@ -75,8 +75,10 @@ export const NODE_FRAMEWORKS: readonly NodeFramework[] = Object.freeze([
     defaultPort: 4200,
     scripts: ['start', 'dev'],
     argStyle: 'long',
-    // Angular rejects requests whose Host header it does not recognise, which is every
-    // request arriving through a Docker port mapping.
+    // The webpack dev server behind `@angular-devkit/build-angular:dev-server` rejects
+    // requests whose Host header it does not recognise, which is every request arriving
+    // through a Docker port mapping. `@angular/build:dev-server` has no such flag and
+    // refuses to start when given one — see `bindingArgs`.
     extraArgs: ['--disable-host-check'],
   },
   { id: 'vue-cli', dep: '@vue/cli-service', defaultPort: 8080, scripts: ['serve', 'dev'], argStyle: 'long' },
@@ -150,13 +152,22 @@ export const PYTHON_REQUIREMENT_SIGNALS: Readonly<Record<string, string>> = Obje
   gradio: 'gradio',
 });
 
-/** Build the host/port arguments a framework needs to be reachable through Docker. */
-export function bindingArgs(fw: NodeFramework, port: number): string[] {
+/**
+ * Build the host/port arguments a framework needs to be reachable through Docker.
+ *
+ * `angularDevServer` is the builder `angular.json` names. `--disable-host-check` is kept
+ * for every builder but `@angular/build`, which never accepted it: an older project, or
+ * one whose builder could not be read, still needs it to answer through a port mapping.
+ */
+export function bindingArgs(fw: NodeFramework, port: number, angularDevServer?: string): string[] {
+  const extra = (fw.extraArgs ?? []).filter(
+    (a) => !(a === '--disable-host-check' && angularDevServer?.startsWith('@angular/build:')),
+  );
   switch (fw.argStyle) {
     case 'long':
-      return ['--host', '0.0.0.0', '--port', String(port), ...(fw.extraArgs ?? [])];
+      return ['--host', '0.0.0.0', '--port', String(port), ...extra];
     case 'short':
-      return ['-H', '0.0.0.0', '-p', String(port), ...(fw.extraArgs ?? [])];
+      return ['-H', '0.0.0.0', '-p', String(port), ...extra];
     case 'env':
       return [];
   }

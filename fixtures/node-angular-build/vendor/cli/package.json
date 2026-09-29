@@ -1,0 +1,6 @@
+{
+  "name": "@angular/cli",
+  "version": "0.0.0-fixture",
+  "description": "Stands in for @angular/cli. Reproduces one behaviour only: ng serve refuses an option its builder's schema does not declare.",
+  "bin": { "ng": "bin/ng.js" }
+}

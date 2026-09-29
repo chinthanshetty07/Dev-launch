@@ -68,6 +68,15 @@ export interface RepositoryMetadata {
    */
   declaredPort?: number;
   /**
+   * The builder `angular.json` names for `ng serve`, e.g. `@angular/build:dev-server`.
+   *
+   * It decides which flags `ng serve` accepts. `--disable-host-check` belongs to
+   * `@angular-devkit/build-angular:dev-server` and has never existed on
+   * `@angular/build:dev-server`, which every project generated since Angular 18 uses —
+   * and passing it there is `Unknown argument: disable-host-check`, before anything runs.
+   */
+  angularDevServer?: string;
+  /**
    * Node built-in modules the source imports by their `node:` prefix.
    *
    * A repository's most reliable statement about the runtime it needs. `engines.node` is

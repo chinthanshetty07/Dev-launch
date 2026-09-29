@@ -42,7 +42,7 @@ specific first, always.
 | `@remix-run/dev` | Remix | 3000 | `HOST` / `PORT` |
 | `gatsby` | Gatsby | 8000 | `-H 0.0.0.0 -p 8000` (script is `develop`) |
 | `@docusaurus/core` | Docusaurus | 3000 | `--host 0.0.0.0 --port 3000` |
-| `@angular/cli` or `angular.json` | Angular | 4200 | `--host 0.0.0.0 --port 4200 --disable-host-check` |
+| `@angular/cli` or `angular.json` | Angular | 4200 | `--host 0.0.0.0 --port 4200`, plus `--disable-host-check` unless the builder is `@angular/build` |
 | `@vue/cli-service` | Vue CLI | 8080 | `--host 0.0.0.0 --port 8080` |
 | `react-scripts` | CRA | 3000 | `HOST` / `PORT` / `BROWSER=none` |
 | `vite` | Vite | 5173 | `--host 0.0.0.0 --port 5173` |
@@ -67,8 +67,11 @@ Four details that are the difference between a plan that works and one that hang
   Vite's parser reads everything after it as positional — so under them the flags follow
   the script name directly. This was written as a rule for every manager for a long time,
   and every pnpm SvelteKit, Astro or Vite project bound loopback because of it.
-- **Angular needs `--disable-host-check`**, because it rejects requests whose Host
-  header it does not recognise — which is every request arriving through a port mapping.
+- **Angular's webpack dev server needs `--disable-host-check`**, because it rejects
+  requests whose Host header it does not recognise — which is every request arriving
+  through a port mapping. `@angular/build:dev-server`, which every project generated
+  since Angular 18 uses, has never had the flag and refuses to start when given it, so
+  the builder `angular.json` names decides.
 - **Streamlit needs `--server.headless`**, or it prompts for an email address on first
   run and blocks forever. Readiness would report a timeout that says nothing useful.
 - **CRA needs `BROWSER=none`**, since it otherwise tries to open a browser in a container.

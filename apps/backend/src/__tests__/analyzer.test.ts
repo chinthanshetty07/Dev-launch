@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { normaliseRepoUrl, measureTree } from '../services/git/GitManager.js';
 import {
   RepositoryAnalyzer,
@@ -669,5 +669,42 @@ describe('an application one level down that is not a package', () => {
     const meta = await analyzer.analyze(root);
     expect(meta.python?.imports).toContain('flasgger');
     expect(meta.python?.imports).not.toContain('routes');
+  });
+});
+
+describe('the builder behind ng serve', () => {
+  async function withAngularJson(body: unknown): Promise<string | undefined> {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-angular-'));
+    try {
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ scripts: { start: 'ng serve' } }));
+      await writeFile(join(dir, 'angular.json'), typeof body === 'string' ? body : JSON.stringify(body));
+      return (await new RepositoryAnalyzer().analyze(dir)).angularDevServer;
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('reads the serve target, under either of its two names', async () => {
+    expect(await withAngularJson({ projects: { app: { architect: { serve: { builder: '@angular/build:dev-server' } } } } }))
+      .toBe('@angular/build:dev-server');
+    // Nx-style workspaces call the same thing `targets`.
+    expect(await withAngularJson({ projects: { app: { targets: { serve: { builder: '@angular-devkit/build-angular:dev-server' } } } } }))
+      .toBe('@angular-devkit/build-angular:dev-server');
+  });
+
+  it('takes the first project that has a serve target, skipping a library that has none', async () => {
+    expect(await withAngularJson({
+      projects: {
+        lib: { architect: { build: { builder: '@angular/build:ng-packagr' } } },
+        app: { architect: { serve: { builder: '@angular/build:dev-server' } } },
+      },
+    })).toBe('@angular/build:dev-server');
+  });
+
+  it('says nothing about an angular.json it cannot read', async () => {
+    expect(await withAngularJson('{ not json')).toBeUndefined();
+    expect(await withAngularJson({ projects: {} })).toBeUndefined();
   });
 });

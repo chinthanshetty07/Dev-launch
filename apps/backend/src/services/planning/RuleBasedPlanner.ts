@@ -475,7 +475,7 @@ export class RuleBasedPlanner {
     }
 
     const port = portFor(framework, meta);
-    const args = framework ? bindingArgs(framework, port) : [];
+    const args = framework ? bindingArgs(framework, port, meta.angularDevServer) : [];
     const startCommand = runScript(pm, script, args);
 
     const env: EnvVar[] = [

@@ -60,6 +60,7 @@ reproduces the one behaviour at issue, quoted from the real tool in its source.
 | Fixture | Reproduces |
 |---|---|
 | `node-pnpm-vite-args` | `sveltejs/realworld`: pnpm forwards a literal `--` to the script, and a Vite-like parser reads the flags after it as positional — so the server binds loopback |
+| `node-angular-build` | `gothinkster/angular-realworld-example-app`: an `ng serve` that validates flags against its builder's schema, as the real CLI does, on `@angular/build:dev-server` — which has no `--disable-host-check` |
 
 ## Instrumentation
 
