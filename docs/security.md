@@ -114,6 +114,26 @@ Defended twice now: the reserved `DL_` prefix is rejected outright, and the wrap
 assigns control variables **last**, so a future caller that skips validation is still
 safe. The exploit was written as a failing test before the fix.
 
+## A file DevLaunch writes, and what may be in it
+
+For an unbuildable pyproject project DevLaunch writes one file into the container,
+`/workspace/.devlaunch/requirements.txt`, beside the wrapper and copied after the
+repository so the repository cannot shadow it. It is never written to a checkout or a
+clone. Three properties keep it from being a way around the allowlist:
+
+- **Its content comes from the repository at launch, not from a plan.** A plan — a
+  model's included — can name the path; it cannot choose what the file says.
+- **Every line is rebuilt, then checked** against `SAFE_REQUIREMENT`: a name, optional
+  extras, version clauses. A requirements file obeys options (`--index-url`, `-e`, `-r`),
+  and none can be expressed. Anything else becomes the bare name, which is what was
+  installed before this existed.
+- **The read stays inside the source directory,** checked again at the read even though
+  the working directory was validated long before — a tested second layer, like the
+  ordering of the `DL_` variables.
+
+What it installs is what the repository declared, as before; only the version ranges are
+new. A repository could always name any package it liked.
+
 ## Operational notes
 
 - The egress policy lives inside the Colima VM and **does not survive recreating it**.

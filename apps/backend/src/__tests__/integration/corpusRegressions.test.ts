@@ -8,6 +8,7 @@ import { CleanupManager } from '../../services/cleanup/CleanupManager.js';
 import { RepositoryAnalyzer } from '../../services/analysis/RepositoryAnalyzer.js';
 import { RuleBasedPlanner } from '../../services/planning/RuleBasedPlanner.js';
 import { imageForRuntime } from '../../services/security/ImageAllowlist.js';
+import { LogManager } from '../../services/logs/LogManager.js';
 import { cacheVolumeFor } from '../../services/docker/ContainerSecurity.js';
 
 /**
@@ -30,8 +31,9 @@ async function planFixture(name: string): Promise<RunPlan> {
   return outcome.plan;
 }
 
-async function runFixture(name: string, plan: RunPlan, readinessMs = 90_000) {
+async function runFixture(name: string, plan: RunPlan, readinessMs = 90_000, logs?: LogManager) {
   const handle = await exec.launch({
+    ...(logs ? { logs } : {}),
     sessionId: `corpus-${name}`,
     plan,
     sourceDir: `${FIXTURES}/${name}`,
@@ -162,4 +164,17 @@ describe('failures the real-world corpus found', () => {
     expect(outcome.failure?.code, JSON.stringify(outcome.failure)).toBe(FailureCode.APPLICATION_EXITED);
     expect(outcome.failure?.message).toMatch(/finished successfully instead of serving/);
   }, 300_000);
+
+  it('installs a Poetry project within the ranges it declares (nsidnev/fastapi-realworld-example-app)', async () => {
+    // By name alone, `flask = "^2.3"` became Flask 3 — as `pydantic = "^1.9"` became
+    // pydantic 2 — and code written for the major it pinned refused to start. The ranges
+    // now reach pip through a file DevLaunch writes from pyproject.toml in the container.
+    const plan = await planFixture('python-poetry-ranges');
+    const logs = new LogManager();
+    const outcome = await runFixture('python-poetry-ranges', plan, 180_000, logs);
+    const log = logs.buffer.all().map((l) => l.text).join('\n');
+    expect(outcome.state, `${JSON.stringify(outcome.failure)}\n${log.slice(-1500)}`).toBe(ExecutionState.READY);
+    expect(log).toMatch(/Wrote \/workspace\/\.devlaunch\/requirements\.txt from pyproject\.toml: 1 requirements/);
+    expect(log).toMatch(/Successfully installed .*flask-2\./i);
+  }, 400_000);
 });

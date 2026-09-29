@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "python-poetry-ranges"
+version = "0.1.0"
+description = "A Poetry application whose code needs the major version its manifest pins."
+
+[tool.poetry.dependencies]
+python = "^3.9"
+flask = "^2.3"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

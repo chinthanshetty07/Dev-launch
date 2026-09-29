@@ -339,9 +339,18 @@ Packageability is predicted, not discovered by failing, because setuptools' rule
 short and documented: explicit `packages`/`py-modules` configuration settles it, a
 `src/` layout settles it, and otherwise auto-discovery fails when more than one
 top-level directory survives its exclusion list. When the answer is no, the declared
-dependencies are installed by name — without version specifiers, because the command
-allowlist permits no `>` or quotes, and saying so beats resolving to latest silently. A
-deterministic repair rule catches the variants prediction misses, at no model call.
+dependencies are installed with the version ranges pyproject.toml gives them, through a
+requirements file DevLaunch writes into the container at launch (below). A deterministic
+repair rule catches the variants prediction misses, the same way, at no model call.
+
+They used to be installed by name, because the command allowlist permits no `<`, `>` or
+quotes and a range cannot be written on a command line. By name, `pydantic = "^1.9"`
+installed pydantic 2, and code written for 1 died on `BaseSettings has moved`. A file
+needs no quoting. Its lines are rebuilt from a name, extras and version clauses, and held
+to a pattern that cannot express an option — a requirements file obeys `--index-url`,
+`-e` and `-r` — with anything else falling back to the bare name it would have had before.
+Its content is derived from the repository when the container is created, never carried
+by a plan, so a plan naming the file cannot choose what is in it.
 
 ## The kernel's answer beats the log's claim
 

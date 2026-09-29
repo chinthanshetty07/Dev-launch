@@ -830,6 +830,159 @@ export function pyprojectDepsBySection(raw: string): { all: string[]; runtime: s
   return { all: names.filter(Boolean), runtime: runtime.filter(Boolean) };
 }
 
+/**
+ * The runtime requirements `pyproject.toml` declares, with the version ranges it gives them,
+ * as lines a pip requirements file can hold.
+ *
+ * Installing these by name threw the ranges away — the command allowlist permits no `<`,
+ * `>` or quotes — and `nsidnev/fastapi-realworld-example-app`, which asks for
+ * `pydantic = "^1.9"`, was given pydantic 2 and died on `BaseSettings has moved`. A file
+ * needs no shell quoting, so the ranges survive intact.
+ *
+ * A requirements file can also carry *options* — `--index-url`, `-e`, `-r` — so no text
+ * from the repository reaches it unexamined. Every line is rebuilt from a name, extras and
+ * version clauses and must match `SAFE_REQUIREMENT`; anything else — a URL, a marker, an
+ * `||` — falls back to the bare name, which is exactly what was installed before. Never
+ * worse than names alone, and never an option.
+ */
+export function pyprojectRequirements(raw: string): string[] {
+  const out: string[] = [];
+  let section = '';
+  let pending: string | null = null;
+
+  const take = (spec: string): void => {
+    const line = pep508Line(spec);
+    if (line) out.push(line);
+  };
+
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.replace(/\s+#.*$/, '').trim();
+    if (!line) continue;
+
+    if (pending !== null) {
+      pending += line;
+      if (bracketDepth(pending) > 0) continue;
+      for (const m of pending.matchAll(QUOTED)) take(m[1] ?? m[2]!);
+      pending = null;
+      continue;
+    }
+
+    const header = /^\[([^\]]+)\]$/.exec(line);
+    if (header) {
+      section = header[1]!.trim();
+      continue;
+    }
+
+    if (section === 'project' && /^dependencies\s*=/.test(line)) {
+      const value = line.slice(line.indexOf('=') + 1).trim();
+      if (!value.startsWith('[')) continue;
+      if (bracketDepth(value) > 0) pending = value;
+      else for (const m of value.matchAll(QUOTED)) take(m[1] ?? m[2]!);
+      continue;
+    }
+
+    if (section === 'tool.poetry.dependencies') {
+      const entry = /^([A-Za-z0-9._-]+)\s*=\s*(.+)$/.exec(line);
+      if (!entry || entry[1]!.toLowerCase() === 'python') continue;
+      const line2 = poetryLine(entry[1]!, entry[2]!);
+      if (line2) out.push(line2);
+    }
+  }
+  return out;
+}
+
+/**
+ * A TOML string, closed by the quote that opened it. `"tomli; python_version < '3.11'"`
+ * holds single quotes inside double ones; a pattern taking either quote as the end split
+ * it there and swallowed the entry after it.
+ */
+const QUOTED = /"([^"]*)"|'([^']*)'/g;
+
+/** A requirement DevLaunch will write into a file: name, extras, version clauses. Nothing else. */
+const NAME = String.raw`[A-Za-z0-9][A-Za-z0-9._-]*`;
+const EXTRAS = String.raw`(?:\[[A-Za-z0-9._-]+(?:,[A-Za-z0-9._-]+)*\])?`;
+const CLAUSE = String.raw`(?:===|==|!=|<=|>=|~=|<|>)[A-Za-z0-9.*+!_-]+`;
+export const SAFE_REQUIREMENT = new RegExp(String.raw`^${NAME}${EXTRAS}(?:${CLAUSE}(?:,${CLAUSE})*)?$`);
+
+function safe(line: string): string | null {
+  return SAFE_REQUIREMENT.test(line) ? line : null;
+}
+
+/** A PEP 508 string from `[project] dependencies`, kept only in the shape SAFE_REQUIREMENT allows. */
+function pep508Line(spec: string): string | null {
+  const name = new RegExp(`^\\s*(${NAME})\\s*(${EXTRAS})`).exec(spec);
+  if (!name) return null;
+  const bare = `${name[1]}${name[2]}`.replace(/\s+/g, '');
+  // A marker or a URL fails SAFE_REQUIREMENT, and falls back to the name alone, as before.
+  const rest = spec.slice(name[0].length).replace(/\s+/g, '').replace(/^\((.*)\)$/, '$1');
+  return safe(bare + rest) ?? safe(bare);
+}
+
+/** One `name = <constraint>` line of `[tool.poetry.dependencies]`, as PEP 508. */
+function poetryLine(name: string, value: string): string | null {
+  let constraint: string | undefined;
+  let extras = '';
+  const quoted = /^["']([^"']*)["']$/.exec(value.trim());
+  if (quoted) {
+    constraint = quoted[1]!;
+  } else if (/^\{.*\}$/.test(value.trim())) {
+    const table = value.trim();
+    // Not installed unless an extra asks for it.
+    if (/\boptional\s*=\s*true\b/.test(table)) return null;
+    const version = /\bversion\s*=\s*["']([^"']*)["']/.exec(table)?.[1];
+    const listed = /\bextras\s*=\s*\[([^\]]*)\]/.exec(table)?.[1];
+    if (listed) {
+      const names = [...listed.matchAll(/["']([^"']+)["']/g)].map((m) => m[1]!);
+      if (names.length) extras = `[${names.join(',')}]`;
+    }
+    // A git, path or url source, or a python/platform condition: the name alone.
+    if (/\b(?:git|path|url|python|platform|markers)\s*=/.test(table)) return safe(`${name}${extras}`) ?? safe(name);
+    constraint = version;
+  }
+  const pep440 = constraint === undefined ? null : poetryConstraint(constraint);
+  return (pep440 !== null ? safe(`${name}${extras}${pep440}`) : null) ?? safe(`${name}${extras}`) ?? safe(name);
+}
+
+/**
+ * Poetry's constraint syntax as PEP 440, or null when it has no faithful translation.
+ *
+ * `^` allows changes that do not modify the leftmost non-zero component, and `~` allows
+ * patch changes (minor, given only a major) — Poetry's own definitions. Anything else,
+ * `||` included, has no clause here and is declined.
+ */
+export function poetryConstraint(raw: string): string | null {
+  const c = raw.trim();
+  if (c === '' || c === '*') return '';
+  const clauses: string[] = [];
+  for (const part of c.split(',').map((p) => p.trim()).filter(Boolean)) {
+    const op = /^(\^|~(?!=))\s*(\d+(?:\.\d+){0,2})$/.exec(part);
+    if (op) {
+      const nums = op[2]!.split('.').map(Number);
+      let idx: number;
+      if (op[1] === '^') {
+        idx = nums.findIndex((n) => n > 0);
+        if (idx === -1) idx = nums.length - 1;
+      } else {
+        idx = nums.length >= 2 ? 1 : 0;
+      }
+      const upper = nums.map((n, i) => (i < idx ? n : i === idx ? n + 1 : 0));
+      clauses.push(`>=${op[2]}`, `<${upper.join('.')}`);
+      continue;
+    }
+    const explicit = /^(===|==|!=|<=|>=|~=|<|>)\s*([A-Za-z0-9.*+!_-]+)$/.exec(part);
+    if (explicit) {
+      clauses.push(`${explicit[1]}${explicit[2]}`);
+      continue;
+    }
+    if (/^\d[A-Za-z0-9.*+!_-]*$/.test(part)) {
+      clauses.push(`==${part}`);
+      continue;
+    }
+    return null;
+  }
+  return clauses.join(',');
+}
+
 /** Unclosed `[` outside of quoted strings, which is what ends a dependency array. */
 function bracketDepth(text: string): number {
   let depth = 0;

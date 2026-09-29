@@ -105,6 +105,12 @@ export const config = {
     workspacePath: '/workspace',
     /** Wrapper lives inside the volume, since the rootfs cannot be written to. */
     wrapperPath: '/workspace/.devlaunch',
+    /**
+     * A requirements file DevLaunch generates from the repository's pyproject.toml, beside
+     * the wrapper and copied after the repository for the same reason: a repository
+     * cannot shadow it. Its content is derived at launch, never carried by a plan.
+     */
+    generatedRequirementsPath: '/workspace/.devlaunch/requirements.txt',
     /** npm needs scratch space, and the rootfs is read-only. */
     tmpSizeMb: intEnv('DEVLAUNCH_CONTAINER_TMP_MB', 64),
   },

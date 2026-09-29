@@ -904,11 +904,16 @@ function pyprojectInstall(py: PythonSummary, warnings: string[]): string | null 
     return null;
   }
 
+  // Through a requirements file DevLaunch writes from pyproject.toml at launch, so the
+  // version ranges the project declares survive. On the command line they could not: the
+  // allowlist permits no `<`, `>` or quotes, and by name alone `pydantic = "^1.9"` became
+  // pydantic 2.
   warnings.push(
-    `Installing ${deps.length} declared dependencies by name: this project has several ` +
-      'top-level directories and no package configuration, so `pip install .` cannot ' +
-      'build it. Version constraints are not applied — the command allowlist permits no ' +
-      '`>` or quotes.',
+    `Installing ${deps.length} declared ${deps.length === 1 ? 'dependency' : 'dependencies'} with the version ranges pyproject.toml ` +
+      'gives them: this project has several top-level directories and no package ' +
+      'configuration, so `pip install .` cannot build it. DevLaunch writes the ranges into ' +
+      `${config.container.generatedRequirementsPath} inside the container — never into the ` +
+      'repository.',
   );
-  return `pip install ${deps.join(' ')}`;
+  return `pip install -r ${config.container.generatedRequirementsPath}`;
 }

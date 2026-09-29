@@ -125,7 +125,11 @@ describe('when pip is asked to build something that is not a package', () => {
       logs: REFUSAL,
       metadata: pyMeta(['fastapi', 'uvicorn']),
     });
-    expect(out?.plan.installCommand).toBe('pip install fastapi uvicorn');
+    // Rewritten, not flipped: this repair named the dependencies on the command line,
+    // where their version ranges could not go. It now installs through the file DevLaunch
+    // writes from pyproject.toml, as the planner does for the same layout; the intent —
+    // the declared dependencies, without building the project — is unchanged.
+    expect(out?.plan.installCommand).toBe('pip install -r /workspace/.devlaunch/requirements.txt');
     expect(out?.record.source).toBe('deterministic');
     expect(out?.record.evidence[0]).toMatch(/Multiple top-level packages/);
   });

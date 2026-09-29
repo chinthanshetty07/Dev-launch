@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-09-29 — A Poetry project is installed within the ranges it declares
+
+A pyproject project that is not a buildable package — several top-level directories, no
+package configuration — had its dependencies installed by name, because a version range
+cannot be written on a command line the allowlist permits: no `<`, `>` or quotes. By name,
+`nsidnev/fastapi-realworld-example-app`'s `pydantic = "^1.9"` became pydantic 2 and the
+report named `BaseSettings has moved` rather than anything about the project.
+
+The user chose between three answers: widen the allowlist, leave it, or generate a
+requirements file. It is the file. `pyprojectRequirements` rebuilds the runtime
+dependencies — `[project] dependencies`, or `[tool.poetry.dependencies]` with Poetry's `^`
+and `~` translated by Poetry's own definitions — as PEP 508 lines, and the plan installs
+`pip install -r /workspace/.devlaunch/requirements.txt`. The deterministic repair for a
+flat layout `pip install .` refused now installs the same way.
+
+- **Ranges, not the lock.** `poetry.lock` was resolved for the author's Python; DevLaunch
+  has one, 3.12, and the declared ranges leave room for a release with a wheel for it.
+- **No text from the repository reaches the file unexamined.** A requirements file obeys
+  `--index-url`, `-e` and `-r`. Every line is rebuilt and held to `SAFE_REQUIREMENT`;
+  anything else — a URL, a marker, `||` — becomes the bare name it had before.
+- **From the repository, never from a plan.** The executor derives the content when it
+  creates the container, from the pyproject in the plan's working directory, with the
+  read held inside the source directory. A plan naming the path gets the repository's file.
+- **nsidnev will still fail**, now for its real reason: `asyncpg ^0.26` stays below 0.27,
+  which has no Python 3.12 wheel. That is the contract, reported as such.
+- **Rewritten tests, intents kept:** three planner tests and one repair test asserted the
+  install-by-name command. Each now asserts the file command and says what changed; what
+  the file holds — the declared set, dev groups excluded, no option ever — is tested on
+  the converter.
+- **Fixture:** `python-poetry-ranges`, `flask = "^2.3"` and code that refuses Flask 3.
+  Before: `RuntimeError: this application needs Flask 2 … got Flask 3.1.3`. After: READY
+  on Flask 2.
+- **Mutations:** thirteen. Two guards no test could distinguish were deleted — a
+  marker/URL branch and an explicit `||` check, both already refused by the line pattern
+  — and a quote-naive tokenizer, which the first test did not pin, gained the test that
+  does. The older name-only reader, `pyprojectDepsBySection`, still has that tokenizer.
+
 ## 2026-09-29 — A server DevLaunch planned that exits 0 has stopped, not finished
 
 `ahfarmer/calculator`'s dev server closed on an empty stdin and the session said

@@ -385,12 +385,23 @@ export class DockerManager {
     scriptBody: string,
     destPath: string,
   ): Promise<void> {
-    const staging = await mkdtemp(join(tmpdir(), 'devlaunch-wrapper-'));
+    await this.installFile(container, 'run.sh', scriptBody, destPath, 0o755);
+  }
+
+  /** Place one file DevLaunch wrote into `destDir` inside the container. */
+  async installFile(
+    container: Dockerode.Container,
+    name: string,
+    body: string,
+    destDir: string,
+    mode = 0o644,
+  ): Promise<void> {
+    const staging = await mkdtemp(join(tmpdir(), 'devlaunch-file-'));
     try {
-      const file = join(staging, 'run.sh');
-      await writeFile(file, scriptBody, 'utf8');
-      await chmod(file, 0o755);
-      await this.copyDirInto(container, staging, destPath);
+      const file = join(staging, name);
+      await writeFile(file, body, 'utf8');
+      await chmod(file, mode);
+      await this.copyDirInto(container, staging, destDir);
     } finally {
       await rm(staging, { recursive: true, force: true });
     }

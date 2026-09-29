@@ -19,6 +19,9 @@ import { ReadinessChecker, type ReadinessResult } from '../readiness/ReadinessCh
 import { joinWorkspace } from '../security/PathValidator.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { FailureClassifier } from '../failures/FailureClassifier.js';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import { readCapped } from '../analysis/readCapped.js';
+import { pyprojectRequirements } from '../analysis/ServiceDiscovery.js';
 
 export type Phase = 'none' | 'install' | 'build' | 'start';
 
@@ -112,6 +115,23 @@ export interface RunResult {
   phaseReached: Phase;
   failure?: FailureDetail;
   logs: LogEntry[];
+}
+
+/**
+ * Derive the generated requirements file from the repository, when the plan installs it.
+ *
+ * From the repository and never from the plan: a plan — a model's included — can name the
+ * path, and gets the file the repository's own pyproject.toml describes, validated line by
+ * line; it cannot choose what is in it. Returns the lines written, or null when the plan
+ * does not use the file.
+ */
+export async function derivedRequirements(sourceDir: string, workingDirectory: string): Promise<string[]> {
+  const dir = resolve(sourceDir, workingDirectory);
+  // The working directory was validated before this point; this keeps the read inside the
+  // source directory even if that ever stops being true.
+  if (dir !== resolve(sourceDir) && !dir.startsWith(resolve(sourceDir) + sep)) return [];
+  const raw = await readCapped(join(dir, 'pyproject.toml'));
+  return raw === null ? [] : pyprojectRequirements(raw);
 }
 
 /** A start command that ended with 0 where a server was expected, in one set of words. */
@@ -414,8 +434,16 @@ export class ExecutionManager {
       // copying the wrapper last guarantees a repository cannot shadow it.
       await this.docker.copyDirInto(container, opts.sourceDir, config.container.workspacePath);
       await this.docker.installWrapper(container, buildWrapperScript(), config.container.wrapperPath);
+      const generated = await this.installGeneratedRequirements(container, opts);
 
       const logs = opts.logs ?? new LogManager();
+      if (generated !== null) {
+        logs.write(
+          'stdout',
+          `Wrote ${config.container.generatedRequirementsPath} from pyproject.toml: ` +
+            `${generated.length} requirements, with the version ranges it declares.`,
+        );
+      }
       const sentinels = new Set<string>();
       logs.on('sentinel', (marker: string) => sentinels.add(marker));
 
@@ -480,6 +508,21 @@ export class ExecutionManager {
       await cleanup.cleanup();
       throw err;
     }
+  }
+
+  private async installGeneratedRequirements(
+    container: Dockerode.Container,
+    opts: LaunchOptions,
+  ): Promise<string[] | null> {
+    if (!opts.plan.installCommand?.includes(config.container.generatedRequirementsPath)) return null;
+    const lines = await derivedRequirements(opts.sourceDir, opts.plan.workingDirectory);
+    await this.docker.installFile(
+      container,
+      basename(config.container.generatedRequirementsPath),
+      lines.length ? `${lines.join('\n')}\n` : '',
+      dirname(config.container.generatedRequirementsPath),
+    );
+    return lines;
   }
 
   /** Convenience for workloads that terminate on their own (fixtures, build steps). */

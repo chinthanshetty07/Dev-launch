@@ -413,9 +413,18 @@ describe('installing a project that is not a package', () => {
     // `pip install .` failed with setuptools' flat-layout refusal, and repair then
     // guessed `pip install -r requirements.txt` on a repository that has no such file.
     // The dependencies were declared the whole time.
+    //
+    // Rewritten, not flipped: the dependencies used to be named on the command line, which
+    // could not carry their version ranges (the allowlist permits no `<`, `>` or quotes),
+    // and `pydantic = "^1.9"` installed pydantic 2. They now reach pip through a file
+    // DevLaunch writes from pyproject.toml at launch; the intent — the declared
+    // dependencies, not a build — is unchanged, and what the file holds is tested in
+    // pyprojectRequirements.test.ts.
     const out = planner.plan(py2({ packageable: false, dependencies: ['fastapi', 'uvicorn', 'sqlalchemy'], runtimeDependencies: ['fastapi', 'uvicorn', 'sqlalchemy'] }));
-    expect(out.plan?.installCommand).toBe('pip install fastapi uvicorn sqlalchemy');
+    expect(out.plan?.installCommand).toBe('pip install -r /workspace/.devlaunch/requirements.txt');
+    expect(out.plan?.installCommand).not.toBe('pip install .');
     expect(out.warnings.join(' ')).toMatch(/several top-level directories/);
+    expect(() => validator.validate({ plan: out.plan })).not.toThrow();
   });
 
   it('still builds a project that is a package', () => {
@@ -430,11 +439,13 @@ describe('installing a project that is not a package', () => {
     expect(out.warnings.join(' ')).toMatch(/declares no dependencies/);
   });
 
-  it('refuses a dependency name that is not a plain distribution name', () => {
-    // These reach a shell. The allowlist would reject the command anyway; not composing
-    // it in the first place is the cheaper place to stop.
+  it('puts no dependency text on the command line at all', () => {
+    // Rewritten, not flipped: this guarded names that reached a shell. No name reaches the
+    // command any more — it is a fixed path — so nothing the repository writes can shape
+    // it. The same intent now applies to the file's lines, which must never carry an
+    // option or a shell fragment; that is tested in pyprojectRequirements.test.ts.
     const out = planner.plan(py2({ packageable: false, dependencies: ['fastapi', 'evil; rm -rf /', '--index-url=http://x'] }));
-    expect(out.plan?.installCommand).toBe('pip install fastapi');
+    expect(out.plan?.installCommand).toBe('pip install -r /workspace/.devlaunch/requirements.txt');
   });
 });
 
@@ -442,13 +453,19 @@ describe('which declared dependencies reach the container', () => {
   it('installs the runtime set, not the dev groups', () => {
     // A real repository declared httpx and pytest in [dependency-groups]; both were
     // being installed into the runtime container to run a web server.
+    //
+    // Rewritten, not flipped: the runtime set used to be the command's arguments, and is
+    // now the generated file's lines. The count the plan reports is still the runtime
+    // count; the file's content, dev groups excluded, is tested in
+    // pyprojectRequirements.test.ts.
     const out = planner.plan(meta({ python: {
       requirements: [], hasPyproject: true, hasPipfile: false, hasManagePy: false, packageable: false,
       entryCandidates: [{ file: 'main.py', framework: 'fastapi', appVariable: 'app' }],
       dependencies: ['fastapi', 'uvicorn', 'httpx', 'pytest'],
       runtimeDependencies: ['fastapi', 'uvicorn'],
     } as never }));
-    expect(out.plan?.installCommand).toBe('pip install fastapi uvicorn');
+    expect(out.plan?.installCommand).toBe('pip install -r /workspace/.devlaunch/requirements.txt');
+    expect(out.warnings.join(' ')).toMatch(/Installing 2 declared dependencies/);
   });
 });
 

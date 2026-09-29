@@ -1,3 +1,4 @@
+import { config } from '../../config/index.js';
 import {
   FailureCode,
   type FailureDetail,
@@ -142,13 +143,15 @@ const RULES: readonly Rule[] = [
         .find((m): m is RegExpExecArray => m !== null);
       if (!found || !/pip install\s+(?:-e\s+)?\.\s*$/.test(plan.installCommand ?? '')) return null;
 
-      // The dependencies are declared; only the project is unbuildable. Names only:
-      // the command allowlist permits no `>` or quotes, so a specifier cannot be written.
+      // The dependencies are declared; only the project is unbuildable. Installed the way
+      // the planner installs an unbuildable project from the start: through the file
+      // DevLaunch writes from pyproject.toml, so the declared version ranges survive. By
+      // name, this repair installed the newest of everything.
       const py = metadata.python;
       const deps = (py?.runtimeDependencies ?? py?.dependencies ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
       if (deps.length === 0) return null;
 
-      const installCommand = `pip install ${deps.join(' ')}`;
+      const installCommand = `pip install -r ${config.container.generatedRequirementsPath}`;
       return {
         plan: { ...plan, installCommand },
         record: {
