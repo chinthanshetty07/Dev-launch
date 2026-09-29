@@ -1,0 +1,66 @@
+{
+  "name": "flask-factory",
+  "startedAt": "2026-09-29T19:35:02.654Z",
+  "backend": {
+    "running": "6b039787f39ca825b06ccfdf06edcb21390b10ee",
+    "stale": false,
+    "egress": "unknown"
+  },
+  "results": [
+    {
+      "repo": "JayBhatt2021/improved-flask-tutorial-app",
+      "category": "flask",
+      "exercises": "Flask, pyproject only",
+      "pinnedSha": "8df96b97c98386fc377ec2b9a4d3fcf80f3f6ad5",
+      "ref": null,
+      "remoteTip": "8df96b97c98386fc377ec2b9a4d3fcf80f3f6ad5",
+      "sessionId": "a42c34c9-6908-4fb6-880c-a5030bf4b4ce",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "flask",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install .",
+        "start": "flask run --host=0.0.0.0 --port=5000",
+        "port": 5000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33771/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 14
+        }
+      ],
+      "durationS": 14
+    }
+  ],
+  "note": "One repository, re-run to verify the Flask application-factory rule: the code measured is after3 plus that rule, uncommitted at the time. Planned by rule; no model call."
+}

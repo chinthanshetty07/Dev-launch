@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-09-30 — Plan a Flask application factory by rule
+
+`JayBhatt2021/improved-flask-tutorial-app` keeps its application where the official Flask
+tutorial does: `create_app()` in `flaskr/__init__.py`, with no `app.py` anywhere. No rule
+saw it, so every corpus run handed it to a model, which planned it three different ways —
+gunicorn, waitress, and in after3 `python -m gunicorn` without installing gunicorn
+(`gunicorn: not found`). A pass that depended on which plan the model chose.
+
+- The package scan reads a package's `__init__.py` when it has no conventional entry
+  file, and counts it only when it makes the application: a module-level
+  `app = Flask(...)`, or a `create_app`/`make_app` Flask can call with no arguments.
+  A Blueprint package, or a factory that needs an argument, is not an entry point.
+- The plan names the factory — `FLASK_APP=flaskr:create_app` — unless a module-level app
+  exists, which Flask takes first.
+- `app = Flask(...)` indented inside a factory is a local; it was reported as the
+  module's app object, which would have made the plan rely on Flask's discovery instead.
+
+Verified live: the repository is planned by rule, installs with `pip install .`, and
+answers 200 on `/` in 14 s with no model call and no repair (`reports/flask-factory.md`).
+New fixture `python-flask-factory`, served in real Docker by the pipeline suite; nine unit
+tests; eight mutations, all killed by a named test.
+
 ## 2026-09-29 — Installs are detected in one place, and out-of-memory is climbed, not guessed
 
 `horusyeung/nextjs-nestjs-fullstack-starter` failed `OUT_OF_MEMORY during install`, and the

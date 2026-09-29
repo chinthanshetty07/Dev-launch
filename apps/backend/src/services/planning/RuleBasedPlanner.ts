@@ -735,7 +735,11 @@ export class RuleBasedPlanner {
       case 'flask': {
         if (!moduleName) return null;
         // FLASK_APP works across Flask versions; `flask --app` only from 2.2 onward.
-        env.push({ key: 'FLASK_APP', value: moduleName, required: false });
+        // A factory is named when there is no module-level app to find: `module:factory`
+        // has meant "call this" since Flask 1.0, and it says what runs rather than relying
+        // on discovery.
+        const target = entry?.appFactory && !entry.appVariable ? `${moduleName}:${entry.appFactory}` : moduleName;
+        env.push({ key: 'FLASK_APP', value: target, required: false });
         startCommand = `flask run --host=0.0.0.0 --port=${fw.defaultPort}`;
         break;
       }

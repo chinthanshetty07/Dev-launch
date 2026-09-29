@@ -623,6 +623,17 @@ Two changes, and they belong together:
   now, bounded to immediate subdirectories and conventional filenames, skipping `tests/`,
   `docs/`, `migrations/` and their kind.
 
+- **The package itself may be the application.** The Flask tutorial's layout keeps a
+  factory in `flaskr/__init__.py` — `def create_app():` — and has no `app.py` anywhere.
+  When a package offers no conventional entry file, its `__init__.py` is read, and counted
+  only if it *makes* the application: a module-level `app = Flask(...)`, or a
+  `create_app`/`make_app` with no argument lacking a default. An `__init__.py` that merely
+  imports flask for a Blueprint is not an entry point, and neither is a factory that needs
+  an argument nobody here can supply. The plan names the factory — `FLASK_APP=flaskr:create_app`,
+  meaningful since Flask 1.0 — unless there is a module-level app, which Flask would take
+  first anyway. `app = Flask(...)` *indented* inside the factory is a local and is no
+  longer reported as the module's app object.
+
 Where the entry lives decides where the plan runs. `app/app.py` imports its siblings as
 `from routes.task_route import ...`, which only resolves with `app/` as the working
 directory — so `workingDirectory` is the entry's directory and `installDirectory` stays

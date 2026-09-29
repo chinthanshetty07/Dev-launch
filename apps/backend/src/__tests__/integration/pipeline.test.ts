@@ -102,6 +102,21 @@ describe('Full pipeline — analyse, plan, gate, run', () => {
     await sessions.cancel(s.id);
   }, 600_000);
 
+  it('runs a Flask application built by a factory in its package', async () => {
+    // The Flask tutorial's layout: `flaskr/__init__.py` holds create_app and there is no
+    // app.py. It went to a model on every run until the rule could see the factory.
+    sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/python-flask-factory` });
+    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED], 300_000);
+
+    expect(s.state, JSON.stringify(s.failure)).toBe(ExecutionState.READY);
+    expect(s.plan?.planSource).toBe('rule-based');
+    const res = await fetch(s.url!);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('flask factory fixture');
+    await sessions.cancel(s.id);
+  }, 600_000);
+
   it('asks which package to run rather than guessing, then runs the chosen one', async () => {
     sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-monorepo-ambiguous` });

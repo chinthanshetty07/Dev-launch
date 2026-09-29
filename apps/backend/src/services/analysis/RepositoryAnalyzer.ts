@@ -104,10 +104,27 @@ const DB_INIT_SCRIPTS = [
   'create_tables.py', 'create_table.py', 'setup_db.py', 'make_db.py',
 ];
 
-function detectPythonFramework(source: string): Pick<PythonEntry, 'framework' | 'appVariable'> {
+/**
+ * A Flask factory Flask itself would call: named `create_app` or `make_app`, defined at
+ * module level, and taking no argument without a default. `def create_app(test_config=None)`
+ * qualifies — the tutorial's own signature; `def create_app(config)` does not, because
+ * nothing here knows what to pass it.
+ */
+function flaskFactory(source: string): string | undefined {
+  const m = /^def\s+(create_app|make_app)\s*\(([^)]*)\)/m.exec(source);
+  if (!m) return undefined;
+  const params = m[2]!.split(',').map((p) => p.trim()).filter(Boolean);
+  const callable = params.every((p) => p.includes('=') || p.startsWith('*'));
+  return callable ? m[1] : undefined;
+}
+
+function detectPythonFramework(source: string): Pick<PythonEntry, 'framework' | 'appVariable' | 'appFactory'> {
   if (/^\s*from\s+flask\s+import|^\s*import\s+flask/m.test(source)) {
-    const app = /^\s*(\w+)\s*=\s*Flask\s*\(/m.exec(source);
-    return { framework: 'flask', appVariable: app?.[1] };
+    // Module level only. `app = Flask(__name__)` indented inside `create_app` is a local,
+    // and reporting it as the app object named something Flask cannot import.
+    const app = /^(\w+)\s*=\s*Flask\s*\(/m.exec(source);
+    const factory = flaskFactory(source);
+    return { framework: 'flask', appVariable: app?.[1], ...(factory ? { appFactory: factory } : {}) };
   }
   if (/^\s*from\s+fastapi\s+import|^\s*import\s+fastapi/m.test(source)) {
     const app = /^\s*(\w+)\s*=\s*FastAPI\s*\(/m.exec(source);
@@ -719,6 +736,27 @@ export class RepositoryAnalyzer {
             conventional: true,
             ...detected,
           });
+        }
+        // The package itself, when it is the application. The Flask tutorial keeps its
+        // factory in `flaskr/__init__.py` and has no `app.py` anywhere, so the names above
+        // found nothing and the repository went to a model — which planned it three ways
+        // in four runs, one of them with a server it never installed. Counted only when the
+        // file *makes* the application: a module-level `app = Flask(...)` or a factory
+        // Flask can call. An `__init__.py` that merely imports flask — a Blueprint, an
+        // extension — is not an entry point.
+        if (out.length === 0) {
+          const init = await readCapped(join(dir, pkg.name, '__init__.py'));
+          const detected = init === null ? null : detectPythonFramework(init);
+          const makesApp = detected?.framework === 'flask'
+            && (detected.appFactory !== undefined || detected.appVariable !== undefined);
+          if (detected && makesApp) {
+            out.push({
+              file: parent === '.' ? `${pkg.name}/__init__.py` : `${parent}/${pkg.name}/__init__.py`,
+              module: pkg.name,
+              conventional: true,
+              ...detected,
+            });
+          }
         }
         if (out.length) return out;
       }

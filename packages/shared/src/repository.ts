@@ -289,6 +289,15 @@ export interface PythonEntry {
   dir?: string;
   /** Name of the module-level app object, when one is obvious. */
   appVariable?: string;
+  /**
+   * A Flask application factory that can be called with no arguments — `create_app` or
+   * `make_app` — when the module builds its app in a function and not at module level.
+   *
+   * The Flask tutorial's own shape: `flaskr/__init__.py` holds `def create_app():` and
+   * nothing at module level is an application, so `FLASK_APP=flaskr` works only through
+   * Flask's discovery and `flaskr:create_app` says it outright.
+   */
+  appFactory?: string;
 }
 
 export interface EnvExampleVar {
