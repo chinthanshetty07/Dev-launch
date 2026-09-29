@@ -1,0 +1,11 @@
+{
+  "name": "node-needs-mysql",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "mysql2": "file:./vendor/mysql2"
+  }
+}

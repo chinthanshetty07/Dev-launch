@@ -1,0 +1,6 @@
+{
+  "name": "mysql2",
+  "version": "0.0.0-fixture",
+  "description": "Stands in for the mysql2 driver. Only its name matters: it is how the analyzer knows this application needs MySQL.",
+  "main": "index.js"
+}

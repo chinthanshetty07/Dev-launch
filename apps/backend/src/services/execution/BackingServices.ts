@@ -83,7 +83,11 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     user: '999:999',
     dataPaths: ['/var/lib/mysql', '/var/run/mysqld'],
     env: (database) => [`MYSQL_ROOT_PASSWORD=${PASSWORD}`, `MYSQL_DATABASE=${database}`],
-    readyCheck: ['mysqladmin', 'ping', '-h', '127.0.0.1', `-p${PASSWORD}`],
+    // As root, named. The check runs as the container's own user, `mysql`, and without
+    // `-u` mysqladmin connects as that user, is refused, and never prints "mysqld is
+    // alive" — so no MySQL was ever reported ready, while the server logged "ready for
+    // connections" and the application connected to it without trouble.
+    readyCheck: ['mysqladmin', 'ping', '-h', '127.0.0.1', '-u', 'root', `-p${PASSWORD}`],
     defaultEnvKey: 'MYSQL_URL',
     url: (database) => `mysql://root:${PASSWORD}@mysql:3306/${database}`,
   },

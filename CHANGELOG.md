@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-09-29 — MySQL is reported ready when it is
+
+No MySQL had ever been reported ready. The readiness check was `mysqladmin ping` run
+inside the database container, as its own user `mysql`, with no `-u` — so mysqladmin
+connected as `mysql`, was refused (`Access denied for user 'mysql'@'127.0.0.1'`), and
+never printed `mysqld is alive`. The run waited out the full budget, logged "mysql did not
+become ready; the project will fail" beside mysqld's own "ready for connections", and
+where the compose file named an image (`fastify/demo`'s `mysql:8.4`) fell back to the
+stock one to fail the same check again. The application then connected without trouble:
+the database had been fine all along. The check has been wrong since MySQL provisioning
+was introduced (`4a7ea9d`); nothing ran it against a real MySQL.
+
+The check now names `-u root`, the account the container is created with.
+
+- **Verified by hand first:** in `mysql:8` under the same user, the old command printed
+  `Access denied`; with `-u root`, `mysqld is alive`.
+- **Fixture:** `node-needs-mysql`, which depends on a stand-in named `mysql2` (detection
+  reads only the name) and answers after reading MySQL's handshake packet. Before: READY
+  after a 90-second wait, with the provisioner reporting the database dead. After: the
+  provisioner reports it ready, and the application reads `mysql 8.4.11` from it.
+
 ## 2026-09-29 — A Create React App dev server survives having no stdin
 
 `ahfarmer/calculator` printed "Starting the development server..." and ended `COMPLETED`

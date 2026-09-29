@@ -63,6 +63,7 @@ describe('a single service that needs a database', () => {
     await docker.ping();
     await docker.ensureImage('devlaunch/python:3.12');
     await docker.ensureImage('postgres:16');
+    await docker.ensureImage('mysql:8');
   }, 600_000);
 
   afterAll(async () => {
@@ -96,5 +97,27 @@ describe('a single service that needs a database', () => {
     // rather than as an unexplained container.
     expect(session.backing?.runs.map((r) => r.kind)).toEqual(['postgres']);
     expect(session.backing?.runs[0]?.ready).toBe(true);
+  }, 600_000);
+
+  it('starts MySQL for it and knows that it did (fastify/demo)', async () => {
+    // The readiness check ran `mysqladmin ping` as the container's own user, `mysql`,
+    // which MySQL denies — so no MySQL was ever reported ready. The run waited out the
+    // budget, said "mysql did not become ready; the project will fail", and for a named
+    // image fell back to another one that failed the same check.
+    const sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-needs-mysql` });
+
+    const state = await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED]);
+    const session = sessions.get(s.id)!;
+    const log = session.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(state, log.slice(-3000)).toBe(ExecutionState.READY);
+
+    expect(session.backing?.runs[0]?.ready, log.slice(-3000)).toBe(true);
+    expect(log).toMatch(/mysql is accepting connections/);
+    expect(log).not.toMatch(/did not become ready|did not start under the sandbox profile/);
+
+    // The application read MySQL's own greeting through the URL it was handed.
+    const res = await fetch(session.url!);
+    expect(await res.text()).toMatch(/^mysql 8\./);
   }, 600_000);
 });
