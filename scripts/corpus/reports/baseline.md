@@ -2,6 +2,8 @@
 
 Backend `c68f255` (stale: false), egress enforced, 2026-09-29.
 
+The code measured is `c68f255` exactly. The three repositories behind a configuration gate were re-run with the gate skipped by the same process, so both runs use the same method.
+
 **26 / 40 READY** (65%), 5 planned by the model, 10 with a model repair, 49 min total.
 
 | Outcome | Count |

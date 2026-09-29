@@ -12,6 +12,9 @@
  *   node scripts/corpus/run.mjs --name baseline      # reports/baseline.{json,md}
  *   node scripts/corpus/run.mjs --report-only --name baseline   # re-render with new labels
  *
+ * Failures are labelled by hand in `labels.<name>.json`: DEVLAUNCH_BUG, REPO_FAILURE or
+ * UNSUPPORTED_BY_CONTRACT, each with the reason.
+ *
  * It refuses to run against a stale backend: a result measured against code that is not
  * the working tree is not a result. Pass --allow-stale to override, and the report says so.
  */
@@ -261,6 +264,7 @@ function render(report, labels) {
   const lines = [];
   lines.push(`# Corpus report — ${report.name}`, '');
   lines.push(`Backend \`${report.backend.running?.slice(0, 7)}\` (stale: ${report.backend.stale}), egress ${report.backend.egress}, ${report.startedAt}.`);
+  if (report.note) lines.push('', report.note);
   lines.push('');
   lines.push(`**${pass} / ${rs.length} READY** (${Math.round((100 * pass) / rs.length)}%)` +
     (partial ? `, ${partial} partially ready` : '') +
@@ -303,7 +307,9 @@ function render(report, labels) {
 
 async function main() {
   const corpus = JSON.parse(await readFile(join(HERE, 'corpus.json'), 'utf8'));
-  const labels = JSON.parse(await readFile(join(HERE, 'labels.json'), 'utf8').catch(() => '{}'));
+  // Per report: a failure's label can change between runs — a fix removes one blocker and
+  // the next one down belongs to the repository or to the contract.
+  const labels = JSON.parse(await readFile(join(HERE, `labels.${NAME}.json`), 'utf8').catch(() => '{}'));
   const outDir = join(HERE, 'reports');
   await mkdir(outDir, { recursive: true });
   const jsonPath = join(outDir, `${NAME}.json`);

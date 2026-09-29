@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-09-29 — The corpus after these fixes: 30 of 40
+
+`reports/after.md`, measured against `c68f255` plus the ten changes above (git tree
+`6581a05`), by the same runner and the same gate-skipping method as the baseline:
+
+| | Baseline | After |
+|---|---|---|
+| READY | **26 / 40** | **30 / 40** |
+| planned by the model | 5 | 2 |
+| with a model repair | 10 | 5 |
+| wall clock | 49 min | 31 min |
+| failures labelled `DEVLAUNCH_BUG` | 9 | 0 |
+
+Newly READY: `nuxt/starter` (ref selection), `sveltejs/realworld` (argument forwarding,
+then the deterministic Node 22 move that the engine-error signature now triggers),
+`jellydn/fastify-starter` (bind variable), `dan5py/turborepo-shadcn-ui` (root install).
+Both MDN static sites stay READY and are now planned by rule. **No regressions:** every
+repository READY in the baseline is READY after.
+
+Two fixes removed a first blocker and uncovered a second, and both second blockers are
+the contract's rather than DevLaunch's. `ahfarmer/calculator`'s dev server now stays up
+and compiles — and webpack 4 fails under Node ≥ 17's OpenSSL 3, whose workaround is a
+`NODE_OPTIONS` the validator refuses by design. `angular-realworld`'s `ng serve` now
+starts, and cannot bundle a stylesheet from a git submodule, which intake does not fetch
+by design. The remaining ten failures are seven outside the contract and three the
+repositories' own; each is named, with its evidence, in the report.
+
+Labels now live per report (`labels.baseline.json`, `labels.after.json`), because the
+same repository's label changes when a fix exposes the next thing down.
+
 ## 2026-09-29 — A static site is planned by rule
 
 `mdn/beginner-html-site-styled` and `-scripted` are HTML, CSS and a script with no
@@ -236,7 +266,7 @@ stage, evidence line, repairs and duration, grouped by failure code and by label
 - It refuses to measure a stale backend (`/api/health` `build.stale`).
 - A READY whose URL does not answer is counted `FALSE_READY`, never a pass: the runner
   requests every URL a session hands out.
-- `labels.json` classifies each failure `DEVLAUNCH_BUG`, `REPO_FAILURE` or
+- `labels.<report>.json` classifies each failure `DEVLAUNCH_BUG`, `REPO_FAILURE` or
   `UNSUPPORTED_BY_CONTRACT`, with the reason; `--report-only` re-renders with new labels.
 - `logs.mjs` prints a corpus session's log from the backend that ran it; `plan.mts` runs
   the analyzer and planner on a local clone, with no server and no containers.
