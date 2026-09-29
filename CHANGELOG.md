@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-29 — The corpus runner no longer overwrites a report
+
+The reproduction command given for the after-run, `run.mjs --name after`, wrote into the
+committed report; run later while another session held the slot, it replaced two results
+with harness errors and dropped the report's note. A full run into an existing name is
+now refused without `--overwrite`, and a subset re-run keeps the note. The committed
+report was restored.
+
 ## 2026-09-29 — A runtime too new is named, and not answered with a newer one
 
 With `CI=true`, `ahfarmer/calculator`'s dev server stays up long enough to compile, and

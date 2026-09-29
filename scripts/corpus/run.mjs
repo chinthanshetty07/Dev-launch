@@ -9,7 +9,8 @@
  *
  *   node scripts/corpus/run.mjs                      # everything
  *   node scripts/corpus/run.mjs --only mdn/todo-react,nestjs/typescript-starter
- *   node scripts/corpus/run.mjs --name baseline      # reports/baseline.{json,md}
+ *   node scripts/corpus/run.mjs --name baseline      # reports/baseline.{json,md}; refuses
+ *                                                    # an existing name without --overwrite
  *   node scripts/corpus/run.mjs --report-only --name baseline   # re-render with new labels
  *
  * Failures are labelled by hand in `labels.<name>.json`: DEVLAUNCH_BUG, REPO_FAILURE or
@@ -330,9 +331,19 @@ async function main() {
   const entries = corpus.repos.filter((e) => ONLY.length === 0 || ONLY.includes(e.repo));
   // Merged into an existing report of the same name, so a subset can be re-run in place.
   const previous = JSON.parse(await readFile(jsonPath, 'utf8').catch(() => 'null'));
+  // A full run into a name that exists replaces a measurement, and reports are committed:
+  // `--name after` once overwrote the committed after-run with a half-finished one. A
+  // subset re-run (--only) is the intended way to update a report in place.
+  if (previous && ONLY.length === 0 && !flag('overwrite')) {
+    throw new Error(
+      `reports/${NAME}.json already exists. Choose a new --name, re-run part of it with ` +
+        '--only, or pass --overwrite to replace it.',
+    );
+  }
   const report = {
     name: NAME,
     startedAt: previous?.startedAt ?? new Date().toISOString(),
+    ...(previous?.note ? { note: previous.note } : {}),
     // A subset re-run keeps the original header when the same process measured it: the
     // working tree may have moved on, and `stale` then describes the tree, not the run.
     backend:
