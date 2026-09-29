@@ -200,6 +200,142 @@ describe('HTTP API', () => {
   });
 });
 
+/**
+ * A repository URL the intake will refuse should be refused by the request that submits
+ * it, not four steps later inside the pipeline.
+ *
+ * `GitManager` has always rejected a non-GitHub host, a credentialed URL, plain http and
+ * an SSH remote. What it did not do was refuse them *to the caller*: the route answered
+ * 201, a session was created, and the rejection arrived asynchronously. A typo looked
+ * accepted — and with `maxSessions: 1` it held the only slot until it finished failing,
+ * so the next real launch was told "a session is already running".
+ */
+/**
+ * `/api/health` returned the literal `true`. That is a liveness check wearing a health
+ * check's name: it could not say "Docker is unreachable" or "the egress policy is
+ * missing", and both happened during a single afternoon's verification.
+ */
+describe('health that can be unhealthy', () => {
+  const start = async (over: Partial<Parameters<typeof createApp>[0]> = {}) => {
+    const sessions = new SessionManager(stubExec(failed), { analyzer: stubAnalyzer, planner: stubPlanner });
+    const server = createServer(
+      createApp({ sessions, fixturesDir: FIXTURES, staticDirs: [], ...over }),
+    );
+    await new Promise<void>((r) => server.listen(0, r));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const body = (await (await fetch(`${base}/api/health`)).json()) as {
+      ok: boolean; problems?: string[]; egress?: string;
+    };
+    await sessions.shutdown();
+    await new Promise<void>((r) => server.close(() => r()));
+    return body;
+  };
+
+  it('names Docker when Docker is the thing that is wrong', async () => {
+    const body = await start({ docker: { ping: async () => { throw new Error('connect ENOENT /var/run/docker.sock'); } } });
+    expect(body.ok).toBe(false);
+    expect(body.problems?.join(' ')).toMatch(/Docker is not reachable/);
+    expect(body.problems?.join(' '), 'and quote what Docker said').toMatch(/ENOENT/);
+  });
+
+  it('names the egress policy when that is the thing that is wrong', async () => {
+    const body = await start({
+      docker: { ping: async () => undefined },
+      egress: () => ({ verdict: 'absent' as const, detail: 'A container reached 169.254.169.254.' }),
+    });
+    expect(body.ok).toBe(false);
+    expect(body.problems?.join(' ')).toMatch(/169\.254\.169\.254/);
+  });
+
+  it('is ok when nothing is wrong', async () => {
+    const body = await start({
+      docker: { ping: async () => undefined },
+      egress: () => ({ verdict: 'enforced' as const, detail: 'fine' }),
+    });
+    expect(body.ok).toBe(true);
+    expect(body.problems).toBeUndefined();
+    expect(body.egress).toBe('enforced');
+  });
+
+  it('answers even when Docker hangs instead of refusing', async () => {
+    // The realistic bad case, and the one an unbounded `ping()` turns into a second
+    // outage: a daemon that accepts the connection and never replies. Health exists to
+    // say "Docker is broken"; hanging is the one answer it must not give.
+    const body = await start({ docker: { ping: () => new Promise(() => {}) } });
+    expect(body.ok).toBe(false);
+    expect(body.problems?.join(' ')).toMatch(/timed out/);
+  }, 15_000);
+
+  it('does not report a fault the probe has not established yet', async () => {
+    // The probe is asynchronous. A health request arriving first must not claim a
+    // problem that has not been observed — a warning that fires on "not yet" is a
+    // warning people learn to ignore.
+    const body = await start({
+      docker: { ping: async () => undefined },
+      egress: () => ({ verdict: 'unknown' as const, detail: 'not checked yet' }),
+    });
+    expect(body.ok).toBe(true);
+    expect(body.egress).toBe('unknown');
+  });
+});
+
+describe('a repository URL the intake will refuse', () => {
+  let server: Server;
+  let base: string;
+  let sessions: SessionManager;
+
+  beforeAll(async () => {
+    sessions = new SessionManager(stubExec(failed), { analyzer: stubAnalyzer, planner: stubPlanner });
+    server = createServer(createApp({ sessions, fixturesDir: FIXTURES, staticDirs: [] }));
+    await new Promise<void>((r) => server.listen(0, r));
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  });
+
+  afterAll(async () => {
+    await sessions.shutdown();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  const submit = (repoUrl: string) =>
+    fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoUrl }),
+    });
+
+  it('is refused by the request itself, with the reason the intake gives', async () => {
+    const cases: [string, RegExp][] = [
+      ['https://gitlab.com/a/b', /Only github\.com is supported/],
+      ['https://user:pw@github.com/a/b', /credentials are rejected/],
+      ['http://github.com/a/b', /Only https:\/\/ is supported/],
+      ['git@github.com:a/b.git', /SSH-style URLs are not supported/],
+    ];
+
+    for (const [url, reason] of cases) {
+      const res = await submit(url);
+      expect(res.status, url).toBe(400);
+      const body = (await res.json()) as { error: string; code: string };
+      expect(body.error, url).toMatch(reason);
+      expect(body.code, url).toBe('UNSUPPORTED_PROJECT');
+    }
+  });
+
+  it('creates no session, so the only slot stays free', async () => {
+    // The half that actually bit: a rejected URL used to occupy `maxSessions: 1` for as
+    // long as it took to fail, and the next launch was refused for the wrong reason.
+    const before = sessions.list().length;
+    await submit('https://gitlab.com/a/b');
+    expect(sessions.list().length, 'a refused URL must not create a session').toBe(before);
+  });
+
+  it('still accepts a URL the intake allows', async () => {
+    // The check must not become a second, stricter gate that rejects what the pipeline
+    // would have run.
+    const res = await submit('https://github.com/owner/repo');
+    expect(res.status).toBe(201);
+  });
+});
+
 describe('project controls over HTTP', () => {
   let server: Server;
   let base: string;

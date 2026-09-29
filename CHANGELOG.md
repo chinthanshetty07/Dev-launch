@@ -1,5 +1,116 @@
 # Changelog
 
+## 2026-09-29 — Closing the readiness findings
+
+F1–F7 closed, F8 half-closed by decision. `docs/production-readiness.md` carries each
+finding's status; this records the mechanisms and what an independent verifier caught.
+
+### 1. The API answered on the local network
+
+`server.ts` called `http.listen(port, r)` with no host, so Node bound `::`. DevLaunch has
+no authentication — deliberately, because it is a single-user local tool — and
+`POST /api/sessions` clones a URL and runs it. Those are only compatible while the port
+is unreachable from elsewhere, and it was reachable.
+
+`bindHost()` defaults to `127.0.0.1`; `DEVLAUNCH_HOST` widens it and startup warns when
+it is wider. The log socket shares the listener, so it is covered by the same change.
+
+- **Verified:** `TCP 127.0.0.1:3939 (LISTEN)`; `curl http://192.168.0.2:3939/api/health`
+  → `000` (refused), where it returned `200` before; `curl localhost:3939` → `200`.
+- **Known limitation:** deliberately not in `config/index.ts`. That module is evaluated
+  before `loadDotEnv()`, so a value read there honours an exported shell variable and
+  silently ignores the same line in `.env`. Acceptable for a timeout, not for a security
+  default. The same trap applies to every `intEnv` constant and is recorded as open.
+
+### 2. A refused URL was accepted first
+
+The route passed `body.repoUrl` straight to `launch()`; the rejection arrived
+asynchronously. A typo looked accepted and held the only session slot until it finished
+failing. `normaliseRepoUrl` now runs in the route, before the concurrency check.
+
+- **Verified:** `POST {"repoUrl":"https://gitlab.com/a/b"}` →
+  `400 {"error":"Only github.com is supported, got \"gitlab.com\".","code":"UNSUPPORTED_PROJECT"}`,
+  and `sessions.list()` unchanged.
+
+### 3. Cache volumes were never reaped
+
+Teardown removed containers; nothing removed volumes. 99 had accumulated — 5.116 GB, 98%
+reclaimable. `CleanupManager.sweepStaleCaches` removes those older than
+`DEVLAUNCH_CACHE_MAX_AGE_DAYS` (14) at startup, filtered on DevLaunch's own cache label.
+
+- **Impact:** existing volumes age out rather than being deleted retroactively. Reclaim
+  now with `docker volume prune --filter label=com.devlaunch.cache`.
+- **Known limitation:** an unparseable `CreatedAt` is treated as brand new, so a volume
+  with a bad timestamp is spared rather than deleted. Safe direction, deliberately.
+
+### 4. The egress policy was assumed, not checked
+
+`docs/limitations.md` said the iptables rules "do not survive recreating that VM". They
+do not survive restarting it either, and nothing noticed. `EgressProbe` starts one
+container on `devlaunch-net` and tries to reach 169.254.169.254; reaching it proves the
+policy is absent. Behaviour rather than reading iptables, because the rules live in the
+VM and the backend runs on the host.
+
+- **Verified:** `/api/health` → `"egress":"enforced"` against the live network, no
+  container left behind.
+- **Known limitation:** re-probed at most every five minutes, and only when something
+  reads the verdict. A policy that vanishes is noticed on the next read, not instantly.
+
+### 5. Health could not be unhealthy; failures went unrecorded
+
+`ok` was the literal `true`. It now names the broken dependency — Docker unreachable
+(bounded at 3s, because a wedged daemon is the realistic case) or the egress policy
+absent — and unhandled rejections are kept and surfaced there.
+
+### Testing
+
+- 814 → **858** backend, 63 frontend, 3 skipped, zero failures. Baseline recorded before
+  any edit and matched after.
+- Mutation-tested: 23 mutations across the bind, the route, the reaper, the probe, health
+  and the AI boundary. Six survived initially and each forced a better test.
+- `./scripts/verify-readiness.sh` → 26 passed, 0 failed. `STRICT=1` exits 1, correctly
+  reporting F8's deliberate partial.
+- Not verified: the CI workflow has never run — GitHub Actions is not enabled on this
+  repository, so `.github/workflows/ci.yml` is asserted by reading, not by execution.
+
+### What an independent verifier caught, after I thought it was done
+
+Kept because the misses are the useful part.
+
+- **Three AI-boundary tests were named for a control they never exercised.**
+  `bash -c "whoami"` was refused by the *quote* rule, the pipe case by the *pipe*, the
+  repair case by the *semicolon*. Deleting `ALLOWED_BINARIES` entirely left all but one
+  green. Rewritten with metacharacter-free commands and assertions on the message; three
+  now go red when the allowlist is gutted.
+- **The egress probe could report a false all-clear.** Absence of the `REACHED` sentinel
+  was read as "blocked", so a missing binary, a failed network attach or an unreadable
+  log all produced `enforced`. Both outcomes are spoken aloud now, and silence is
+  `unknown`.
+- **The probe's container bypassed every hardening invariant the project asserts** — no
+  `CapDrop`, no read-only rootfs, running as root: the one unhardened container on the
+  machine, created by the code whose job is hardening. It uses `buildHostConfig` now.
+- **`DEVLAUNCH_CACHE_MAX_AGE_DAYS=0` did not disable the reaper.** `intEnv` substitutes
+  its default for anything `<= 0`, so the documented escape hatch quietly meant fourteen
+  days, and the log line hardcoded "14" regardless of the setting.
+- **The rejection handler made crashes quieter, not more durable.** Installing an
+  `unhandledRejection` listener suppresses Node's default of printing the stack and
+  exiting; the replacement was one `console.error`. Now bounded, kept, and surfaced on
+  `/api/health`, with the trade stated rather than implied.
+- **`STRICT=1` was dead code.** The counter it read stopped being incremented when F1
+  closed, so "STRICT exits 0" was true because the flag did nothing.
+- **The script's only runtime bind check skipped whenever nothing was listening** —
+  which is always, in CI, where it runs. It starts a server to find out now.
+
+### Known open items, deliberately not addressed
+
+- **Structured logging and counters (the rest of F8).** Both need a dependency on a
+  project that hand-wrote a six-line `.env` loader rather than take one. Decided with
+  the user; `STRICT=1` reports it as not fully closed.
+- **`config/index.ts` ignores `.env`.** Every `intEnv` constant honours an exported
+  variable and silently ignores the file. Found while fixing F1, outside its scope.
+- **Supply-chain scanning, cache poisoning, startup with Docker absent.** Named in the
+  report's "Not examined" section; still not examined.
+
 ## 2026-09-28 — Production-readiness verification
 
 No behavioural change to DevLaunch. This entry records a verification and what it found,

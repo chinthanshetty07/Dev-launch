@@ -1,0 +1,85 @@
+# Two jobs, split by what they need.
+#
+# `check` needs nothing but Node and runs on every push: typecheck plus the unit suites,
+# about thirty seconds. `integration` needs a Docker daemon and DevLaunch's own runner
+# images, takes about six minutes, and runs where that cost is worth paying.
+#
+# The runner images are built in the job rather than pulled or cached, so the Dockerfiles
+# are tested too — they are the thing that broke last time Node's bundled tooling moved.
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Nightly, so the integration suite runs even on a quiet week.
+    - cron: '0 3 * * *'
+
+jobs:
+  check:
+    name: typecheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: |
+          for pkg in packages/shared apps/backend apps/frontend; do
+            (cd "$pkg" && ./node_modules/.bin/tsc --noEmit)
+          done
+
+      - name: backend unit tests
+        run: cd apps/backend && ./node_modules/.bin/vitest run --exclude '**/integration/**'
+
+      - name: frontend tests
+        run: cd apps/frontend && ./node_modules/.bin/vitest run
+
+      - name: secret scan
+        # Five API keys have been pasted into chat transcripts during development, and
+        # the only check that has ever run is `git log -S 'gsk_'` — one prefix, history
+        # only. This is the general case that check is not.
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  integration:
+    name: integration tests against real Docker
+    # Pull requests and the nightly run. Every push would spend six minutes to re-prove
+    # what the previous push proved.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: build the runner images
+        run: ./scripts/build-runner-images.sh
+
+      - name: full suite
+        run: cd apps/backend && ./node_modules/.bin/vitest run
+
+      - name: nothing was left behind
+        # Container residue is a real failure mode here — teardown has regressed before —
+        # and this is the cheapest check that exists for it. Volumes too, now that
+        # something reaps them.
+        run: |
+          containers=$(docker ps -a --filter label=com.devlaunch.managed -q | wc -l | tr -d ' ')
+          test "$containers" -eq 0 || { echo "$containers container(s) left behind"; exit 1; }
+
+      - name: the readiness report is still accurate
+        run: SKIP_TESTS=1 ./scripts/verify-readiness.sh

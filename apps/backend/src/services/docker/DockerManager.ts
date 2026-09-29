@@ -6,6 +6,7 @@ import Dockerode from 'dockerode';
 import tarFs from 'tar-fs';
 import type { ServiceStats } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
+import { buildHostConfig } from './ContainerSecurity.js';
 
 /** The fields of Docker's stats payload this uses; dockerode types it as `unknown`. */
 interface DockerStats {
@@ -110,6 +111,96 @@ export class DockerManager {
         Labels: { [config.docker.managedLabel]: 'true', [config.docker.cacheLabel]: 'true' },
       });
     }
+  }
+
+  /**
+   * Cache volumes DevLaunch created, with when they were made.
+   *
+   * Filtered on the cache label rather than listed and matched by name: the label is
+   * what `ensureVolume` promises, a name prefix is a convention, and deleting somebody
+   * else's volume because it happened to start with `devlaunch-` is not a mistake worth
+   * risking.
+   */
+  async listCacheVolumes(): Promise<{ name: string; createdAt: number }[]> {
+    const { Volumes } = await this.docker.listVolumes({
+      filters: { label: [`${config.docker.cacheLabel}=true`] },
+    });
+    return (Volumes ?? []).map((v) => ({
+      name: v.Name,
+      // Docker reports RFC3339. A volume whose timestamp cannot be read is treated as
+      // brand new, so an unparseable date can only ever spare it, never delete it.
+      createdAt: Date.parse((v as { CreatedAt?: string }).CreatedAt ?? '') || Date.now(),
+    }));
+  }
+
+  /**
+   * Whether a throwaway container on a network can open a TCP connection to an address.
+   *
+   * Exists for one caller — `probeEgress` — and phrased as a question about the network
+   * rather than about the policy, because that is all Docker can answer. The container
+   * is removed whatever happens, including when the connect hangs, which is the expected
+   * outcome when the policy is working.
+   */
+  async canReachFromNetwork(
+    image: string,
+    networkName: string,
+    host: string,
+    port: number,
+    timeoutMs = 3000,
+    /** `null` when the probe produced no verdict — see the sentinels below. */
+  ): Promise<boolean | null> {
+    // Both outcomes are spoken aloud. Inferring "blocked" from the *absence* of
+    // "REACHED" is what makes a probe that never ran look like a clean bill of health:
+    // a missing binary, a failed network attach or an unreadable log all produce no
+    // output, and silence would have been read as safety.
+    const script =
+      `const s=require('net').connect(${port},'${host}');` +
+      `s.on('connect',()=>{console.log('DEVLAUNCH_REACHED');process.exit(0)});` +
+      `s.on('error',()=>{console.log('DEVLAUNCH_BLOCKED');process.exit(0)});` +
+      `setTimeout(()=>{console.log('DEVLAUNCH_BLOCKED');process.exit(0)},${timeoutMs});`;
+
+    const container = await this.docker.createContainer({
+      Image: image,
+      Cmd: ['node', '-e', script],
+      Labels: { [config.docker.managedLabel]: 'true' },
+      HostConfig: {
+        // The same confinement every other container gets. A probe that checks the
+        // sandbox while running outside it would be the one unhardened container on the
+        // machine, created by the code whose job is hardening — and the readiness
+        // script greps `ContainerSecurity.ts`, so it could not have seen the exception.
+        ...buildHostConfig({ sessionId: 'egress-probe' }),
+        NetworkMode: networkName,
+        AutoRemove: false,
+      },
+      // Non-root, as everywhere else. The runner images create uid 1000 for this.
+      User: '1000:1000',
+    });
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await container.start();
+      // A little longer than the script's own timeout, so the verdict comes from the
+      // script rather than from us giving up on it.
+      await Promise.race([
+        container.wait(),
+        new Promise((r) => {
+          timer = setTimeout(r, timeoutMs + 2000);
+        }),
+      ]);
+      const output = (await container.logs({ stdout: true, stderr: true })).toString('utf8');
+      if (output.includes('DEVLAUNCH_REACHED')) return true;
+      if (output.includes('DEVLAUNCH_BLOCKED')) return false;
+      // It never spoke. Not evidence either way, and the caller must not read it as one.
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+      await container.remove({ force: true }).catch(() => undefined);
+    }
+  }
+
+  /** Remove one volume. A volume still in use by a container refuses, and says so. */
+  async removeVolume(name: string): Promise<void> {
+    await this.docker.getVolume(name).remove();
   }
 
   async createContainer(opts: CreateContainerOptions): Promise<Dockerode.Container> {

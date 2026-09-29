@@ -77,6 +77,51 @@ export class CleanupManager {
     return CleanupManager.sweep(docker, 'all');
   }
 
+  /**
+   * Remove cache volumes nothing has used for a while.
+   *
+   * Teardown removes containers. Nothing removed volumes, and nothing ever had — a
+   * production-readiness check found **99** of them, 5.1 GB, 98% reclaimable, on a tool
+   * whose job is cloning arbitrary repositories. One of them had been created by that
+   * check's own smoke test. Unbounded disk on a 100 GB VM is a slow leak with a
+   * deadline.
+   *
+   * By age, not by size. Age is predictable and explicable to somebody reading the log
+   * line; a size budget needs bookkeeping this tool does not keep and would evict the
+   * wrong thing on the day it mattered.
+   *
+   * Startup only, and for the same reason `sweepAllOrphans` is: a volume in use is a
+   * volume this process might be about to mount, and at startup it is by definition
+   * not mid-run. Docker refuses to remove a volume a container still holds, which is
+   * the backstop rather than the plan.
+   */
+  static async sweepStaleCaches(
+    docker: DockerManager,
+    maxAgeMs: number,
+    /** Injectable so the boundary is testable; two calls to `Date.now()` never align. */
+    now: number = Date.now(),
+  ): Promise<number> {
+    if (maxAgeMs <= 0) return 0;
+    // `>=` rather than `>`: a cache exactly at the threshold is spared. Warm caches are
+    // why a repeat run takes six seconds instead of ninety, and nothing is gained by
+    // being eager at the boundary.
+    const cutoff = now - maxAgeMs;
+    let removed = 0;
+
+    for (const volume of await docker.listCacheVolumes()) {
+      if (volume.createdAt >= cutoff) continue;
+      try {
+        await docker.removeVolume(volume.name);
+        removed++;
+      } catch {
+        // In use, or gone between listing and removing. Both are fine: the next startup
+        // tries again, and a cache that cannot be removed costs disk rather than
+        // correctness.
+      }
+    }
+    return removed;
+  }
+
   private static async sweep(docker: DockerManager, scope: 'all' | 'instance'): Promise<number> {
     const managed = await docker.listManaged(scope);
     let removed = 0;

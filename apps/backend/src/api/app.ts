@@ -7,6 +7,7 @@ import { assertSafeRelativePath } from '../services/security/PathValidator.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 import { TERMINAL_STATES, type BackingView, type ServiceView } from '@devlaunch/shared';
 import { buildStamp } from '../services/build/BuildStamp.js';
+import { normaliseRepoUrl } from '../services/git/GitManager.js';
 
 export interface AppOptions {
   sessions: SessionManager;
@@ -15,6 +16,27 @@ export interface AppOptions {
   staticDirs: string[];
   /** The checkout to compare this process against. See `BuildStamp`. */
   repoRoot?: string;
+  /** Pinged for health. Absent in tests that do not care whether Docker is reachable. */
+  docker?: { ping(): Promise<unknown> };
+  /** The egress probe's latest verdict. See `EgressProbe`. */
+  egress?: () => { verdict: 'enforced' | 'absent' | 'unknown'; detail: string };
+  /** Failures nothing caught. See `recordUnhandled` — health is where they surface. */
+  recentErrors?: () => { at: number; detail: string }[];
+}
+
+/** Reject rather than hang. A health check that can block is not a health check. */
+async function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function positiveInt(raw: unknown, fallback: number): number {
@@ -120,9 +142,43 @@ export function createApp(opts: AppOptions): Express {
    * ones. Nothing could have said so, because nothing knew what it was running.
    */
   app.get('/api/health', async (_req, res) => {
+    // `ok` used to be the literal `true`, which is a liveness check pretending to be a
+    // health check: it could not say "Docker is unreachable" or "the egress policy is
+    // missing", and both happened during one afternoon's verification. A health endpoint
+    // that cannot be unhealthy answers no question worth asking.
+    const problems: string[] = [];
+
+    if (opts.docker) {
+      try {
+        // Bounded, because the failure this reports includes a daemon that has wedged
+        // without refusing. An unbounded `ping()` against one of those hangs the health
+        // request — turning the endpoint that exists to say "Docker is broken" into
+        // another thing that is broken.
+        await withTimeout(opts.docker.ping(), 3000, 'ping timed out after 3s');
+      } catch (err) {
+        problems.push(
+          `Docker is not reachable: ${err instanceof Error ? err.message : String(err)}. ` +
+            'Nothing can be launched until it is.',
+        );
+      }
+    }
+
+    // A step that failed with nothing to catch it. Not `ok: false` — the process is
+    // serving, and a past failure is not a present fault — but the first thing somebody
+    // checks when a session stopped moving, so it has to be visible here.
+    const errors = opts.recentErrors?.() ?? [];
+
+    const egress = opts.egress?.();
+    // `unknown` is not a problem. The probe is asynchronous and a health request that
+    // arrives first should not report a fault that has not been established.
+    if (egress?.verdict === 'absent') problems.push(egress.detail);
+
     res.json({
-      ok: true,
+      ok: problems.length === 0,
+      ...(problems.length > 0 ? { problems } : {}),
       sessions: opts.sessions.list().length,
+      ...(egress ? { egress: egress.verdict } : {}),
+      ...(errors.length > 0 ? { recentErrors: errors.slice(-5) } : {}),
       build: await buildStamp(opts.repoRoot ?? process.cwd()),
     });
   });
@@ -169,10 +225,29 @@ export function createApp(opts: AppOptions): Express {
       const readinessTimeoutMs = positiveInt(body.readinessTimeoutMs, 60_000);
 
       if (typeof body.repoUrl === 'string' && body.repoUrl.trim() !== '') {
-        const session = await opts.sessions.launch({
-          repoUrl: body.repoUrl.trim(),
-          readinessTimeoutMs,
-        });
+        const repoUrl = body.repoUrl.trim();
+
+        // Rejected here, not four steps later inside the pipeline.
+        //
+        // The same check ran either way — `GitManager` has always refused a non-GitHub
+        // host, a credentialed URL, plain http and an SSH remote. What it did not do is
+        // refuse them *to the caller*: the route answered 201, a session was created,
+        // and the rejection arrived asynchronously. So a typo looked accepted, and with
+        // `maxSessions: 1` it held the only slot until it finished failing.
+        //
+        // Before the concurrency check, because a malformed URL is malformed whatever
+        // else is running — "a session is already running" is the wrong answer to it.
+        try {
+          normaliseRepoUrl(repoUrl);
+        } catch (err) {
+          if (err instanceof SecurityRejection) {
+            res.status(400).json({ error: err.message, code: err.code });
+            return;
+          }
+          throw err;
+        }
+
+        const session = await opts.sessions.launch({ repoUrl, readinessTimeoutMs });
         res.status(201).json({ id: session.id, state: session.state });
         return;
       }

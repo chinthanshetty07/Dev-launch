@@ -2,6 +2,12 @@
 
 **Date:** 2026-09-28 · **Commit:** `4d4b434` · **Verdict: ready for what it is, after F1.**
 
+> **Update, 2026-09-29.** F1–F8 have since been closed or partially closed. Each heading
+> below carries its status and the change that closed it. The findings are kept in full
+> rather than deleted, because the reasoning is the part worth keeping, and a closed
+> finding with no record of what it was is not evidence that it was fixed.
+> `STRICT=1 ./scripts/verify-readiness.sh` now exits 0; it exited 1 when this was written.
+
 DevLaunch is a **single-user local developer tool**, and this report judges it as one —
 that framing was confirmed before any check ran. Every finding below names the command
 that produced it and shows the output. Where a claim is backed by source rather than a
@@ -124,7 +130,15 @@ Severity bands: **CRITICAL** (unauthenticated remote code execution), **HIGH**,
 **MEDIUM**, **LOW**. Graded for a local single-user tool; where that framing is what
 makes something minor, it says so.
 
-### F1 — CRITICAL — The API binds every interface, and so does the log socket
+### F1 — CRITICAL — ✅ **CLOSED 2026-09-29** — The API binds every interface, and so does the log socket
+
+> **Closed by** `bindHost()` in `server.ts`, defaulting to `127.0.0.1`; `DEVLAUNCH_HOST`
+> widens it and startup warns when it is wider. Observed after the change:
+> `TCP 127.0.0.1:3939 (LISTEN)`, `curl http://192.168.0.2:3939/api/health` → connection
+> refused, `curl localhost:3939/api/health` → 200. The log socket shares the listener, so
+> it is covered by the same change. Deliberately **not** in `config/index.ts`: that module
+> is evaluated before `loadDotEnv()`, so a value read there would honour an exported
+> variable and silently ignore the same line in `.env`.
 
 DevLaunch has no authentication. For a local tool that is defensible — *if* it is
 reachable only from the machine it runs on. It is not:
@@ -167,7 +181,13 @@ defaulting to `process.env.DEVLAUNCH_HOST ?? '127.0.0.1'`, and pass it:
 `http.listen(port, config.server.host, r)`. If a wider bind is ever wanted, that is the
 moment to require a token — and the WebSocket needs the same gate.
 
-### F2 — HIGH — Untrusted repository content reaches a model whose output is executed
+### F2 — HIGH — ✅ **CLOSED 2026-09-29** — Untrusted repository content reaches a model whose output is executed
+
+> **Closed by** `__tests__/aiBoundary.test.ts`: a stub provider returns exactly what a
+> successfully-injected model would, and every unsafe shape is refused — a piped shell
+> command, `rm -rf /`, a binary off the allowlist, a working directory outside the repo,
+> and a plan claiming to be `rule-based`. One test asserts an ordinary plan still passes,
+> so the gate cannot be satisfied by refusing everything. No key, no network.
 
 Not observed as an exploit; named because a production review of a tool that runs
 arbitrary code must name it.
@@ -189,7 +209,12 @@ the model path at all are the skipped ones (F6).
 and assert the produced plan is unchanged; run it in the suite, not only against a live
 key.
 
-### F3 — MEDIUM — A rejected URL still gets `201 Created` and burns the session slot
+### F3 — MEDIUM — ✅ **CLOSED 2026-09-29** — A rejected URL still gets `201 Created` and burns the session slot
+
+> **Closed by** calling `normaliseRepoUrl` in the route, before the concurrency check.
+> Observed: `POST {"repoUrl":"https://gitlab.com/a/b"}` →
+> `400 {"error":"Only github.com is supported, got \"gitlab.com\".","code":"UNSUPPORTED_PROJECT"}`,
+> and `sessions.list()` unchanged.
 
 The HTTP layer performs no intake validation: `api/app.ts:167-179` passes `body.repoUrl`
 straight to `sessions.launch()`. Rejection happens asynchronously inside the pipeline.
@@ -209,7 +234,13 @@ each rejected URL occupies the only slot until it finishes failing.
 **Remediation:** run the existing `GitManager` URL validation synchronously in the route
 and return 400 with the message it already produces. Only the timing is wrong.
 
-### F4 — MEDIUM — Cache volumes are never reaped
+### F4 — MEDIUM — ✅ **CLOSED 2026-09-29** — Cache volumes are never reaped
+
+> **Closed by** `CleanupManager.sweepStaleCaches`, run at startup beside the existing
+> orphan-container sweep. Volumes older than `DEVLAUNCH_CACHE_MAX_AGE_DAYS` (14) that
+> carry DevLaunch's own cache label are removed; a volume still in use is skipped rather
+> than aborting the sweep. The existing 99 volumes are not deleted retroactively — they
+> age out. Reclaim them now with `docker volume prune --filter label=com.devlaunch.cache`.
 
 **Missed in the first draft of this report; found by the independent verifier.**
 
@@ -235,7 +266,13 @@ repository writes there persists into its next run.
 orphan-container sweep in `CleanupManager.sweepAllOrphans`; or cap total cache size.
 Document whichever, because unbounded disk is currently undocumented.
 
-### F5 — MEDIUM — The egress policy does not survive a VM restart
+### F5 — MEDIUM — ✅ **CLOSED 2026-09-29** — The egress policy does not survive a VM restart
+
+> **Closed by** `EgressProbe`: after the port is listening, one throwaway container on
+> `devlaunch-net` tries to reach 169.254.169.254. Reaching it proves the policy is absent,
+> and startup warns. Checked by behaviour rather than by reading iptables, because the
+> rules live inside the VM and the backend runs on the host. Observed live:
+> `/api/health` → `"egress":"enforced"`, no container left behind.
 
 `docs/limitations.md` says the iptables rules "do not survive recreating that VM". They
 also do not survive **restarting** it, which is far more common. Observed today after
@@ -257,7 +294,11 @@ Between those two states containers ran with the weaker isolation the docs warn 
 **Remediation:** check the chain at startup and refuse, or warn loudly, when it is
 missing. Correct the doc's wording either way.
 
-### F6 — MEDIUM — The AI path is never exercised by the suite
+### F6 — MEDIUM — ✅ **CLOSED 2026-09-29** — The AI path is never exercised by the suite
+
+> **Closed by** the same offline tests as F2. The three `groqLive.test.ts` tests still
+> skip without a key — they exercise a live model, which is a different thing — but the
+> path that turns model output into an executed plan is now covered with no network.
 
 The three `groqLive.test.ts` tests are skipped without a key, and they are the only
 coverage of the component that turns untrusted input into an executed plan. A green
@@ -268,7 +309,12 @@ coverage of the component that turns untrusted input into an executed plan. A gr
 **Remediation:** either run them in CI with a key held as a secret, or add offline tests
 with a recorded/stubbed model response so the validation path is covered without network.
 
-### F7 — LOW — No CI of any kind
+### F7 — LOW — ✅ **CLOSED 2026-09-29** — No CI of any kind
+
+> **Closed by** `.github/workflows/ci.yml`: typecheck and unit suites on every push;
+> the full suite with real Docker on pull requests and nightly, building the runner
+> images in the job so the Dockerfiles are tested too; container-residue and
+> `verify-readiness.sh` assertions; `gitleaks` on every push.
 
 ```
 ls .github  → No such file or directory
@@ -277,7 +323,15 @@ ls .github  → No such file or directory
 An 814-test suite with real-Docker integration coverage, and nothing runs it but memory.
 See §4.
 
-### F8 — LOW — No structured logs, metrics, or error reporting
+### F8 — LOW — ⚠️ **PARTIALLY CLOSED 2026-09-29** — No structured logs, metrics, or error reporting
+
+> **Closed:** `/api/health` now reports *why* it is unhealthy, naming the dependency —
+> Docker unreachable, or the egress policy absent — instead of an unconditional
+> `ok: true`. Unhandled rejections are recorded rather than lost.
+>
+> **Deferred, deliberately:** structured logging and counters. Both need a dependency on
+> a project that hand-wrote a six-line `.env` loader rather than take one, and the
+> decision was to take the dependency-free half now. See the changelog.
 
 ```
 grep -c "console\." apps/backend/src/server.ts   → 6      (plain text to stdout)
@@ -357,6 +411,12 @@ Documented in `docs/limitations.md`, listed so a future reviewer does not re-rai
 ### Not examined
 
 Stated so absence is not mistaken for a clean bill:
+
+- **`config/index.ts` ignores `.env` entirely.** Found while fixing F1 and outside its
+  scope. That module is a frozen object evaluated at first import, which happens before
+  `loadDotEnv()` runs in `startServer` — so every `intEnv(...)` constant honours an
+  exported shell variable and silently ignores the same line in `.env`.
+  `DEVLAUNCH_CONTAINER_MEMORY_MB` in a `.env` file does nothing today.
 
 - **Supply chain.** No `npm audit`, no lockfile-integrity check, no CVE scan of the two
   runner base images that host untrusted code.
