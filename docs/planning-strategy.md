@@ -306,6 +306,9 @@ create time.
 ## Repository intake
 
 - `--depth 1 --single-branch`, `--no-recurse-submodules`, `GIT_LFS_SKIP_SMUDGE=1`
+- The default branch, unless the session names a branch, tag or commit — then the same
+  shallow fetch of exactly that ref, checked out detached. The ref is held to a narrow
+  shape (no leading `-`, no `..`) because it reaches `git fetch` as an argument
 - Hard caps: **~500 MB and ~20k files**, aborting mid-clone when exceeded
 - **Public HTTPS on `github.com` only.** No `ssh://`, no other hosts, nothing
   requiring credentials — this keeps the threat model tight

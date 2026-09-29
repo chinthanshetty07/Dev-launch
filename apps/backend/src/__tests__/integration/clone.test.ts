@@ -45,6 +45,38 @@ describe('Phase 5 — repository intake (network)', () => {
     expect(Date.now() - started).toBeLessThan(30_000);
   }, 120_000);
 
+  it('clones the commit it was asked for, not the default branch', async () => {
+    // `test` is a branch of Hello-World whose tip differs from the default branch's.
+    // Asked for by name and then by id, both must land on that commit — and say so.
+    const TEST_TIP = 'b3cbd5bbd7e81436d2eee04537ea2b4c0cad4cdf';
+    for (const ref of ['test', TEST_TIP]) {
+      const result = await git.clone('https://github.com/octocat/Hello-World', undefined, ref);
+      cleanups.push(result.cleanup);
+      expect(result.commit, ref).toBe(TEST_TIP);
+      expect(result.ref, ref).toBe(ref);
+    }
+  }, 180_000);
+
+  it('reports the default branch commit when no ref is given', async () => {
+    const result = await git.clone('https://github.com/octocat/Hello-World');
+    cleanups.push(result.cleanup);
+    expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.ref).toBeUndefined();
+  }, 180_000);
+
+  it('says a missing ref is missing, not that the network failed', async () => {
+    await expect(
+      git.clone('https://github.com/octocat/Hello-World', 60_000, 'no-such-branch-xyz'),
+    ).rejects.toMatchObject({ code: FailureCode.UNSUPPORTED_PROJECT, message: expect.stringMatching(/no branch, tag or commit "no-such-branch-xyz"/) });
+  }, 120_000);
+
+  it('enforces the size limit on a fetch by ref, as on a clone', async () => {
+    const tiny = new GitManager({ maxBytes: 1 });
+    await expect(tiny.clone('https://github.com/octocat/Hello-World', undefined, 'test')).rejects.toMatchObject({
+      code: FailureCode.REPOSITORY_TOO_LARGE,
+    });
+  }, 180_000);
+
   it('rejects a disallowed URL before running git at all', async () => {
     for (const url of [
       'https://gitlab.com/owner/repo',

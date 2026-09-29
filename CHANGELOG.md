@@ -1,5 +1,59 @@
 # Changelog
 
+## 2026-09-29 — A corpus of real repositories, and a clone of the commit it names
+
+DevLaunch had been measured against real repositories twice, both times by a harness in a
+session scratchpad that nobody could re-run, against whatever each default branch
+happened to hold that day. A result that cannot be reproduced cannot show a regression.
+
+### 1. `scripts/corpus/` — forty pinned repositories, through the real pipeline
+
+`corpus.json` pins forty public repositories to commit SHAs, chosen for coverage rather
+than for passing: static HTML, Vite with React, Vue and Svelte, CRA, Next, Nuxt,
+SvelteKit, Astro, Remix, Angular, Express, Fastify, NestJS, TypeScript Node, Flask,
+FastAPI, Django, Streamlit, Gradio, pnpm, Yarn 1 and 4, bun, Turborepo, Nx, Poetry,
+Pipenv, `.nvmrc`, `.node-version`, and a repository whose default branch is not its
+application. `run.mjs` deploys each over the backend's own HTTP API — nothing stubbed —
+and writes `reports/<name>.{json,md}`: detection, plan source, final state, failure code,
+stage, evidence line, repairs and duration, grouped by failure code and by label.
+
+- It refuses to measure a stale backend (`/api/health` `build.stale`).
+- A READY whose URL does not answer is counted `FALSE_READY`, never a pass: the runner
+  requests every URL a session hands out.
+- `labels.json` classifies each failure `DEVLAUNCH_BUG`, `REPO_FAILURE` or
+  `UNSUPPORTED_BY_CONTRACT`, with the reason; `--report-only` re-renders with new labels.
+- `logs.mjs` prints a corpus session's log from the backend that ran it; `plan.mts` runs
+  the analyzer and planner on a local clone, with no server and no containers.
+- A configuration gate is skipped once, and the report names every variable left unset.
+  The gate is skippable by design, and skipping it is the only way to learn whether the
+  application runs at all; `--keep-gate` measures the gate instead. A package choice is
+  never guessed.
+
+**Baseline** (`reports/baseline.md`, backend `c68f255`): **26 / 40 READY**, 49 minutes,
+5 planned by the model and 10 with a model repair. Of the 14 failures, 9 are DevLaunch's,
+3 are outside the contract (the Bun runtime twice, a Python pin with no 3.12 wheel) and 2
+are the repository's (a generator CLI, and a cookiecutter template).
+
+### 2. A session can name a branch, tag or commit
+
+`GitManager.clone` always took the default branch. `nuxt/starter` keeps its application
+on `v3` and a directory of templates on its default branch, and no repository could be
+pinned at all. A clone now takes an optional ref: the same shallow, submodule-free,
+size-bounded fetch, of exactly that ref, checked out detached. The commit actually
+checked out is recorded, logged, and returned on the session as `commit`.
+
+- `POST /api/sessions` accepts `ref`, and reads one out of a pasted
+  `https://github.com/owner/repo/tree/<ref>` URL — the page a person was looking at. An
+  explicit `ref` wins.
+- The ref reaches `git fetch` as an argument, so it is held to a narrow shape — letters,
+  digits, `.`, `_`, `-`, `/`; nothing beginning with `-`, no `..`, `//` or `@{` — and
+  refused with 400 before a session exists, like a refused URL.
+- A ref the remote does not have is `UNSUPPORTED_PROJECT` naming the ref, not
+  `NETWORK_FAILURE`.
+- **Mutations:** eleven, ten killed. The survivor was URL-decoding of a `/tree/` ref,
+  which no test could distinguish because every character a ref may contain is already
+  URL-safe. It was deleted rather than kept.
+
 ## 2026-09-29 — The ceiling follows the machine, and a workspace installs once
 
 Two changes to the same failure. `horusyeung/nextjs-nestjs-fullstack-starter` died with

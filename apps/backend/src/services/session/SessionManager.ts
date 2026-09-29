@@ -76,6 +76,10 @@ export interface Session {
   logs: LogManager;
 
   repoUrl?: string;
+  /** The branch, tag or commit asked for. Absent means the repository's default branch. */
+  ref?: string;
+  /** The commit that was actually cloned, so a result names what it was measured against. */
+  commit?: string | null;
   sourceDir?: string;
   metadata?: RepositoryMetadata;
   /** Detector that matched, e.g. "vite". Null once the AI fallback exists and was used. */
@@ -179,6 +183,8 @@ export interface Session {
 export interface LaunchRequest {
   /** Public GitHub URL. Triggers clone, analysis and deterministic planning. */
   repoUrl?: string;
+  /** A branch, tag or commit of `repoUrl`, instead of its default branch. */
+  ref?: string;
   /** A directory already on disk. Analysed and planned unless `plan` is supplied. */
   sourceDir?: string;
   /** Skips analysis entirely. Used by tests and by a resumed session. */
@@ -327,6 +333,7 @@ export class SessionManager extends EventEmitter {
       // Created before the container exists so a client can attach immediately.
       logs: new LogManager(),
       repoUrl: req.repoUrl,
+      ref: req.ref,
       sourceDir: req.sourceDir,
     };
     this.sessions.set(session.id, session);
@@ -358,7 +365,7 @@ export class SessionManager extends EventEmitter {
       }
 
       const dir = req.repoUrl
-        ? await this.cloneRepository(session, req.repoUrl)
+        ? await this.cloneRepository(session, req.repoUrl, req.ref)
         : req.sourceDir;
 
       if (!dir) {
@@ -384,16 +391,19 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  private async cloneRepository(session: Session, repoUrl: string): Promise<string> {
+  private async cloneRepository(session: Session, repoUrl: string, ref?: string): Promise<string> {
     if (!this.deps.git) throw new Error('Cloning requires a GitManager.');
     this.setState(session, ExecutionState.CLONING);
-    const clone = await this.deps.git.clone(repoUrl);
+    const clone = await this.deps.git.clone(repoUrl, undefined, ref);
+    session.commit = clone.commit;
     session.cleanupRepo = clone.cleanup;
     // Cloned, so this directory is ours to edit if the rewrite flag says so.
     session.ownsSource = true;
     session.logs.buffer.push(
       'stdout',
-      `Cloned ${clone.url} (${clone.fileCount} files, ${Math.round(clone.sizeBytes / 1024)} KB)`,
+      `Cloned ${clone.url}${clone.ref ? ` at ${clone.ref}` : ''}` +
+        `${clone.commit ? ` (commit ${clone.commit.slice(0, 12)})` : ''} ` +
+        `(${clone.fileCount} files, ${Math.round(clone.sizeBytes / 1024)} KB)`,
     );
     return clone.dir;
   }

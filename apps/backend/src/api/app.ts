@@ -7,7 +7,7 @@ import { assertSafeRelativePath } from '../services/security/PathValidator.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 import { TERMINAL_STATES, type BackingView, type ServiceView } from '@devlaunch/shared';
 import { buildStamp } from '../services/build/BuildStamp.js';
-import { normaliseRepoUrl } from '../services/git/GitManager.js';
+import { normaliseRef, normaliseRepoUrl, splitRepoInput } from '../services/git/GitManager.js';
 
 export interface AppOptions {
   sessions: SessionManager;
@@ -50,6 +50,8 @@ function present(session: Session) {
     id: session.id,
     state: session.state,
     repoUrl: session.repoUrl,
+    ref: session.ref,
+    commit: session.commit,
     detected: session.detected,
     plan: session.plan,
     planWarnings: session.planWarnings,
@@ -225,7 +227,8 @@ export function createApp(opts: AppOptions): Express {
       const readinessTimeoutMs = positiveInt(body.readinessTimeoutMs, 60_000);
 
       if (typeof body.repoUrl === 'string' && body.repoUrl.trim() !== '') {
-        const repoUrl = body.repoUrl.trim();
+        let repoUrl: string;
+        let ref: string | undefined;
 
         // Rejected here, not four steps later inside the pipeline.
         //
@@ -238,6 +241,9 @@ export function createApp(opts: AppOptions): Express {
         // Before the concurrency check, because a malformed URL is malformed whatever
         // else is running — "a session is already running" is the wrong answer to it.
         try {
+          // A pasted `/tree/<branch>` URL carries its ref; an explicit `ref` wins over it.
+          ({ repoUrl, ref } = splitRepoInput(body.repoUrl));
+          if (typeof body.ref === 'string' && body.ref.trim() !== '') ref = normaliseRef(body.ref);
           normaliseRepoUrl(repoUrl);
         } catch (err) {
           if (err instanceof SecurityRejection) {
@@ -247,7 +253,7 @@ export function createApp(opts: AppOptions): Express {
           throw err;
         }
 
-        const session = await opts.sessions.launch({ repoUrl, readinessTimeoutMs });
+        const session = await opts.sessions.launch({ repoUrl, ref, readinessTimeoutMs });
         res.status(201).json({ id: session.id, state: session.state });
         return;
       }

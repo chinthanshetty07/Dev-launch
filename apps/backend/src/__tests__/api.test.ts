@@ -328,6 +328,43 @@ describe('a repository URL the intake will refuse', () => {
     expect(sessions.list().length, 'a refused URL must not create a session').toBe(before);
   });
 
+  const submitWith = (body: Record<string, unknown>) =>
+    fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('refuses a ref that could be read as an option, before a session exists', async () => {
+    // The ref reaches `git fetch` as an argument. One beginning with `-` is an option.
+    const before = sessions.list().length;
+    for (const ref of ['--upload-pack=touch /tmp/x', '../../etc', 'a b', 'main;rm']) {
+      const res = await submitWith({ repoUrl: 'https://github.com/owner/repo', ref });
+      expect(res.status, ref).toBe(400);
+      expect(((await res.json()) as { code: string }).code, ref).toBe('UNSUPPORTED_PROJECT');
+    }
+    expect(sessions.list().length).toBe(before);
+  });
+
+  it('carries the ref it was given, and the one a pasted /tree/ URL names', async () => {
+    const cases: [Record<string, unknown>, string, string][] = [
+      [{ repoUrl: 'https://github.com/owner/repo', ref: 'v3' }, 'https://github.com/owner/repo', 'v3'],
+      [{ repoUrl: 'https://github.com/nuxt/starter/tree/v3' }, 'https://github.com/nuxt/starter', 'v3'],
+      [{ repoUrl: 'https://github.com/o/r/tree/feature/x' }, 'https://github.com/o/r', 'feature/x'],
+      // An explicit ref is the more deliberate statement, so it wins.
+      [{ repoUrl: 'https://github.com/o/r/tree/main', ref: 'abc1234' }, 'https://github.com/o/r', 'abc1234'],
+    ];
+    for (const [body, repoUrl, ref] of cases) {
+      await sessions.shutdown();
+      const res = await submitWith(body);
+      expect(res.status, JSON.stringify(body)).toBe(201);
+      const { id } = (await res.json()) as { id: string };
+      const view = (await (await fetch(`${base}/api/sessions/${id}`)).json()) as { repoUrl: string; ref: string };
+      expect(view.repoUrl).toBe(repoUrl);
+      expect(view.ref).toBe(ref);
+    }
+  });
+
   it('still accepts a URL the intake allows', async () => {
     // The check must not become a second, stricter gate that rejects what the pipeline
     // would have run.
