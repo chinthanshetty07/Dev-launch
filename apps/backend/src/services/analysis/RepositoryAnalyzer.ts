@@ -154,6 +154,11 @@ export class RepositoryAnalyzer {
 
     const measured = await measureShallow(root);
 
+    // Only for the repository itself: a subdirectory analysed on its own belongs to a
+    // repository whose warnings are already being reported.
+    const submodules = subdir === '.' ? await readSubmodulePaths(root) : [];
+    if (submodules.length) warnings.push(submoduleWarning(submodules));
+
     return {
       root: base,
       fileCount: measured.fileCount,
@@ -164,6 +169,7 @@ export class RepositoryAnalyzer {
       lockfiles: LOCKFILES.filter((l) => fileNames.includes(l)),
       frameworkConfigs: fileNames.filter((n) => FRAMEWORK_CONFIG_PATTERNS.some((p) => p.test(n))),
       ...(fileNames.includes('index.html') ? { staticIndex: true } : {}),
+      ...(submodules.length ? { submodules } : {}),
       python,
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,
@@ -937,4 +943,24 @@ async function readAngularDevServer(file: string): Promise<{ angularDevServer?: 
     /* An unreadable angular.json says nothing about the builder; the default stands. */
   }
   return {};
+}
+
+/** The `path = ...` entries of a root `.gitmodules`, in the order it lists them. */
+export async function readSubmodulePaths(root: string): Promise<string[]> {
+  const raw = await readCapped(join(root, '.gitmodules'));
+  if (raw === null) return [];
+  return [...raw.matchAll(/^\s*path\s*=\s*(.+?)\s*$/gm)].map((m) => m[1]!);
+}
+
+/**
+ * Said before the run, because the failure it prevents does not say it: a bundler that
+ * cannot find `realworld/assets/theme/styles.css` names the file, not the submodule.
+ */
+export function submoduleWarning(paths: readonly string[]): string {
+  const shown = paths.slice(0, 5).map((p) => `${p}/`).join(', ') + (paths.length > 5 ? `, and ${paths.length - 5} more` : '');
+  return (
+    `This repository uses git submodules (${shown}). DevLaunch clones without them, so ` +
+    `${paths.length === 1 ? 'that directory is' : 'those directories are'} empty here — ` +
+    `anything the application imports, bundles or serves from ${paths.length === 1 ? 'it' : 'them'} will be missing.`
+  );
 }

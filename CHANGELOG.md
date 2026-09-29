@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-29 — A repository with submodules is told so before the run
+
+The after-run left two repositories whose fixes had worked and uncovered something
+underneath, both outside the contract, both reported in words that named a file
+rather than the reason. This is the first; the runtime entry above is the second.
+
+`angular-realworld` bundles `realworld/assets/theme/styles.css`; `realworld/` is a git
+submodule, and intake clones with `--no-recurse-submodules` by design. The run ended
+`PORT_NOT_LISTENING` quoting esbuild's advice to mark the path external. The analyzer now
+reads the root `.gitmodules` into `submodules` and warns before the run, naming the
+directories — once, on the single-service, workspace and project paths alike (the project
+path reports its services' warnings rather than the repository's, so it carries this one
+across itself). Only for the repository: a subdirectory analysed alone says nothing.
+
+- **Fixture:** `node-submodule`. Before: no warning. After: the warning, naming `realworld/`.
+- **Mutations:** six — no warning, a warning for subdirectories, only the first path,
+  the singular grammar, the project path silent, the paths not recorded. All killed.
+
 ## 2026-09-29 — The corpus after these fixes: 30 of 40
 
 `reports/after.md`, measured against `c68f255` plus the ten changes above (git tree

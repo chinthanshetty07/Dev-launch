@@ -327,7 +327,9 @@ create time.
 
 ## Repository intake
 
-- `--depth 1 --single-branch`, `--no-recurse-submodules`, `GIT_LFS_SKIP_SMUDGE=1`
+- `--depth 1 --single-branch`, `--no-recurse-submodules`, `GIT_LFS_SKIP_SMUDGE=1`. A
+  repository that declares submodules is told so before the run: the directories are
+  empty, and the failure they cause names a missing file, not the reason
 - The default branch, unless the session names a branch, tag or commit — then the same
   shallow fetch of exactly that ref, checked out detached. The ref is held to a narrow
   shape (no leading `-`, no `..`) because it reaches `git fetch` as an argument

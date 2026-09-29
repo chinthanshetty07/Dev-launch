@@ -112,6 +112,15 @@ export interface RepositoryMetadata {
    * repository two different ways in two runs, and without a key cannot serve it at all.
    */
   staticIndex?: boolean;
+  /**
+   * Paths `.gitmodules` declares, read at the repository root.
+   *
+   * Intake clones with `--no-recurse-submodules`, by design, so each of these is an empty
+   * directory in the clone. A repository that imports or bundles from one fails in a way
+   * that names a missing file and not the reason: `angular-realworld` could not resolve
+   * `realworld/assets/theme/styles.css` and was reported as a port nobody opened.
+   */
+  submodules?: string[];
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
 }

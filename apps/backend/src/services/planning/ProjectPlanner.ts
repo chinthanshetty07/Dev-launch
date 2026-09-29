@@ -8,6 +8,7 @@ import { ProjectPlanSchema } from '@devlaunch/shared';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from './RuleBasedPlanner.js';
 import { workspaceInstall } from '../analysis/ServiceDiscovery.js';
+import { submoduleWarning } from '../analysis/RepositoryAnalyzer.js';
 import { config } from '../../config/index.js';
 
 export interface ProjectPlanningOutcome {
@@ -47,6 +48,9 @@ export class ProjectPlanner {
     const services: ServiceRunPlan[] = [];
     const skipped: { name: string; reason: string }[] = [];
     const warnings: string[] = [];
+    // The project path reports its services' warnings, not the repository's, so the one
+    // repository-level warning that bears on every service is carried across here.
+    if (meta.submodules?.length) warnings.push(submoduleWarning(meta.submodules));
     const used = new Set<string>();
 
     // A workspace installs once, at its root, with the tool that wrote its lockfile.
