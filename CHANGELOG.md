@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-09-29 — A runtime too new is named, and not answered with a newer one
+
+With `CI=true`, `ahfarmer/calculator`'s dev server stays up long enough to compile, and
+webpack 4 fails under OpenSSL 3: `ERR_OSSL_EVP_UNSUPPORTED`. It was `START_COMMAND_FAILED`
+at low confidence and went to a model, whose repair set `NODE_OPTIONS` and was refused. A
+new signature makes it `WRONG_RUNTIME_VERSION` with a typed `runtimeDirection: 'older'`;
+the deterministic repair declines on that, so there is no retry on Node 22 and no model
+call, and the remedy names the upgrade (react-scripts 5 / webpack 5) or Node 16.
+Signatures can now attach typed `detail` to their verdict.
+
+- **Fixture:** `node-openssl-legacy`, webpack 4's `createHash('md4')` without webpack.
+  Before: low-confidence `START_COMMAND_FAILED`. After: `WRONG_RUNTIME_VERSION`, high
+  confidence, direction `older`.
+- **Mutations:** signature removed, direction not attached, dropped by the classifier,
+  ignored by the repair — all killed. A second pattern for the message text survived
+  (Node prints the code with every one) and was removed. Moving the signature after the
+  generic runtime one also survives: nothing else matches these lines, so its placement
+  is for reading, not correctness.
+
+### A correction: the mutation harness reported survivors as kills
+
+Test files were passed to the mutation helper as one string, and zsh does not word-split
+an unquoted parameter — so every mutation run against more than one test file handed
+vitest a single path that matched nothing, exited non-zero, and was counted killed. The
+entry for the bind-host variable blamed "a flaky Docker test" for one such result; there
+was no flake. The helper now reports a run that found no tests, crashed, or failed without
+a named test as a harness error, never as a kill, and it was checked against a known
+survivor and a missing file before use.
+
+Every mutation this session had run with several test files was re-run: argument
+forwarding (1), the Angular builder (6), phase-scoped diagnosis (8), CRA (1). All are
+genuinely killed, each by the test that names it. No earlier conclusion changes except
+that one sentence.
+
 ## 2026-09-29 — A repository with submodules is told so before the run
 
 The after-run left two repositories whose fixes had worked and uncovered something
@@ -122,10 +156,9 @@ server as unfixable.
   After: READY.
 - **Mutations:** eight — each argument form unread, `HOST` not excluded, a constant taken
   without the call using it, the literal checked first, and each planner path losing the
-  variable. All killed. The entry-file path was first reported killed by a flaky Docker
-  test matched by the same `-t` filter; rerun it survived, and gained the test that kills
-  it. Mutation runs now name the test that failed, and every integration-only kill in
-  this session was re-verified that way.
+  variable. All killed. The entry-file path was first reported killed when it had
+  survived; it gained the test that kills it. The false kill was blamed here on a flaky
+  Docker test. It was the mutation harness: see "A runtime too new is named", above.
 
 ## 2026-09-29 — A workspace with one application installs at its root
 

@@ -420,6 +420,20 @@ network and of the runner image's certificate store. It was classified as a depe
 install failure and repaired twice, each attempt re-running the same download against the
 same certificate.
 
+## A runtime can be too new, and a newer one is no answer
+
+`WRONG_RUNTIME_VERSION` is repaired by moving to the next newer approved image, which is
+right for a built-in the running Node lacks. It is wrong for webpack 4, whose `md4` hash
+OpenSSL 3 removed: `ERR_OSSL_EVP_UNSUPPORTED` on Node 17 and later, so on 22 exactly as on
+20. That failure used to be `START_COMMAND_FAILED` at low confidence, and a model was
+asked; its one idea was `NODE_OPTIONS=--openssl-legacy-provider`, which the validator
+refuses from every plan by design.
+
+It is now `WRONG_RUNTIME_VERSION` with `runtimeDirection: 'older'` — a typed field, like
+`observedSocket`, which a signature attaches through its `detail` — and the repair rule
+declines on it. With the policy allowing no model call for this code, the run stops with
+the diagnosis and a remedy that says which toolchain to upgrade.
+
 ## A phase is explained by its own output
 
 Sentinels never enter the log buffer, so for a long time the log could not say which

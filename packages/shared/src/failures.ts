@@ -101,6 +101,15 @@ export interface FailureDetail {
    * the process bound.
    */
   observedSocket?: { address: string; port: number; loopbackOnly: boolean };
+  /**
+   * For a runtime-version failure, which way the runtime is wrong, when the evidence says.
+   *
+   * The repair for WRONG_RUNTIME_VERSION moves to the next newer approved image, which is
+   * the right answer to a missing built-in and the wrong one to a runtime that is too
+   * *new*: webpack 4's `md4` hash fails under OpenSSL 3, on Node 22 exactly as on 20. A
+   * field, like `observedSocket`, so the rule acts on a fact rather than on prose.
+   */
+  runtimeDirection?: 'older' | 'newer';
 }
 
 /**

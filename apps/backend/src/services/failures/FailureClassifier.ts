@@ -53,6 +53,7 @@ export class FailureClassifier {
         confidence: 'high',
         exitCode: input.exitCode,
         phase: input.phase === 'none' ? undefined : input.phase,
+        ...sig.detail,
       };
     }
 

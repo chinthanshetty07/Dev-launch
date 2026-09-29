@@ -139,4 +139,16 @@ describe('failures the real-world corpus found', () => {
     const outcome = await runFixture('static-site', plan, 30_000);
     expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
   }, 300_000);
+
+  it('names a runtime too new for the build tool, and does not retry on a newer one (ahfarmer/calculator)', async () => {
+    // webpack 4's md4 hash under OpenSSL 3. It was START_COMMAND_FAILED at low confidence,
+    // and a model was asked; the diagnosis is the runtime, and the only image that would
+    // help is one DevLaunch does not have.
+    const plan = await planFixture('node-openssl-legacy');
+    const outcome = await runFixture('node-openssl-legacy', plan, 30_000);
+    expect(outcome.failure?.code, JSON.stringify(outcome.failure)).toBe(FailureCode.WRONG_RUNTIME_VERSION);
+    expect(outcome.failure?.confidence).toBe('high');
+    expect(outcome.failure?.runtimeDirection).toBe('older');
+    expect(outcome.failure?.remedy).toMatch(/NODE_OPTIONS=--openssl-legacy-provider/);
+  }, 300_000);
 });

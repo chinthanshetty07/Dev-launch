@@ -1,4 +1,4 @@
-import { FailureCode } from '@devlaunch/shared';
+import { FailureCode, type FailureDetail } from '@devlaunch/shared';
 
 export type Phase = 'none' | 'install' | 'build' | 'start';
 
@@ -16,6 +16,8 @@ export interface Signature {
    * only in severity, and one of them is fatal.
    */
   exclude?: RegExp;
+  /** Typed facts the verdict carries, for a repair rule to act on without reading prose. */
+  detail?: Pick<FailureDetail, 'runtimeDirection'>;
   /** What the user can do about it. */
   remedy: string;
   /** Explains the match; `{evidence}` is replaced with the matching line. */
@@ -178,6 +180,28 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       'or a `node:` import it recognises — so a built-in newer than any approved image ' +
       'is the one case it cannot satisfy.',
     describe: (e) => `This Node version has no such built-in module: ${e.trim().slice(0, 160)}`,
+  },
+  {
+    // webpack 4 hashes with md4, which OpenSSL 3 — Node 17 and later — no longer offers:
+    // `error:0308010C:digital envelope routines::unsupported`. It reads like a crash in
+    // the application and went to a model, whose one idea, NODE_OPTIONS, the validator
+    // refuses by design. What it actually says is that the runtime is too new, and no
+    // image DevLaunch has is old enough.
+    id: 'openssl-legacy-hash',
+    code: FailureCode.WRONG_RUNTIME_VERSION,
+    // The error code alone: Node prints it with every one of these, and a second pattern
+    // for the message beside it matched nothing the code did not.
+    patterns: [/ERR_OSSL_EVP_UNSUPPORTED/],
+    detail: { runtimeDirection: 'older' },
+    remedy:
+      'The build tool hashes with an algorithm OpenSSL 3 removed — typically webpack 4, as ' +
+      'in react-scripts 4 and earlier. Upgrade it (react-scripts 5, webpack 5), or run the ' +
+      'project on Node 16. DevLaunch approves Node 20 and 22 only, and will not set the ' +
+      'usual workaround, NODE_OPTIONS=--openssl-legacy-provider: a variable that changes ' +
+      'what Node loads before the start command runs is refused from every plan.',
+    describe: () =>
+      'The build tool uses a hash OpenSSL 3 no longer provides, so it cannot run on Node 17 ' +
+      'or newer — and DevLaunch has no older Node.',
   },
   {
     id: 'wrong-runtime-version',

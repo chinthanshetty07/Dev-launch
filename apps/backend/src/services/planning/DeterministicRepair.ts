@@ -336,6 +336,8 @@ const RULES: readonly Rule[] = [
   {
     applies: (c) => c === FailureCode.WRONG_RUNTIME_VERSION,
     propose: ({ plan, failure, logs }) => {
+      // A newer image is the answer to a runtime that is too old, and only to that.
+      if (failure.runtimeDirection === 'older') return null;
       const next = nextApprovedVersion(plan.runtime.language, plan.runtime.version);
       if (!next) return null;
 

@@ -522,3 +522,22 @@ describe('choosing the next approved runtime', () => {
     expect(nextApprovedVersion('ruby', '3')).toBeNull();
   });
 });
+
+describe('a runtime that is too new', () => {
+  it('is not answered with a newer one', () => {
+    // webpack 4 under OpenSSL 3 fails on Node 22 exactly as on 20; moving up spends a run.
+    const repair = tryDeterministicRepair({
+      plan: plan(),
+      failure: { code: FailureCode.WRONG_RUNTIME_VERSION, message: 'too new', runtimeDirection: 'older' },
+      metadata: meta(),
+      logs: '',
+      previousAttempts: [],
+    });
+    expect(repair).toBeNull();
+  });
+
+  it('still moves up when the direction is unknown, as before', () => {
+    const repair = attempt({ code: FailureCode.WRONG_RUNTIME_VERSION, message: 'needs newer' });
+    expect(repair?.plan.runtime.version).toBe('22');
+  });
+});

@@ -62,6 +62,7 @@ reproduces the one behaviour at issue, quoted from the real tool in its source.
 | `node-bun-runtime` | `patelharsh9797/bun-hono-app`: every start script runs Bun. Driven through `SessionManager` by `bunRuntime.test.ts`, which asserts the explicit failure and that no model is asked |
 | `node-bind-env` | `jellydn/fastify-starter`: a server bound by `process.env.SERVER_HOSTNAME ?? '127.0.0.1'`, which reads no `HOST` |
 | `node-cra-stdin` | `ahfarmer/calculator`: a Create React App dev server that closes when stdin ends unless `CI=true`, as `react-scripts/scripts/start.js` does from 3.4.1 |
+| `node-openssl-legacy` | `ahfarmer/calculator`, once it stays up: webpack 4's `md4` hash under OpenSSL 3, reproduced with `createHash('md4')` and no webpack |
 | `node-pnpm-vite-args` | `sveltejs/realworld`: pnpm forwards a literal `--` to the script, and a Vite-like parser reads the flags after it as positional — so the server binds loopback |
 | `node-submodule` | `angular-realworld`, once it starts: an application reading a file from a git submodule, which intake does not fetch. Its `.gitmodules` is an ordinary file here — git gives the name meaning only at a repository's root |
 | `node-workspace-one-app` | `dan5py/turborepo-shadcn-ui`: a pnpm workspace whose one runnable package imports a sibling through `workspace:*` |

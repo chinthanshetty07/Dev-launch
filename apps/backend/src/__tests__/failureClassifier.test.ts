@@ -440,3 +440,24 @@ describe('a dotenv file the start script needs and the repository lacks', () => 
     expect(classify('sh: 1: bunx: not found', 'start').code).toBe(FailureCode.START_COMMAND_FAILED);
   });
 });
+
+describe('a build tool that needs a hash OpenSSL 3 removed', () => {
+  const crash = [
+    'Starting the development server...',
+    'Error: error:0308010C:digital envelope routines::unsupported',
+    '    at new Hash (node:internal/crypto/hash:101:19)',
+    "  code: 'ERR_OSSL_EVP_UNSUPPORTED'",
+    'Node.js v20.20.2',
+  ].join('\n');
+
+  it('is a runtime too new, said as such', () => {
+    const verdict = classify(crash, 'start');
+    expect(verdict.code).toBe(FailureCode.WRONG_RUNTIME_VERSION);
+    expect(verdict.runtimeDirection).toBe('older');
+    expect(verdict.message).toMatch(/cannot run on Node 17 or newer/);
+  });
+
+  it('carries no direction on an ordinary version failure', () => {
+    expect(classify('npm error code EBADENGINE').runtimeDirection).toBeUndefined();
+  });
+});
