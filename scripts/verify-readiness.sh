@@ -159,7 +159,11 @@ fi
 echo "== the memory ceiling follows the machine =="
 # Goes red if the ceiling becomes a constant again, which is how a 4 GB tuning survived
 # onto a 6 GB VM and killed a repository with gigabytes to spare.
-grep -q "containerMemoryCeilingMb" apps/backend/src/services/session/SessionManager.ts \
+# The derivation now reaches the session through the memory policy: the session asks
+# `memoryPolicy()`, and the policy asks `containerMemoryCeilingMb`. Both links are checked,
+# so dropping either — or bypassing the policy with a number — goes red.
+grep -q "memoryPolicy(" apps/backend/src/services/session/SessionManager.ts \
+  && grep -q "containerMemoryCeilingMb(" apps/backend/src/services/execution/MemoryPolicy.ts \
   && ok "repairs derive the ceiling" || bad "repairs derive the ceiling" "back to a constant"
 grep -q "MAX_CEILING_MB" apps/backend/src/services/execution/MemoryCeiling.ts \
   && ok "the ceiling is capped" || bad "the ceiling is capped" "the cap is gone"

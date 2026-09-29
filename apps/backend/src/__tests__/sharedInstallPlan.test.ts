@@ -76,6 +76,9 @@ describe('a workspace plans one install', () => {
     for (const s of services) {
       expect(s.installDirectory, s.name).toBe('.');
       expect(s.installCommand, s.name).toMatch(/pnpm/);
+      // The manager with it: a plan naming npm beside a pnpm install contradicts itself in
+      // every summary that reads it — horusyeung's showed "npm" for a `yarn install`.
+      expect(s.packageManager, s.name).toBe('pnpm');
     }
     // One command, not one per package.
     expect(new Set(services.map((s) => s.installCommand)).size).toBe(1);

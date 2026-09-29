@@ -139,15 +139,30 @@ pretending the run succeeded.
 
 `DEVLAUNCH_CONTAINER_MEMORY_MB` defaults to 1024 — right for one container at a time on a
 4 GB VM with a database beside it, and simply too small for some real projects: a Next.js
-dev build is killed by it every time. That was reported as `OUT_OF_MEMORY` and
-non-repairable, on the reasoning that a container limit is changed by configuration
-rather than by a plan. True, and an odd thing to say about configuration DevLaunch writes.
+dev build and a large workspace install are killed by it. A limit DevLaunch sets is not
+the repository's failure, so a run killed by it is retried with more, by rule and never by
+a model, which cannot change a container's `HostConfig` by writing a plan.
 
-A run killed by the limit is now retried once under
-`DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB` (2048), and the retry is recorded as a repair like
-any other. Never by a model, which cannot change a container's `HostConfig` by writing a
-plan. At the ceiling it stops and reports honestly — give the VM more with
-`colima stop && colima start --cpu 4 --memory 8` and raise the ceiling.
+The retry climbs a ladder — by default doubling, `1024 → 2048 → 4096` on this machine's
+5910 MB VM — and stops at whichever comes first: the ceiling (the VM less a 512 MB reserve
+for itself, capped at 4096 per container), `DEVLAUNCH_MEMORY_RETRY_LIMIT` raises (2), or
+what the VM has free beside the other containers of the run, counted at what they use.
+The ceiling used to be half the VM; a workspace install needing 2.4–2.9 GB then fitted on
+some runs and not others while gigabytes sat idle, and the user chose the free memory
+instead. Each attempt is a clean container, each is
+recorded, and the last is a structured `OUT_OF_MEMORY` naming every limit tried and the
+maximum. A Node heap OOM is answered first with a larger heap (three quarters of the
+container) and only then with a larger container. Memory raises have their own budget and
+do not spend the two plan repairs.
+
+The limit is one per container, and a container runs install, build and start. The phase
+that ran out is recorded; a separate limit per phase would mean resizing a live container
+between phases, which is not done. So a service raised for its install keeps that limit
+while it serves.
+
+At the ceiling it stops and reports honestly — give the VM more with
+`colima stop && colima start --cpu 4 --memory 8`, or raise
+`DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB`.
 
 ## A backend running old code says so
 

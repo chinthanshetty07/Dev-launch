@@ -21,7 +21,7 @@ import {
 import { choosePort } from '../ports/HostPorts.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import { LogManager } from '../logs/LogManager.js';
-import type { ExecutionManager, LaunchHandle, ReadyOutcome } from './ExecutionManager.js';
+import type { ContainerLiveness, ExecutionManager, LaunchHandle, ReadyOutcome } from './ExecutionManager.js';
 import {
   applySourceRewrites,
   repointHost,
@@ -58,6 +58,10 @@ export interface ServiceRun {
    * that went back to the default would re-run the failure it was fixing.
    */
   memoryMb?: number;
+  /** Memory raises spent by this service, against the policy's limit. */
+  memoryRaises?: number;
+  /** The V8 heap DevLaunch set for this service after a heap OOM. */
+  nodeHeapMb?: number;
   /**
    * Plans already tried for *this* service, so an attempt cannot repeat one.
    *
@@ -130,6 +134,20 @@ export interface ProjectLaunchOptions {
   /** Aggregated, user-visible output. Each line arrives tagged with its service. */
   logs: LogManager;
   readinessTimeoutMs?: number;
+  /**
+   * The memory policy's hooks, supplied by the session so the decision stays in one place.
+   *
+   * `initialMb` is what a service starts with. `onLaunch` records every container a
+   * service gets. `onInstallDied` is asked when a service's container dies during a
+   * shared workspace install, before the next service may start: `restarted` means it was
+   * given more memory and is installing again, `exhausted` that no more memory can be
+   * given, `not-oom` that it died of something else.
+   */
+  memory?: {
+    initialMb: number;
+    onLaunch?(service: ServiceRun): Promise<void>;
+    onInstallDied?(service: ServiceRun, died: ContainerLiveness | undefined): Promise<'restarted' | 'exhausted' | 'not-oom'>;
+  };
 }
 
 /**
@@ -312,6 +330,10 @@ export class ProjectExecutor {
       internalUrls[plan.name] = `http://${aliasesFor(plan.name)[0]}:${plan.expectedPort}`;
     }
 
+    // A shared install's learned memory, and the service whose install could not be given
+    // enough; see the install gate below.
+    const shared: { memoryMb?: number; nodeHeapMb?: number } = {};
+    let blocked: ServiceRun | undefined;
     for (const [position, base] of ordered.entries()) {
       // A variable the repository already supplies wins: the user's own value for
       // MONGO_URI is a decision, and overwriting it would be DevLaunch overruling it.
@@ -342,6 +364,10 @@ export class ProjectExecutor {
         opts.logs.write(entry.stream, `[${plan.name}] ${entry.text}`, entry.ts);
       });
 
+      // What a shared workspace needed to install is what the next service installing it
+      // needs — same tree, same packages — so it starts there rather than rediscovering the
+      // limit by being killed at the default. Never more than the VM has free.
+      const startMb = await startingMemory(opts, shared, this.exec);
       try {
         const handle = await this.exec.launch({
           sessionId: opts.sessionId,
@@ -352,6 +378,8 @@ export class ProjectExecutor {
           networkAliases: aliasesFor(plan.name),
           hostPort: hostPorts[plan.name],
           packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
+          ...(startMb !== undefined ? { memoryMb: startMb } : {}),
+          ...(shared.nodeHeapMb ? { nodeHeapMb: shared.nodeHeapMb } : {}),
         });
         const entry: ServiceRun = {
           name: plan.name,
@@ -361,6 +389,8 @@ export class ProjectExecutor {
           logs,
           hostPort: hostPorts[plan.name],
           state: ExecutionState.STARTING,
+          ...(startMb !== undefined ? { memoryMb: startMb } : {}),
+          ...(shared.nodeHeapMb ? { nodeHeapMb: shared.nodeHeapMb } : {}),
           restart: async () => {
             opts.logs.write('stdout', `Restarting ${plan.name}...`);
             try {
@@ -387,10 +417,12 @@ export class ProjectExecutor {
               // Read off the entry rather than captured, for the same reason `plan` is:
               // a restart that went back to the default would re-run the OOM it fixed.
               ...(entry.memoryMb ? { memoryMb: entry.memoryMb } : {}),
+              ...(entry.nodeHeapMb ? { nodeHeapMb: entry.nodeHeapMb } : {}),
             });
           },
         };
         services.push(entry);
+        await opts.memory?.onLaunch?.(entry);
 
         // One workspace install at a time.
         //
@@ -408,7 +440,12 @@ export class ProjectExecutor {
         // through am I". The last service waits for nobody — there is nothing behind it.
         if (opts.project.sharedInstall && position < ordered.length - 1) {
           opts.logs.write('stdout', `Waiting for ${plan.name} to finish installing before starting the next service...`);
-          const outcome = await waitForInstall(logs, {
+          // A container that dies mid-install is asked about before anything else starts.
+          // Releasing the next service after an out-of-memory kill ran the same tree at the
+          // same limit, and it died the same way — every time, and a minute later.
+          let outcome: Awaited<ReturnType<typeof waitForInstall>>;
+          for (;;) {
+          outcome = await waitForInstall(logs, {
             timeoutMs: config.timeouts.timeToReadyMs,
             // Docker's answer, not ours: our own state is not written until readiness,
             // which runs after this loop.
@@ -417,6 +454,33 @@ export class ProjectExecutor {
               return live !== undefined && live.kind !== 'running' && live.kind !== 'unknown';
             },
           });
+          // Both endings of a killed install. When yarn is OOM-killed the wrapper survives,
+          // prints its install-failed marker, and exits 110 a moment later — `failed`, not
+          // `exited` — with Docker's OOMKilled set. Asking only on `exited` let the live run
+          // release the next service into the same kill.
+          if ((outcome !== 'exited' && outcome !== 'failed') || !opts.memory?.onInstallDied) break;
+          const died = await settledLiveness(entry.handle);
+          const verdict = await opts.memory.onInstallDied(entry, died);
+          if (verdict === 'restarted') continue;
+          if (verdict === 'exhausted') blocked = entry;
+          break;
+          }
+          if (outcome === 'ok' && entry.memoryMb !== undefined) {
+            shared.memoryMb = entry.memoryMb;
+            if (entry.nodeHeapMb !== undefined) shared.nodeHeapMb = entry.nodeHeapMb;
+          }
+          if (blocked) {
+            // The same tree, at a limit already shown to be too small, can only fail the
+            // same way. Starting the rest would report their deaths as if they were news.
+            for (const rest of ordered.slice(position + 1)) {
+              opts.logs.write(
+                'stderr',
+                `Not starting ${rest.name}: it installs the same workspace ${blocked.name} could ` +
+                  `not install within ${blocked.memoryMb ?? opts.memory?.initialMb ?? config.container.memoryMb} MB.`,
+              );
+            }
+            break;
+          }
           if (outcome === 'timeout') {
             // Proceed rather than hang. A stuck install must not stop the project; it
             // will be diagnosed by readiness like any other failure.
@@ -637,4 +701,38 @@ export function proxyRewrites(
 /** A file inside the clone, given the service directory it belongs to. */
 function joinService(workingDirectory: string, file: string): string {
   return workingDirectory && workingDirectory !== '.' ? `${workingDirectory}/${file}` : file;
+}
+
+/**
+ * The limit a service starts with: the policy's initial value, or — after a shared install
+ * needed more — what that install needed, capped by what the VM has free and never below
+ * the initial value.
+ */
+async function startingMemory(
+  opts: ProjectLaunchOptions,
+  shared: { memoryMb?: number },
+  exec: ExecutionManager,
+): Promise<number | undefined> {
+  const initial = opts.memory?.initialMb;
+  if (shared.memoryMb === undefined) return initial;
+  const free = exec.availableMb ? await exec.availableMb() : (exec.memory?.freeMb() ?? null);
+  const wanted = free === null ? shared.memoryMb : Math.min(shared.memoryMb, free);
+  return Math.max(wanted, initial ?? 0);
+}
+
+/**
+ * The container's state once it has stopped, or its last answer after a bounded wait.
+ *
+ * Docker's OOM flag is only readable on a stopped container, and the wrapper exits a
+ * moment after printing its install-failed marker. Polled, not slept: it returns as soon
+ * as the container has stopped, and gives up after `timeoutMs` with whatever it last saw.
+ */
+async function settledLiveness(handle: LaunchHandle, timeoutMs = 15_000): Promise<ContainerLiveness | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  let last: ContainerLiveness | undefined;
+  for (;;) {
+    last = await handle.liveness?.().catch(() => undefined);
+    if (!last || last.kind !== 'running' || Date.now() >= deadline) return last;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }

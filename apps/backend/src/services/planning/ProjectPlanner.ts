@@ -107,7 +107,7 @@ export class ProjectPlanner {
         // The per-package install is replaced, not supplemented: running both would
         // install the same tree twice and the second would fail the same way.
         ...(workspace
-          ? { installCommand: workspace.command, installDirectory: '.' }
+          ? { installCommand: workspace.command, installDirectory: '.', packageManager: workspace.manager }
           : {}),
         // The port the service's own code declares wins over the planner's default.
         //

@@ -110,6 +110,62 @@ export interface FailureDetail {
    * field, like `observedSocket`, so the rule acts on a fact rather than on prose.
    */
   runtimeDirection?: 'older' | 'newer';
+  /**
+   * For `OUT_OF_MEMORY`: which memory, the limit it ran under, and how that was known.
+   *
+   * `container` is the kernel killing a process at the container's cgroup limit — Docker's
+   * `OOMKilled`, or a SIGKILL where that cannot be read — and is answered with a larger
+   * limit. `node-heap` is V8 refusing to grow its own heap while the container still had
+   * room, and is answered with a larger heap. On the final failure, `maximumMb`,
+   * `attempts` and `retryable: false` say that the policy has been exhausted.
+   */
+  memory?: {
+    kind: 'container' | 'node-heap';
+    limitMb: number;
+    detectedBy: string[];
+    maximumMb?: number;
+    attempts?: number;
+    retryable?: boolean;
+    nodeHeapMb?: number;
+  };
+}
+
+/**
+ * One run of a service's container, kept across retries so the history is readable.
+ *
+ * Every launch is an attempt — the first, a memory raise, a repaired plan — and each
+ * records what it ran under and how it ended, so a session that took three tries says
+ * which three and why, instead of showing only the last.
+ */
+export interface LaunchAttempt {
+  /** The service, in a project; absent for a single-service run. */
+  service?: string;
+  attempt: number;
+  memoryMb: number;
+  nodeHeapMb?: number;
+  installCommand: string | null;
+  startedAt: number;
+  durationMs?: number;
+  /** The phase the attempt ended in, once it has ended. */
+  phase?: 'install' | 'build' | 'start' | 'none';
+  /** `ok` once ready or completed; a failure code otherwise; absent while running. */
+  result?: 'ok' | FailureCode;
+  detectedBy?: string[];
+}
+
+/**
+ * How a service's install went, in one line of structure: what ran, how many launches it
+ * took, and the memory it started with, ended with and could at most have had.
+ */
+export interface InstallSummary {
+  service?: string;
+  packageManager: string;
+  installCommand: string | null;
+  attempts: number;
+  memory: { initialMb: number; finalMb: number; maximumMb: number | null };
+  result: 'success' | 'running' | FailureCode;
+  /** The phase the last attempt ended in, when it failed. */
+  phase?: 'install' | 'build' | 'start' | 'none';
 }
 
 /**
@@ -135,6 +191,8 @@ export type RepairType =
    * that was wrong was DevLaunch's configuration rather than their repository.
    */
   | 'MEMORY_LIMIT_RAISED'
+  /** Node was given a larger heap inside the same container, after a V8 heap OOM. */
+  | 'NODE_HEAP_RAISED'
   | 'PLAN_REWRITE';
 
 /**

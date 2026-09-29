@@ -438,6 +438,19 @@ network and of the runner image's certificate store. It was classified as a depe
 install failure and repaired twice, each attempt re-running the same download against the
 same certificate.
 
+## Out of memory is two failures, and the kernel says which
+
+Docker's `State.OOMKilled` is the evidence, and it was measured before being trusted: a
+child process killed inside the container — yarn, under the wrapper's install step — sets
+it, though the wrapper then exits 110 rather than 137, because the cgroup is shared. A
+Node heap failure (`JavaScript heap out of memory`) leaves it false: V8 refused to grow its
+own heap while the container still had room. The first is answered with a larger
+container, the second with a larger heap, and `FailureDetail.memory.kind` says which.
+
+A bare `Killed` line or exit 137 stands in for the flag only when Docker cannot be asked,
+and is overruled when Docker says false — something else sent that SIGKILL. The word
+"memory" is never evidence. Every verdict carries `detectedBy`, strongest signal first.
+
 ## A runtime can be too new, and a newer one is no answer
 
 `WRONG_RUNTIME_VERSION` is repaired by moving to the next newer approved image, which is

@@ -3,6 +3,7 @@ import { join, relative } from 'node:path';
 import type { BackingService, ServiceCandidate, ServiceRole } from '@devlaunch/shared';
 import type { EnvExampleVar } from '@devlaunch/shared';
 import { readCapped } from './readCapped.js';
+import { detectNodeInstall, readNodeInstallFacts } from './InstallDetection.js';
 import { parseEnvExample } from './parseEnvExample.js';
 
 /**
@@ -123,19 +124,10 @@ export async function workspaceInstall(
   root: string,
 ): Promise<{ manager: 'pnpm' | 'yarn' | 'npm'; command: string } | null> {
   if (!(await isWorkspaceRoot(root))) return null;
-
-  if ((await readCapped(join(root, 'pnpm-lock.yaml'))) !== null) {
-    // --no-frozen-lockfile: a lockfile written by a different pnpm version would
-    // otherwise abort, and a repository that installs locally should install here.
-    return { manager: 'pnpm', command: 'pnpm install --no-frozen-lockfile' };
-  }
-  if ((await readCapped(join(root, 'yarn.lock'))) !== null) {
-    return { manager: 'yarn', command: 'yarn install' };
-  }
-  if ((await readCapped(join(root, 'pnpm-workspace.yaml'))) !== null) {
-    return { manager: 'pnpm', command: 'pnpm install --no-frozen-lockfile' };
-  }
-  return { manager: 'npm', command: 'npm install --no-audit --no-fund' };
+  // The same decision a lone package gets, from the root's own facts — its lockfile, its
+  // `packageManager`, its pnpm-workspace.yaml — rather than a second copy of the rule.
+  const install = detectNodeInstall(await readNodeInstallFacts(root));
+  return { manager: install.packageManager, command: install.installCommand! };
 }
 
 /**

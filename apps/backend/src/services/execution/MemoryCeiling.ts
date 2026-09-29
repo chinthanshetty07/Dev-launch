@@ -1,25 +1,33 @@
 /**
  * The most memory one container may be given when a repair raises its limit.
  *
- * This was the constant 2048, chosen when the VM had 3.8 GB. The VM was later given 6 GB
- * and the constant did not notice, so `horusyeung/nextjs-nestjs-fullstack-starter` was
- * still killed at 1477/2048 MB on a machine with gigabytes to spare — the limit was
- * DevLaunch's, the failure was reported as the repository's, and raising the VM had no
- * effect because nothing connected the two.
+ * This was the constant 2048, chosen when the VM had 3.8 GB, and then half the VM: the
+ * other half was left for the database, the daemon and the project's other services.
+ * `horusyeung/nextjs-nestjs-fullstack-starter`'s workspace install needs 2.4–2.9 GB —
+ * measured, with headroom — and on a 5910 MB VM half is 2955, so it fitted some runs and
+ * not others while gigabytes sat idle.
  *
- * Half the machine, capped. Half because the VM also holds whatever database the project
- * asked for, the daemon, and the other services of the same project; capped because past
- * a few gigabytes a single install that still will not fit is a repository problem, and
- * handing it 32 GB only makes the eventual failure slower.
+ * Now (the user's decision): the VM less a reserve for its own kernel and daemon, capped
+ * at 4096. What the *other* containers need is no longer guessed as "half": the memory
+ * ledger (`MemoryBudget`) counts them at what they actually use when an escalation asks,
+ * so this is the most one container may ever be given, and the ledger decides how much of
+ * it is free at that moment.
  *
  * Read at call time rather than from `config/index.ts`, like `bindHost` and
  * `cacheMaxAgeMs`. That module is evaluated before `loadDotEnv()` runs, so a value read
  * there honours an exported shell variable and silently ignores the same line in `.env`.
- * Three settings have now met this; it is a property of the config module, noted in
- * `docs/production-readiness.md` as an open finding.
  */
 export const FALLBACK_CEILING_MB = 2048;
 export const MAX_CEILING_MB = 4096;
+/** Kept free of containers for the VM's own kernel and the Docker daemon. */
+export const DEFAULT_RESERVE_MB = 512;
+
+/** The reserve, from `DEVLAUNCH_MEMORY_RESERVE_MB`, or the default when it is unusable. */
+export function memoryReserveMb(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.DEVLAUNCH_MEMORY_RESERVE_MB?.trim();
+  const n = raw ? Number(raw) : NaN;
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_RESERVE_MB;
+}
 
 export function containerMemoryCeilingMb(
   env: NodeJS.ProcessEnv = process.env,
@@ -39,15 +47,8 @@ export function containerMemoryCeilingMb(
     return FALLBACK_CEILING_MB;
   }
 
-  // No floor when the machine is known.
-  //
-  // An earlier version kept the old constant as a minimum, so that a small VM would not
-  // get weaker repairs than before. That is exactly the wedge this is supposed to
-  // prevent: on a 2 GB VM it hands one container 2048 MB — the entire machine, with the
-  // daemon and a database already in it — and on 1 GB it offers twice what exists.
-  // Where the size is known, half of it is the answer; a machine that cannot do better
-  // than the default should say so and stop, which is what "already at the ceiling"
-  // means. The constant remains the answer only when the size is *unknown*, above.
-  const halfMb = Math.floor(vmMemoryBytes / 2 / (1024 * 1024));
-  return Math.min(halfMb, MAX_CEILING_MB);
+  // No floor when the machine is known: a VM too small to give more than the initial limit
+  // says so, rather than being offered memory it does not have.
+  const vmMb = Math.floor(vmMemoryBytes / (1024 * 1024));
+  return Math.max(0, Math.min(vmMb - memoryReserveMb(env), MAX_CEILING_MB));
 }

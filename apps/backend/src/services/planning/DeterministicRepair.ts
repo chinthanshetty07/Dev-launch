@@ -1,4 +1,5 @@
 import { config } from '../../config/index.js';
+import { LOCKFILE_OUT_OF_DATE, relaxedInstall } from '../analysis/InstallDetection.js';
 import {
   FailureCode,
   type FailureDetail,
@@ -102,6 +103,39 @@ interface Rule {
 }
 
 const RULES: readonly Rule[] = [
+  // --- a strict install refused a lockfile that does not match its manifest -----------
+  //
+  // Installs are strict when a lockfile exists — `npm ci`, `--frozen-lockfile`,
+  // `--immutable` — so the versions that run are the ones the repository recorded. A
+  // lockfile out of step with package.json, or written by another major of the manager,
+  // makes that refuse outright, and in repositories nobody has run for a while that is
+  // ordinary. Only that error falls back to the relaxed install: any other install failure
+  // fails the same way relaxed, and retrying it would bury the real cause.
+  {
+    applies: (c) => c === FailureCode.DEPENDENCY_INSTALL_FAILED,
+    propose: ({ plan, failure, logs }) => {
+      const relaxed = relaxedInstall(plan.installCommand);
+      if (!relaxed) return null;
+      const text = `${failure.evidence ?? ''}\n${failure.message}\n${logs.slice(-8000)}`;
+      const refusal = LOCKFILE_OUT_OF_DATE.map((p) => p.exec(text)).find((m): m is RegExpExecArray => m !== null);
+      if (!refusal) return null;
+      return {
+        plan: { ...plan, installCommand: relaxed },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: FailureCode.DEPENDENCY_INSTALL_FAILED,
+          before: { installCommand: plan.installCommand },
+          after: { installCommand: relaxed },
+          evidence: [
+            refusal[0].slice(0, 160),
+            'the lockfile does not match the manifest, so the install resolves from package.json instead',
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
   // --- the start script does not exist, and another does ------------------------
   {
     applies: (c) => c === FailureCode.START_COMMAND_FAILED,

@@ -45,7 +45,7 @@ function positiveInt(raw: unknown, fallback: number): number {
 }
 
 /** Shape a session for the wire. The handle and cleanup closures never leave the server. */
-function present(session: Session) {
+function present(session: Session, sessions?: Pick<SessionManager, 'installSummaries'>) {
   return {
     id: session.id,
     state: session.state,
@@ -71,6 +71,13 @@ function present(session: Session) {
     aiNote: session.aiNote,
     /** Typed and evidenced, so what changed and why is readable rather than inferred. */
     repairs: session.repairs,
+    /**
+     * Every container this session ran, kept across retries — what it ran under and how
+     * it ended — and a one-line summary per service. A run that took three tries says
+     * which three and why, instead of showing only the last.
+     */
+    launchAttempts: session.launchAttempts,
+    install: sessions?.installSummaries(session) ?? [],
     /**
      * Edits DevLaunch made to the clone, when DEVLAUNCH_REWRITE_SOURCE is set.
      *
@@ -295,7 +302,7 @@ export function createApp(opts: AppOptions): Express {
       return;
     }
     opts.sessions.touch(session.id);
-    res.json(present(session));
+    res.json(present(session, opts.sessions));
   });
 
   /** Supply what a session in AWAITING_INPUT is blocked on: env values, or a package. */

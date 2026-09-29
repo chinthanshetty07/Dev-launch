@@ -1,0 +1,2362 @@
+{
+  "name": "after3",
+  "startedAt": "2026-09-29T13:05:53.239Z",
+  "backend": {
+    "running": "6b039787f39ca825b06ccfdf06edcb21390b10ee",
+    "stale": false,
+    "egress": "enforced"
+  },
+  "results": [
+    {
+      "repo": "mdn/beginner-html-site-styled",
+      "category": "static",
+      "exercises": "index.html, no package.json",
+      "pinnedSha": "6c7a360ddb4a0d75be06044bf8a914f260ff10c7",
+      "ref": null,
+      "remoteTip": "6c7a360ddb4a0d75be06044bf8a914f260ff10c7",
+      "sessionId": "3f487f5d-d1d9-4c8d-954b-cdf702d73b5d",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "static",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": null,
+        "start": "python -m http.server 8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33676/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 6
+        }
+      ],
+      "durationS": 6
+    },
+    {
+      "repo": "mdn/beginner-html-site-scripted",
+      "category": "static",
+      "exercises": "index.html + script, no package.json",
+      "pinnedSha": "570260b392cc15a0b2ecd579071b0fc6384bbe98",
+      "ref": null,
+      "remoteTip": "570260b392cc15a0b2ecd579071b0fc6384bbe98",
+      "sessionId": "a313ad9d-d9e2-4c35-8fa8-7938454290a1",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "static",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": null,
+        "start": "python -m http.server 8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33677/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 4
+        }
+      ],
+      "durationS": 4
+    },
+    {
+      "repo": "mdn/todo-react",
+      "category": "vite-react",
+      "exercises": "Vite React, yarn.lock, .nvmrc v24",
+      "pinnedSha": "fb6d245439e0367d2c514227f4e5c20cb3df456e",
+      "ref": null,
+      "remoteTip": "fb6d245439e0367d2c514227f4e5c20cb3df456e",
+      "sessionId": "3c58f95a-8b71-40ca-ab6e-90f3c5cf5289",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "vite",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install --frozen-lockfile",
+        "start": "yarn run dev --host 0.0.0.0 --port 5173",
+        "port": 5173,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33678/",
+          "status": 302
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 39
+        }
+      ],
+      "durationS": 39
+    },
+    {
+      "repo": "mdn/todo-vue",
+      "category": "vite-vue",
+      "exercises": "Vite Vue, packageManager npm@11, engines >=24, .nvmrc",
+      "pinnedSha": "0a05fc0fbdce490bea35b68cd6468228ac4a2f73",
+      "ref": null,
+      "remoteTip": "0a05fc0fbdce490bea35b68cd6468228ac4a2f73",
+      "sessionId": "a6bd4adf-7d41-4df7-97e7-43729a04c13c",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "vite",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run dev -- --host 0.0.0.0 --port 5173",
+        "port": 5173,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Repository requests Node \">=24\"; running 20, the closest of 20 and 22."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33679/",
+          "status": 302
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 6
+        }
+      ],
+      "durationS": 6
+    },
+    {
+      "repo": "jguerraco/svelte-vite-app",
+      "category": "vite-svelte",
+      "exercises": "Vite Svelte, npm",
+      "pinnedSha": "ab3b9add7be6c4c55c3fb3181da99d1bce97821c",
+      "ref": null,
+      "remoteTip": "ab3b9add7be6c4c55c3fb3181da99d1bce97821c",
+      "sessionId": "c4afab6e-3c8c-4769-8692-1839bfe7ed38",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "vite",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run dev -- --host 0.0.0.0 --port 5173",
+        "port": 5173,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33680/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 6
+        }
+      ],
+      "durationS": 6
+    },
+    {
+      "repo": "ChrisWongAtCUHK/svelte-vite-app",
+      "category": "vite-svelte",
+      "exercises": "Vite Svelte, yarn",
+      "pinnedSha": "1c6c731125f7bc2a4e566e562c30372a986fab2c",
+      "ref": null,
+      "remoteTip": "1c6c731125f7bc2a4e566e562c30372a986fab2c",
+      "sessionId": "24cf5530-9bca-4826-bb9c-c943a07261b8",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "vite",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install --frozen-lockfile",
+        "start": "yarn run dev --host 0.0.0.0 --port 5173",
+        "port": 5173,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33681/",
+          "status": 302
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 12
+        }
+      ],
+      "durationS": 12
+    },
+    {
+      "repo": "sveltejs/template",
+      "category": "svelte-rollup",
+      "exercises": "Rollup + sirv, no lockfile",
+      "pinnedSha": "5b3da65ea310f98480c5258af97ff4d5c6f9d5b0",
+      "ref": null,
+      "remoteTip": "5b3da65ea310f98480c5258af97ff4d5c6f9d5b0",
+      "sessionId": "53319097-60bd-4e87-9439-625177fe260b",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "node",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33682/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 10
+        }
+      ],
+      "durationS": 10
+    },
+    {
+      "repo": "ahfarmer/calculator",
+      "category": "cra",
+      "exercises": "CRA, both package-lock and yarn.lock",
+      "pinnedSha": "37b56077e78b82bf2088ec993d55becb47538de9",
+      "ref": null,
+      "remoteTip": "37b56077e78b82bf2088ec993d55becb47538de9",
+      "sessionId": "900993b4-415c-4020-b8bd-caf08f8d0c7e",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "cra",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install",
+        "start": "yarn run start",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "WRONG_RUNTIME_VERSION",
+      "failureService": null,
+      "stage": "start",
+      "message": "The build tool uses a hash OpenSSL 3 no longer provides, so it cannot run on Node 17 or newer — and DevLaunch has no older Node.",
+      "evidence": "code: 'ERR_OSSL_EVP_UNSUPPORTED'",
+      "confidence": "high",
+      "repairs": [
+        "deterministic:START_COMMAND_CORRECTION"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 18
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 19
+        },
+        {
+          "state": "FAILED",
+          "atS": 69
+        }
+      ],
+      "durationS": 69
+    },
+    {
+      "repo": "shadcn-ui/next-template",
+      "category": "next",
+      "exercises": "Next, no lockfile",
+      "pinnedSha": "d117bd0fd897cfd3b0d14e8647d8fcd6341a511b",
+      "ref": null,
+      "remoteTip": "d117bd0fd897cfd3b0d14e8647d8fcd6341a511b",
+      "sessionId": "0c80f296-3efe-4bbd-9c3a-6c9430713d95",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "next",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev -- -H 0.0.0.0 -p 3000",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33685/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 40
+        }
+      ],
+      "durationS": 40
+    },
+    {
+      "repo": "vercel/nextjs-portfolio-starter",
+      "category": "next",
+      "exercises": "Next, yarn",
+      "pinnedSha": "90cfee0f74c25bb3688369a0587e435f8b8f114d",
+      "ref": null,
+      "remoteTip": "90cfee0f74c25bb3688369a0587e435f8b8f114d",
+      "sessionId": "4028365a-4ca2-407e-a13d-ac87258d5641",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "next",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install --frozen-lockfile",
+        "start": "yarn run dev -H 0.0.0.0 -p 3000",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33686/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 61
+        }
+      ],
+      "durationS": 61
+    },
+    {
+      "repo": "nuxt/starter",
+      "category": "nuxt",
+      "exercises": "Nuxt 3; default branch `templates` is not the app — needs ref selection",
+      "pinnedSha": "d2c4bdf636dbea1beaada559252a9e9693ad446f",
+      "ref": "v3",
+      "remoteTip": "d2c4bdf636dbea1beaada559252a9e9693ad446f",
+      "sessionId": "e8fd7063-b77d-4dde-ad7e-1c1ce971f3d6",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "nuxt",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev -- --host 0.0.0.0 --port 3000",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33687/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "STARTING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 90
+        }
+      ],
+      "durationS": 90
+    },
+    {
+      "repo": "sveltejs/realworld",
+      "category": "sveltekit",
+      "exercises": "SvelteKit, pnpm@10, .nvmrc 20",
+      "pinnedSha": "df796708040f5200ec572b28ab7f88ecee5794dd",
+      "ref": null,
+      "remoteTip": "df796708040f5200ec572b28ab7f88ecee5794dd",
+      "sessionId": "345d7cbd-c231-403b-a33e-b6e974b4bc7d",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "sveltekit",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 22",
+        "install": "pnpm install --no-frozen-lockfile",
+        "start": "pnpm run dev --host 0.0.0.0 --port 5173",
+        "port": 5173,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [
+        "deterministic:START_COMMAND_CORRECTION",
+        "deterministic:START_COMMAND_CORRECTION"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33690/tags",
+          "status": 404
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 5
+        },
+        {
+          "state": "READY",
+          "atS": 14
+        }
+      ],
+      "durationS": 14
+    },
+    {
+      "repo": "onwidget/astrowind",
+      "category": "astro",
+      "exercises": "Astro, engines >=22.22, .nvmrc 22",
+      "pinnedSha": "14e1a691f80548dcc36370847b1a02c0d0b12821",
+      "ref": null,
+      "remoteTip": "14e1a691f80548dcc36370847b1a02c0d0b12821",
+      "sessionId": "bd0b543b-6023-4f4a-beac-d25ec7cf0767",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "astro",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 22",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run dev -- --host 0.0.0.0 --port 4321",
+        "port": 4321,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Running Node 22 rather than 20."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33691/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 27
+        }
+      ],
+      "durationS": 27
+    },
+    {
+      "repo": "remix-run/indie-stack",
+      "category": "remix",
+      "exercises": "Remix + Prisma SQLite, no lockfile",
+      "pinnedSha": "56abb93bf81f635b574d9ca23eed05602699458a",
+      "ref": null,
+      "remoteTip": "56abb93bf81f635b574d9ca23eed05602699458a",
+      "sessionId": "02fea772-399b-4ea5-b728-8d8d73bd026e",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "remix",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev",
+        "port": 3001,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [
+        "deterministic:PORT_CORRECTION"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33693/",
+          "status": 404
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 6
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 165
+        },
+        {
+          "state": "STARTING",
+          "atS": 166
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 167
+        },
+        {
+          "state": "READY",
+          "atS": 252
+        }
+      ],
+      "durationS": 252
+    },
+    {
+      "repo": "gothinkster/angular-realworld-example-app",
+      "category": "angular",
+      "exercises": "Angular, text bun.lock only",
+      "pinnedSha": "dd99ed2cf39c805d719f943c5d7061a5683d98a8",
+      "ref": null,
+      "remoteTip": "dd99ed2cf39c805d719f943c5d7061a5683d98a8",
+      "sessionId": "8199680a-b04a-4534-81ed-4fd60e8e6330",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "angular",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run start -- --host 0.0.0.0 --port 4200",
+        "port": 4200,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "PORT_NOT_LISTENING",
+      "failureService": null,
+      "stage": "start",
+      "message": "Nothing is listening on port 4200. Sockets observed: 127.0.0.11:36183.",
+      "evidence": "You can mark the path \"realworld/assets/theme/styles.css\" as external to exclude it from the bundle, which will remove this error and leave the unresolved path in the bundle.",
+      "confidence": "low",
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "This repository uses git submodules (realworld/). DevLaunch clones without them, so that directory is empty here — anything the application imports, bundles or serves from it will be missing.",
+        "This project records its dependencies with Bun, which DevLaunch does not ship; installing with npm from package.json instead, so versions may differ from the Bun lockfile."
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 107
+        },
+        {
+          "state": "FAILED",
+          "atS": 111
+        }
+      ],
+      "durationS": 111
+    },
+    {
+      "repo": "developit/express-es6-rest-api",
+      "category": "express",
+      "exercises": "Express + babel, prestart build",
+      "pinnedSha": "9b8c005a38a0de820eac7e319e81b4318c320630",
+      "ref": null,
+      "remoteTip": "9b8c005a38a0de820eac7e319e81b4318c320630",
+      "sessionId": "15f53cca-ee2b-48cb-8498-7866a3ed40e8",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "express",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33695/api/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "STARTING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 26
+        }
+      ],
+      "durationS": 26
+    },
+    {
+      "repo": "danielfsousa/express-rest-boilerplate",
+      "category": "express",
+      "exercises": "Express + MongoDB, yarn",
+      "pinnedSha": "b8bed6d7cfce3cf2ef89ec1b5e47b52dfc50e874",
+      "ref": null,
+      "remoteTip": "b8bed6d7cfce3cf2ef89ec1b5e47b52dfc50e874",
+      "sessionId": "79b76774-b4b0-4460-8d35-39243c843c37",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "express",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install --frozen-lockfile",
+        "start": "yarn run dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": [
+        "EMAIL_PORT",
+        "EMAIL_HOST",
+        "EMAIL_USERNAME",
+        "EMAIL_PASSWORD"
+      ],
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33697/",
+          "status": 404
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "AWAITING_INPUT",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 7
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 77
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 81
+        },
+        {
+          "state": "READY",
+          "atS": 106
+        }
+      ],
+      "durationS": 106
+    },
+    {
+      "repo": "bradtraversy/react_express_starter",
+      "category": "express",
+      "exercises": "Express root + CRA client/, no lockfile",
+      "pinnedSha": "ca174893cdffae5085f7adae88de98592d45c2ce",
+      "ref": null,
+      "remoteTip": "ca174893cdffae5085f7adae88de98592d45c2ce",
+      "sessionId": "930f99ad-5c4f-470e-8e67-52bc52e085d7",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "project:web+api",
+      "planSource": "rule-based",
+      "plan": null,
+      "services": [
+        {
+          "name": "reactexpress",
+          "role": "api",
+          "state": "READY",
+          "url": "http://localhost:49401/api/customers",
+          "runtime": "node 20",
+          "start": "npm run dev",
+          "failureCode": null
+        },
+        {
+          "name": "client",
+          "role": "web",
+          "state": "READY",
+          "url": "http://localhost:3000/",
+          "runtime": "node 20",
+          "start": "npm run start",
+          "failureCode": null
+        }
+      ],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "client: package.json proxies to http://localhost:5000, which inside this container is this service itself — every request the page makes will fail. Point it at http://reactexpress:5000 instead; services reach each other by name here. Set DE"
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": "reactexpress",
+          "url": "http://localhost:49401/api/customers",
+          "status": 200
+        },
+        {
+          "service": "client",
+          "url": "http://localhost:3000/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 4
+        },
+        {
+          "state": "READY",
+          "atS": 67
+        }
+      ],
+      "durationS": 67
+    },
+    {
+      "repo": "fastify/demo",
+      "category": "fastify",
+      "exercises": "Fastify TS, MySQL",
+      "pinnedSha": "5cd560125b3c2f0d42192bc7f493e8e3b9e75e52",
+      "ref": null,
+      "remoteTip": "5cd560125b3c2f0d42192bc7f493e8e3b9e75e52",
+      "sessionId": "deb6e927-2cb5-46f0-b3bb-d3e44734a9e6",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "fastify",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "MISSING_ENV",
+      "failureService": null,
+      "stage": "start",
+      "message": "The start script loads .env with --env-file, and the repository has no such file.",
+      "evidence": "node: .env: not found",
+      "confidence": "high",
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": [
+        "COOKIE_SECRET"
+      ],
+      "warnings": [
+        "Fastify binds 127.0.0.1 unless the application reads HOST."
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "AWAITING_INPUT",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 14
+        },
+        {
+          "state": "FAILED",
+          "atS": 47
+        }
+      ],
+      "durationS": 47
+    },
+    {
+      "repo": "jellydn/fastify-starter",
+      "category": "fastify",
+      "exercises": "Fastify, pnpm@10, .nvmrc lts/*",
+      "pinnedSha": "2e898ec07c0147fd39e183f34fe471c59b8a4557",
+      "ref": null,
+      "remoteTip": "2e898ec07c0147fd39e183f34fe471c59b8a4557",
+      "sessionId": "200c3349-1a63-42b1-9ba0-2c1515c37854",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "fastify",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "pnpm install --frozen-lockfile",
+        "start": "pnpm run dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Fastify binds 127.0.0.1 unless the application reads HOST."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33699/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 14
+        }
+      ],
+      "durationS": 14
+    },
+    {
+      "repo": "nestjs/typescript-starter",
+      "category": "nestjs",
+      "exercises": "NestJS, npm",
+      "pinnedSha": "a122dea65cd0610ee205d7765ed46f9d73629141",
+      "ref": null,
+      "remoteTip": "a122dea65cd0610ee205d7765ed46f9d73629141",
+      "sessionId": "9ee20687-b698-4693-ac83-8ec81944202a",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "nest",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run start:dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33700/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 9
+        }
+      ],
+      "durationS": 9
+    },
+    {
+      "repo": "ljlm0402/typescript-express-starter",
+      "category": "ts-node",
+      "exercises": "A CLI that generates projects — expected unrunnable",
+      "pinnedSha": "e98d3d88ef08ae721bb00bec4b07af1a610c56f3",
+      "ref": null,
+      "remoteTip": "e98d3d88ef08ae721bb00bec4b07af1a610c56f3",
+      "sessionId": "b630d041-5933-4c3e-b611-f7dedb2eb1c8",
+      "outcome": "FAIL",
+      "finalState": "COMPLETED",
+      "detected": "node",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "pnpm install --frozen-lockfile",
+        "start": "pnpm run start",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "(COMPLETED, no port)",
+      "failureService": null,
+      "stage": "readiness",
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "COMPLETED",
+          "atS": 8
+        }
+      ],
+      "durationS": 8
+    },
+    {
+      "repo": "gothinkster/node-express-realworld-example-app",
+      "category": "ts-node",
+      "exercises": "Express TS under Nx, Prisma Postgres",
+      "pinnedSha": "30b68e1e881462b2f4164ea09ab4c4f5699c7b0b",
+      "ref": null,
+      "remoteTip": "30b68e1e881462b2f4164ea09ab4c4f5699c7b0b",
+      "sessionId": "3aefe8be-8388-4bf9-bf0a-edc0869d3e10",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "express",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run start",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33702/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 4
+        },
+        {
+          "state": "READY",
+          "atS": 23
+        }
+      ],
+      "durationS": 23
+    },
+    {
+      "repo": "sahat/hackathon-starter",
+      "category": "express",
+      "exercises": "Express + MongoDB, engines >=24.18",
+      "pinnedSha": "64679404b2e95349f3d3f2a0b5cdf5a12b1cf4cc",
+      "ref": null,
+      "remoteTip": "a00a1274e330bdd8c4ec25609dbdeba77f143c26",
+      "sessionId": "b685e455-c78d-46a1-b403-608a13efcb1a",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "express",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run start",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": [
+        "SESSION_SECRET",
+        "SMTP_USER",
+        "SMTP_PASSWORD",
+        "GIPHY_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_RECAPTCHA_SITE_KEY",
+        "GROQ_API_KEY",
+        "OPENAI_API_KEY",
+        "STRIPE_SKEY",
+        "STRIPE_PKEY"
+      ],
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33703/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "AWAITING_INPUT",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 9
+        },
+        {
+          "state": "READY",
+          "atS": 26
+        }
+      ],
+      "durationS": 26
+    },
+    {
+      "repo": "miguelgrinberg/microblog",
+      "category": "flask",
+      "exercises": "Flask, requirements.txt, no app.py at root",
+      "pinnedSha": "a975ef64864354867c88e0ed3a17ba7d17dca752",
+      "ref": null,
+      "remoteTip": "a975ef64864354867c88e0ed3a17ba7d17dca752",
+      "sessionId": "0712f3fb-2d93-46ac-b546-b8b358f1ad49",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "ai-fallback",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install --prefer-binary -r requirements.txt",
+        "start": "flask run --host=0.0.0.0 --port=5000",
+        "port": 5000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "DEPENDENCY_INSTALL_FAILED",
+      "failureService": null,
+      "stage": "install",
+      "message": "Dependency installation failed.",
+      "evidence": "Failed to build multidict",
+      "confidence": "low",
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "PLANNING",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 5
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 7
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 15
+        },
+        {
+          "state": "STARTING",
+          "atS": 17
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 18
+        },
+        {
+          "state": "FAILED",
+          "atS": 24
+        }
+      ],
+      "durationS": 24
+    },
+    {
+      "repo": "JayBhatt2021/improved-flask-tutorial-app",
+      "category": "flask",
+      "exercises": "Flask, pyproject only",
+      "pinnedSha": "8df96b97c98386fc377ec2b9a4d3fcf80f3f6ad5",
+      "ref": null,
+      "remoteTip": "8df96b97c98386fc377ec2b9a4d3fcf80f3f6ad5",
+      "sessionId": "fb9cda63-98a7-4f8c-9a6a-a4e2d8801ed2",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "ai-fallback",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -e .",
+        "start": "python -m gunicorn -b 0.0.0.0:8336 flaskr:create_app",
+        "port": 8336,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "START_COMMAND_FAILED",
+      "failureService": null,
+      "stage": "start",
+      "message": "The start command could not be run: sh: 1: gunicorn: not found",
+      "evidence": "sh: 1: gunicorn: not found",
+      "confidence": "high",
+      "repairs": [
+        "deterministic:START_COMMAND_CORRECTION"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "PLANNING",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 5
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 22
+        },
+        {
+          "state": "FAILED",
+          "atS": 24
+        }
+      ],
+      "durationS": 24
+    },
+    {
+      "repo": "testdrivenio/fastapi-crud-sync",
+      "category": "fastapi",
+      "exercises": "FastAPI in src/, compose, Postgres",
+      "pinnedSha": "d0e0b644bd914b63da95600c81a29c18825295ec",
+      "ref": null,
+      "remoteTip": "d0e0b644bd914b63da95600c81a29c18825295ec",
+      "sessionId": "d3b39804-5ddb-485f-8a1f-164dabc84b3d",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "fastapi",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install psycopg2-binary SQLAlchemy==1.4.41 fastapi==0.87.0 uvicorn==0.20.0 pytest==7.2.0 httpx==0.23.1",
+        "start": "uvicorn app.main:app --host 0.0.0.0 --port 8000",
+        "port": 8000,
+        "dir": "src"
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [
+        "deterministic:START_COMMAND_CORRECTION"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Nothing runnable at the repository root; running src instead (docker-compose declares web)."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33709/ping",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 94
+        },
+        {
+          "state": "STARTING",
+          "atS": 97
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 98
+        },
+        {
+          "state": "READY",
+          "atS": 102
+        }
+      ],
+      "durationS": 102
+    },
+    {
+      "repo": "max-pfeiffer/uvicorn-poetry-fastapi-project-template",
+      "category": "poetry",
+      "exercises": "FastAPI, Poetry lockfile",
+      "pinnedSha": "7127f5029f977943bbbfb889242fd3a89b64bc94",
+      "ref": null,
+      "remoteTip": "7127f5029f977943bbbfb889242fd3a89b64bc94",
+      "sessionId": "6db7fe70-4f1c-4511-baeb-e8d3ff3bbd6b",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "fastapi",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "uvicorn app.main:app --host 0.0.0.0 --port 8000",
+        "port": 8000,
+        "dir": "{{cookiecutter.project_slug}}"
+      },
+      "services": [],
+      "failureCode": "DEPENDENCY_INSTALL_FAILED",
+      "failureService": null,
+      "stage": "install",
+      "message": "Dependency installation failed.",
+      "evidence": "tomllib.TOMLDecodeError: Invalid statement (at line 5, column 1)",
+      "confidence": "low",
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Nothing runnable at the repository root; running {{cookiecutter.project_slug}} instead (requires fastapi)."
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 6
+        },
+        {
+          "state": "FAILED",
+          "atS": 7
+        }
+      ],
+      "durationS": 7
+    },
+    {
+      "repo": "nsidnev/fastapi-realworld-example-app",
+      "category": "poetry",
+      "exercises": "FastAPI, Poetry, Postgres",
+      "pinnedSha": "029eb7781c60d5f563ee8990a0cbfb79b244538c",
+      "ref": null,
+      "remoteTip": "029eb7781c60d5f563ee8990a0cbfb79b244538c",
+      "sessionId": "a1b601f1-b92a-4f60-bed2-088f2625be6a",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "fastapi",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "python 3.11",
+        "install": "pip install -r requirements.txt",
+        "start": "uvicorn app.main:application --host 0.0.0.0 --port 8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "DEPENDENCY_INSTALL_FAILED",
+      "failureService": null,
+      "stage": "install",
+      "message": "Dependency installation failed.",
+      "evidence": "ERROR: Failed to build installable wheels for some pyproject.toml based projects (asyncpg)",
+      "confidence": "low",
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Installing 14 declared dependencies with the version ranges pyproject.toml gives them: this project has several top-level directories and no package configuration, so `pip install .` cannot build it. DevLaunch writes the ranges into /worksp"
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 95
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 103
+        },
+        {
+          "state": "FAILED",
+          "atS": 107
+        }
+      ],
+      "durationS": 107
+    },
+    {
+      "repo": "mdn/django-locallibrary-tutorial",
+      "category": "django",
+      "exercises": "Django, requirements.txt",
+      "pinnedSha": "92f1c1e7bdd4ada5209a3c69876ce29e6cee3d96",
+      "ref": null,
+      "remoteTip": "92f1c1e7bdd4ada5209a3c69876ce29e6cee3d96",
+      "sessionId": "7410bfcf-0f19-43fc-afa9-637f35cc28f8",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "django",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "python manage.py runserver 0.0.0.0:8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33713/",
+          "status": 400
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 4
+        },
+        {
+          "state": "READY",
+          "atS": 9
+        }
+      ],
+      "durationS": 9
+    },
+    {
+      "repo": "pyCampaDB/pipenvDjango",
+      "category": "pipenv",
+      "exercises": "Django with Pipfile + Pipfile.lock + requirements.txt",
+      "pinnedSha": "4cd7b4f47a0dd1f9e3019a33a443f53fa0cf922e",
+      "ref": null,
+      "remoteTip": "4cd7b4f47a0dd1f9e3019a33a443f53fa0cf922e",
+      "sessionId": "06304b7f-6042-41a7-a376-b0b3eddc2fc3",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "django",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "python manage.py runserver 0.0.0.0:8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33714/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "STARTING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 7
+        }
+      ],
+      "durationS": 7
+    },
+    {
+      "repo": "streamlit/demo-uber-nyc-pickups",
+      "category": "streamlit",
+      "exercises": "Streamlit, requirements.txt",
+      "pinnedSha": "62fa70f59da265450b97429e9bfae99b85bcacdd",
+      "ref": null,
+      "remoteTip": "62fa70f59da265450b97429e9bfae99b85bcacdd",
+      "sessionId": "f1b057b5-637a-42a7-a6f3-8c69bf82705b",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "streamlit",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true",
+        "port": 8501,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Requires --server.headless to avoid the first-run email prompt."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33715/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 4
+        },
+        {
+          "state": "READY",
+          "atS": 18
+        }
+      ],
+      "durationS": 18
+    },
+    {
+      "repo": "streamlit/streamlit-example",
+      "category": "streamlit",
+      "exercises": "Streamlit, requirements.txt",
+      "pinnedSha": "8bd2197e4ba68dd68127a264dc6708f0a96f23c8",
+      "ref": null,
+      "remoteTip": "8bd2197e4ba68dd68127a264dc6708f0a96f23c8",
+      "sessionId": "f01946fe-faea-402a-ae80-5b958f201c57",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "streamlit",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true",
+        "port": 8501,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Requires --server.headless to avoid the first-run email prompt."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33716/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 15
+        }
+      ],
+      "durationS": 15
+    },
+    {
+      "repo": "gogetjax/gradio-app-demo",
+      "category": "gradio",
+      "exercises": "Gradio app.py, no manifest",
+      "pinnedSha": "359aa7b1450ac0b90f3db8a7310335cdc67bc2e8",
+      "ref": null,
+      "remoteTip": "359aa7b1450ac0b90f3db8a7310335cdc67bc2e8",
+      "sessionId": "a9b25383-d12a-4df0-b6da-75d3aa666da8",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "gradio",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install gradio",
+        "start": "python app.py",
+        "port": 7860,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "No requirements.txt or pyproject.toml, so the 1 distribution(s) its source imports are installed instead: gradio. Versions are not pinned, because the repository pinned none."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33717/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "STARTING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 17
+        }
+      ],
+      "durationS": 17
+    },
+    {
+      "repo": "TakanoriOnuma/bun-react-vite",
+      "category": "bun",
+      "exercises": "Vite React, text bun.lock, .tool-versions",
+      "pinnedSha": "1a039ae716c2bafcc7d9c0399c9ff992fb0146ca",
+      "ref": null,
+      "remoteTip": "1a039ae716c2bafcc7d9c0399c9ff992fb0146ca",
+      "sessionId": "a5fb62ae-5395-4cd5-a56e-8bb01c50a46a",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "vite",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev -- --host 0.0.0.0 --port 5173",
+        "port": 5173,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "This project records its dependencies with Bun, which DevLaunch does not ship; installing with npm from package.json instead, so versions may differ from the Bun lockfile."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33718/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 17
+        }
+      ],
+      "durationS": 17
+    },
+    {
+      "repo": "sadrozzy/Bun-React-Template",
+      "category": "bun",
+      "exercises": "Vite React, binary bun.lockb",
+      "pinnedSha": "7a5a08a5d2b030451880f6b6e53188900a468009",
+      "ref": null,
+      "remoteTip": "7a5a08a5d2b030451880f6b6e53188900a468009",
+      "sessionId": "900be59d-6d0a-48a5-9e9e-9dbc519b6ef7",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": null,
+      "planSource": null,
+      "plan": null,
+      "services": [],
+      "failureCode": "UNSUPPORTED_PROJECT",
+      "failureService": null,
+      "stage": "clone",
+      "message": "The `dev` script runs `bunx --bun vite`, which needs the Bun runtime. DevLaunch runs Node 20 and 22 and ships no Bun, so no plan it can make starts this project.",
+      "evidence": null,
+      "confidence": "high",
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "This project records its dependencies with Bun, which DevLaunch does not ship; installing with npm from package.json instead, so versions may differ from the Bun lockfile."
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "FAILED",
+          "atS": 3
+        }
+      ],
+      "durationS": 3
+    },
+    {
+      "repo": "patelharsh9797/bun-hono-app",
+      "category": "bun",
+      "exercises": "Hono on the Bun runtime, bun.lockb",
+      "pinnedSha": "6cc240009a89de4d2f7371207827b76d42930966",
+      "ref": null,
+      "remoteTip": "6cc240009a89de4d2f7371207827b76d42930966",
+      "sessionId": "3fdfbc0b-bb23-4ba2-820a-ab36665ea0dc",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": null,
+      "planSource": null,
+      "plan": null,
+      "services": [],
+      "failureCode": "UNSUPPORTED_PROJECT",
+      "failureService": null,
+      "stage": "clone",
+      "message": "The `dev` script runs `bun --watch server/index.ts`, which needs the Bun runtime. DevLaunch runs Node 20 and 22 and ships no Bun, so no plan it can make starts this project.",
+      "evidence": null,
+      "confidence": "high",
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "This project records its dependencies with Bun, which DevLaunch does not ship; installing with npm from package.json instead, so versions may differ from the Bun lockfile."
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "FAILED",
+          "atS": 3
+        }
+      ],
+      "durationS": 3
+    },
+    {
+      "repo": "dan5py/turborepo-shadcn-ui",
+      "category": "turborepo",
+      "exercises": "Turborepo, pnpm@10, engines >=24",
+      "pinnedSha": "ce2b71719d03ec76e91ecbd662e6df77d8b87ef2",
+      "ref": null,
+      "remoteTip": "ce2b71719d03ec76e91ecbd662e6df77d8b87ef2",
+      "sessionId": "c38c6062-54df-47b6-8209-85047bb5da2b",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "next",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "pnpm install --frozen-lockfile",
+        "start": "npm run dev -- -H 0.0.0.0 -p 3000",
+        "port": 3000,
+        "dir": "apps/docs"
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Workspace detected; installing once at the repository root with pnpm."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:33719/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 17
+        }
+      ],
+      "durationS": 17
+    },
+    {
+      "repo": "ejazahm3d/fullstack-turborepo-starter",
+      "category": "turborepo",
+      "exercises": "Turborepo, yarn@1 workspaces",
+      "pinnedSha": "56ac4e1202026fecddbb5c78fdaf061afbdcbd35",
+      "ref": null,
+      "remoteTip": "56ac4e1202026fecddbb5c78fdaf061afbdcbd35",
+      "sessionId": "99042b57-2117-41ad-80db-2c1ef56d0d52",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "project:web+api",
+      "planSource": "rule-based",
+      "plan": null,
+      "services": [
+        {
+          "name": "api",
+          "role": "api",
+          "state": "READY",
+          "url": "http://localhost:3000/",
+          "runtime": "node 20",
+          "start": "npm run start",
+          "failureCode": null
+        },
+        {
+          "name": "web",
+          "role": "web",
+          "state": "READY",
+          "url": "http://localhost:49767/",
+          "runtime": "node 20",
+          "start": "npm run dev -- -H 0.0.0.0 -p 3000",
+          "failureCode": null
+        }
+      ],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [
+        "deterministic:PORT_CORRECTION"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Workspace detected; installing once at the repository root with yarn."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": "api",
+          "url": "http://localhost:3000/",
+          "status": 200
+        },
+        {
+          "service": "web",
+          "url": "http://localhost:49767/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 65
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 134
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 138
+        },
+        {
+          "state": "READY",
+          "atS": 198
+        }
+      ],
+      "durationS": 198
+    },
+    {
+      "repo": "nrwl/nx-examples",
+      "category": "nx",
+      "exercises": "Nx, yarn@4 packageManager, .node-version",
+      "pinnedSha": "3a884ecaf57c1ace9ff75349ceb6847a904d758f",
+      "ref": null,
+      "remoteTip": "3a884ecaf57c1ace9ff75349ceb6847a904d758f",
+      "sessionId": "3e643039-5fff-412d-a651-bd72d9e55004",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "angular",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install --immutable",
+        "start": "yarn run start --host 0.0.0.0 --port 4200 --disable-host-check",
+        "port": 4200,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "START_COMMAND_FAILED",
+      "failureService": null,
+      "stage": "start",
+      "message": "Start command exited with code 1.",
+      "evidence": "TypeError: WorkspaceContext is not a constructor",
+      "confidence": "low",
+      "repairs": [
+        "deterministic:MEMORY_LIMIT_RAISED"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 4
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 128
+        },
+        {
+          "state": "FAILED",
+          "atS": 133
+        }
+      ],
+      "durationS": 133
+    }
+  ],
+  "note": "The code measured is `6b03978` plus this session's install-detection and OOM-recovery work, uncommitted at the time. Strict installs: npm ci ×6, --frozen-lockfile ×7, --immutable ×1 — every one of them completed its install (the two of those runs that then failed did so afterwards: a generator CLI that exits, and Nx's own workspace error); one stale pnpm lockfile relaxed by rule (sveltejs/realworld). \"With a model repair\" counts applied repairs only."
+}

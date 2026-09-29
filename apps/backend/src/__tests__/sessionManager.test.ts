@@ -1778,6 +1778,12 @@ describe('a project where more than one service needs repairing', () => {
       'api:PORT_CORRECTION',
       'web:PORT_CORRECTION',
     ]);
+    // Every container each service got, in order, with how it ended — the memory raise
+    // and the plan repair alike. A repair that restarted a service without a record left
+    // the summary describing a container that no longer existed.
+    const history = (name: string) => (s.launchAttempts ?? []).filter((a) => a.service === name).map((a) => a.result);
+    expect(history('api')).toEqual([FailureCode.OUT_OF_MEMORY, FailureCode.PORT_NOT_LISTENING, 'ok']);
+    expect(history('web')).toEqual([FailureCode.PORT_NOT_LISTENING, 'ok']);
     await m.shutdown();
   });
 
@@ -1841,8 +1847,14 @@ describe('a project where more than one service needs repairing', () => {
     );
 
     expect(s.state).toBe(ExecutionState.PARTIALLY_READY);
-    // One start, then exactly its own allowance of repairs.
-    expect(attempts.filter((n) => n === 'api')).toHaveLength(1 + config.ai.maxRepairAttempts);
+    // One start, one memory raise, then exactly its own allowance of plan repairs.
+    //
+    // Rewritten, not flipped: the memory raise used to count against the same two-attempt
+    // allowance, so this was 1 + 2. A memory ladder of two raises would then leave no plan
+    // repair at all for a run that needed one once it had memory enough, so raises have
+    // their own limit (the memory policy's) and the plan repairs keep theirs. The intent —
+    // this service's plan repairs stop at the ceiling, counted per service — is unchanged.
+    expect(attempts.filter((n) => n === 'api')).toHaveLength(2 + config.ai.maxRepairAttempts);
     expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(
       new RegExp(`Repair limit of ${config.ai.maxRepairAttempts} reached for api`),
     );
@@ -1934,7 +1946,9 @@ describe('a project service killed by our own memory limit', () => {
         async launch(o: { plan: { name?: string }; logs?: LogManager; memoryMb?: number }) {
           const name = o.plan.name ?? 'single';
           limits.push({ name, memoryMb: o.memoryMb });
-          const raised = o.memoryMb !== undefined;
+          // The first container is launched at the policy's initial limit (1024 here); only
+          // a raise takes it past that.
+          const raised = (o.memoryMb ?? 1024) > 1024;
           return {
             logs: o.logs ?? new LogManager(),
             waitForReady: async (): Promise<ReadyOutcome> =>
@@ -1969,14 +1983,14 @@ describe('a project service killed by our own memory limit', () => {
     const s = await m.launch({ sourceDir: '/tmp/repo' });
     await until(() => s.state === ExecutionState.READY || s.state === ExecutionState.FAILED, 8000);
 
-    const { config } = await import('../config/index.js');
     expect(s.state).toBe(ExecutionState.READY);
     expect(s.repairs?.[0]).toMatchObject({
       source: 'deterministic', type: 'MEMORY_LIMIT_RAISED', service: 'api',
     });
-    // The restarted api got the ceiling.
-    expect(e.limits.filter((l) => l.name === 'api').map((l) => l.memoryMb))
-      .toEqual([undefined, config.container.memoryCeilingMb]);
+    // Rewritten, not flipped: the restart used to jump straight to the ceiling from an
+    // implicit default. It now starts at the policy's initial limit and takes the next
+    // step of the ladder — here, with no VM size to read, 1024 → 2048.
+    expect(e.limits.filter((l) => l.name === 'api').map((l) => l.memoryMb)).toEqual([1024, 2048]);
     await m.shutdown();
   });
 
@@ -1989,11 +2003,13 @@ describe('a project service killed by our own memory limit', () => {
     const s = await m.launch({ sourceDir: '/tmp/repo' });
     await until(() => s.state === ExecutionState.READY || s.state === ExecutionState.FAILED, 8000);
 
-    expect(e.limits.filter((l) => l.name === 'web').map((l) => l.memoryMb)).toEqual([undefined]);
+    // Rewritten, not flipped: "unraised" used to be `undefined`; the initial limit is now
+    // explicit, so unraised is the initial limit itself.
+    expect(e.limits.filter((l) => l.name === 'web').map((l) => l.memoryMb)).toEqual([1024]);
     // And not merely unlaunched at the ceiling — unraised. A sibling carrying a raised
     // limit would take it on its next restart, which is the same mistake arriving late.
-    expect(s.run?.services.find((sv) => sv.name === 'web')?.memoryMb).toBeUndefined();
-    expect(s.run?.services.find((sv) => sv.name === 'api')?.memoryMb).toBeGreaterThan(0);
+    expect(s.run?.services.find((sv) => sv.name === 'web')?.memoryMb).toBe(1024);
+    expect(s.run?.services.find((sv) => sv.name === 'api')?.memoryMb).toBeGreaterThan(1024);
     await m.shutdown();
   });
 
@@ -2027,10 +2043,12 @@ describe('a project service killed by our own memory limit', () => {
       8000,
     );
 
-    // Started once, raised once, and then no more.
+    // Started once, raised once — to the 2048 MB ceiling this fake VM allows — and then no
+    // more. Rewritten, not flipped: the message it looks for is the final one now.
     expect(limits.filter((l) => l.name === 'api')).toHaveLength(2);
     expect(s.state).toBe(ExecutionState.PARTIALLY_READY);
-    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/already the\s+ceiling/);
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/still exceeded the maximum available memory \(2048 MB/);
+    expect(s.failure?.memory).toMatchObject({ limitMb: 2048, maximumMb: 2048, attempts: 2, retryable: false });
     await m.shutdown();
   });
 });
@@ -2292,33 +2310,56 @@ describe('a project that is partly running', () => {
  * Every word true, and an odd thing to say about configuration DevLaunch writes.
  */
 describe('running out of memory under our own ceiling', () => {
-  const oom = (): ReadyOutcome => ({
+  const GB = 1024 * 1024 * 1024;
+  /** A container killed by the kernel for its limit, as the executor now reports it. */
+  const oom = (phase: 'install' | 'build' | 'start' = 'install'): ReadyOutcome => ({
     state: ExecutionState.FAILED,
     hostPort: null,
     readiness: { ready: false, attempts: 1, elapsedMs: 1 },
     failure: {
       code: FailureCode.OUT_OF_MEMORY,
-      message: 'The process was killed for exceeding the container memory limit.',
+      message: 'Dependency installation was killed for exceeding the container memory limit.',
+      phase,
+      memory: { kind: 'container', limitMb: 0, detectedBy: ['docker: OOMKilled'] },
     } as ReadyOutcome['failure'],
   });
+  const ok = (): ReadyOutcome => ready();
 
-  /** Records the memory limit each container was created with. */
-  function limitSpy(outcome: () => ReadyOutcome, vmBytes?: number) {
+  /**
+   * Records the memory limit each container was created with, and how many of its
+   * predecessors had been cleaned up by then — a retry must not overlap the container it
+   * replaces.
+   */
+  function limitSpy(outcome: (limitMb: number, n: number) => ReadyOutcome, vmBytes?: number, budget?: { capacityMb: number; heldMb: number }) {
     const limits: (number | undefined)[] = [];
+    const heaps: (number | undefined)[] = [];
+    const cleanedBeforeLaunch: number[] = [];
+    let cleaned = 0;
     return {
       limits,
+      heaps,
+      cleanedBeforeLaunch,
+      cleaned: () => cleaned,
       exec: {
         // Present only when a test says how big the VM is. Its *absence* is the
-        // pre-existing case — a Docker client that cannot answer — and the reason every
-        // other test here sees the fallback constant.
+        // pre-existing case — a Docker client that cannot answer — and the reason those
+        // tests see the fallback ceiling of 2048.
         ...(vmBytes === undefined ? {} : { docker: { hostMemoryBytes: async () => vmBytes } }),
-        async launch(o: { logs?: LogManager; memoryMb?: number }) {
+        ...(budget ? { memory: { freeMb: () => budget.capacityMb - budget.heldMb, holders: () => [{ id: 'db', mb: budget.heldMb }] } } : {}),
+        async launch(o: { logs?: LogManager; memoryMb?: number; nodeHeapMb?: number }) {
+          cleanedBeforeLaunch.push(cleaned);
           limits.push(o.memoryMb);
+          heaps.push(o.nodeHeapMb);
+          const n = limits.length;
           return {
+            container: { id: `c${n}` },
             logs: o.logs ?? new LogManager(),
-            waitForReady: async () => outcome(),
+            waitForReady: async () => outcome(o.memoryMb ?? 0, n),
             clearStartupBudget: () => undefined,
-            cleanup: async () => ({ errors: [] }),
+            cleanup: async () => {
+              cleaned++;
+              return { errors: [] };
+            },
           } as unknown as LaunchHandle;
         },
       } as unknown as ExecutionManager,
@@ -2331,100 +2372,224 @@ describe('running out of memory under our own ceiling', () => {
     aiRepair: { repair: async () => { throw new Error('a model cannot change a HostConfig'); } } as never,
   });
 
-  it('raises the limit once and starts again, rather than blaming the project', async () => {
-    const { exec, limits } = limitSpy(oom);
-    const mgr = new SessionManager(exec, deps(exec));
+  async function run(spy: ReturnType<typeof limitSpy>) {
+    const mgr = new SessionManager(spy.exec, deps(spy.exec));
     const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
-    await until(() => s.state === ExecutionState.FAILED, 6000);
-
-    const { config } = await import('../config/index.js');
-    // First container at the default, second at the ceiling.
-    expect(limits[0]).toBeUndefined();
-    expect(limits[1]).toBe(config.container.memoryCeilingMb);
-    expect(s.repairs?.[0]).toMatchObject({
-      source: 'deterministic',
-      type: 'MEMORY_LIMIT_RAISED',
-      failureCode: FailureCode.OUT_OF_MEMORY,
-    });
+    await until(() => ([ExecutionState.READY, ExecutionState.FAILED] as ExecutionState[]).includes(s.state), 6000);
+    // Taken before shutdown, which cancels a READY session.
+    const snapshot = { ...s, state: s.state, launchAttempts: [...(s.launchAttempts ?? [])] };
     await mgr.shutdown();
+    return snapshot;
+  }
+  const text = (s: { logs: LogManager }) => s.logs.buffer.all().map((l) => l.text).join('\n');
+  const vm5910 = 5910 * 1024 * 1024;
+
+  it('does not retry an install that succeeds at the initial limit (test 6)', async () => {
+    const spy = limitSpy(() => ok(), vm5910);
+    const s = await run(spy);
+    expect(s.state).toBe(ExecutionState.READY);
+    expect(spy.limits).toEqual([1024]);
+    expect(s.launchAttempts).toMatchObject([{ attempt: 1, memoryMb: 1024, result: 'ok' }]);
   });
 
-  it('raises to half the VM, not to a constant that ignores the machine', async () => {
-    // The wiring, which nothing exercised: every other test here leaves the Docker
-    // double without `hostMemoryBytes`, so the ceiling degrades to the old constant and
-    // passes whether the VM is consulted or not. On a 6 GB VM the answer is 3072, and
-    // 2048 would mean the lookup is not connected.
-    const { exec, limits } = limitSpy(oom, 6 * 1024 * 1024 * 1024);
-    const mgr = new SessionManager(exec, deps(exec));
-    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
-    await until(() => s.state === ExecutionState.FAILED, 6000);
-
-    expect(limits[1]).toBe(3072);
-    await mgr.shutdown();
+  it('retries exactly once when the second limit is enough (test 7)', async () => {
+    const spy = limitSpy((mb) => (mb < 2048 ? oom() : ok()), vm5910);
+    const s = await run(spy);
+    expect(s.state).toBe(ExecutionState.READY);
+    expect(spy.limits).toEqual([1024, 2048]);
+    expect(s.repairs?.[0]).toMatchObject({ source: 'deterministic', type: 'MEMORY_LIMIT_RAISED', before: { memoryMb: 1024 }, after: { memoryMb: 2048 } });
+    expect(s.launchAttempts?.map((a) => [a.memoryMb, a.result])).toEqual([[1024, FailureCode.OUT_OF_MEMORY], [2048, 'ok']]);
   });
 
-  it('will not hand a small VM its entire memory, so it reports instead of retrying', async () => {
-    // A 2 GB machine has a daemon and possibly a database in it. Half of it is 1024 MB,
-    // which is already the default container size — so there is no raise to make, and
-    // the honest move is to say the machine is the limit rather than restart into the
-    // same kill. The earlier draft of this test expected a second container at 1024;
-    // that expectation was wrong, not the behaviour.
-    const { exec, limits } = limitSpy(oom, 2 * 1024 * 1024 * 1024);
-    const mgr = new SessionManager(exec, deps(exec));
-    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
-    await until(() => s.state === ExecutionState.FAILED, 6000);
-
-    expect(limits).toHaveLength(1);
-    expect(s.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
-    const text = s.logs.buffer.all().map((l) => l.text).join('\n');
-    expect(text).toMatch(/already the ceiling \(half of the 2048 MB this Docker VM has\)/);
-    await mgr.shutdown();
+  it('climbs 1024 → 2048 → 4096 on a 5910 MB VM, and stops when it fits (test 8)', async () => {
+    // The ceiling is derived — the VM less its reserve, capped at 4096 — not a constant.
+    const spy = limitSpy((mb) => (mb < 4096 ? oom() : ok()), vm5910);
+    const s = await run(spy);
+    expect(s.state).toBe(ExecutionState.READY);
+    expect(spy.limits).toEqual([1024, 2048, 4096]);
+    const log = text(s);
+    // This fake plan has no install step, and the log says so rather than inventing one.
+    expect(log).toMatch(/\[install\] Attempt 1\/3 · memory limit 1024 MB · running: \(no install step\)/);
+    expect(log).toMatch(/\[install\] Increasing memory: 1024 MB → 2048 MB/);
+    expect(log).toMatch(/\[install\] Attempt 3\/3 · memory limit 4096 MB/);
   });
 
-  it('blames the VM for the ceiling, not a variable nobody set', async () => {
-    // The message used to name DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB unconditionally,
-    // sending people to edit a variable that was not in force. The number comes from
-    // the machine, and so should the advice.
-    const { exec } = limitSpy(oom, 6 * 1024 * 1024 * 1024);
-    const mgr = new SessionManager(exec, deps(exec));
-    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
-    await until(() => s.state === ExecutionState.FAILED, 6000);
-
-    const text = s.logs.buffer.all().map((l) => l.text).join('\n');
-    expect(text).toMatch(/already the ceiling \(half of the 6144 MB this Docker VM has\)/);
-    await mgr.shutdown();
-  });
-
-  it('stops at the ceiling instead of climbing forever', async () => {
-    // One session at a time on a 4 GB VM with a database possibly beside it. An
-    // unbounded retry trades a reported failure for a wedged machine.
-    const { exec, limits } = limitSpy(oom);
-    const mgr = new SessionManager(exec, deps(exec));
-    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
-    await until(() => s.state === ExecutionState.FAILED, 6000);
-
-    expect(limits).toHaveLength(2);
+  it('gives a final, structured OUT_OF_MEMORY when every limit is exceeded (test 9)', async () => {
+    const spy = limitSpy(() => oom(), vm5910);
+    const s = await run(spy);
     expect(s.state).toBe(ExecutionState.FAILED);
-    expect(s.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
-    // And says so, rather than stopping silently at a number nobody can see.
-    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/already the ceiling/);
-    await mgr.shutdown();
+    expect(spy.limits).toEqual([1024, 2048, 4096]);
+    expect(s.failure).toMatchObject({
+      code: FailureCode.OUT_OF_MEMORY,
+      phase: 'install',
+      memory: { limitMb: 4096, maximumMb: 4096, attempts: 3, retryable: false, kind: 'container' },
+    });
+    expect(s.failure?.message).toBe(
+      'Dependency installation exceeded the container memory limit. DevLaunch retried with progressively ' +
+        'larger memory limits (1024 → 2048 → 4096 MB) but it still exceeded the maximum available memory ' +
+        '(4096 MB, the 4096 MB DevLaunch gives any one container).',
+    );
+    // The machine is the limit; nothing says the repository is broken.
+    expect(s.failure?.remedy).toMatch(/Give the Docker VM more memory/);
+  });
+
+  it('never asks for more than the VM allows, when the next step would exceed it (test 13)', async () => {
+    // A 3000 MB VM: the ceiling is 2488 (all but the reserve), below the next doubling.
+    const spy = limitSpy(() => oom(), 3000 * 1024 * 1024);
+    const s = await run(spy);
+    expect(spy.limits).toEqual([1024, 2048, 2488]);
+    expect(s.failure?.memory).toMatchObject({ maximumMb: 2488, retryable: false });
+    expect(s.failure?.message).toMatch(/2488 MB, all this 3000 MB Docker VM can give one container, less its 512 MB reserve/);
+  });
+
+  it('will not hand a small VM its entire memory, and says when there is nothing larger', async () => {
+    // Rewritten, not flipped: a 2 GB VM used to get no raise at all (half of it was the
+    // initial limit). By the user's decision it now gets all but its 512 MB reserve — never
+    // the whole machine — and then says the machine is the limit.
+    const spy = limitSpy(() => oom(), 2 * GB);
+    const s = await run(spy);
+    expect(spy.limits).toEqual([1024, 1536]);
+    expect(s.failure?.memory).toMatchObject({ maximumMb: 1536, retryable: false });
+    // A VM whose ceiling is the initial limit itself still retries nothing, and says so.
+    process.env.DEVLAUNCH_MEMORY_RESERVE_MB = '1024';
+    try {
+      const tiny = limitSpy(() => oom(), 2 * GB);
+      const t = await run(tiny);
+      expect(tiny.limits).toEqual([1024]);
+      expect(t.failure?.message).toMatch(/already the maximum available memory .* so there was nothing larger to retry with/);
+    } finally {
+      delete process.env.DEVLAUNCH_MEMORY_RESERVE_MB;
+    }
+  });
+
+  it('does not over-allocate beside other containers: it takes only what is free (test 14)', async () => {
+    // A database already holds 3000 of a 4886 MB capacity. The next step for this
+    // container is then what is free, not the doubling — and past that, it stops and
+    // names the holder instead of promising the VM memory it does not have.
+    const spy = limitSpy(() => oom(), 8 * GB, { capacityMb: 4886, heldMb: 3000 });
+    const s = await run(spy);
+    expect(spy.limits).toEqual([1024, 1886]);
+    expect(s.failure?.message).toMatch(/the VM has no more to give: 1886 MB is free after the 1 other container/);
+  });
+
+  it('releases each failed container before creating the next', async () => {
+    const spy = limitSpy(() => oom(), vm5910);
+    await run(spy);
+    // Before launch n, n-1 containers have been cleaned up: no two ever overlap.
+    expect(spy.cleanedBeforeLaunch).toEqual([0, 1, 2]);
+  });
+
+  it('does not add memory for a failure that is not memory (test 10)', async () => {
+    const spy = limitSpy(() => failed(), vm5910);
+    const s = await run(spy);
+    expect(spy.limits.every((mb) => mb === 1024)).toBe(true);
+    expect((s.repairs ?? []).some((r) => r.type === 'MEMORY_LIMIT_RAISED')).toBe(false);
+  });
+
+  it('reports the failure that stopped the run once an earlier one was got past', async () => {
+    // ahfarmer/calculator: a strict install refused a stale lockfile, a rule relaxed it, the
+    // install succeeded, and webpack 4 then failed on OpenSSL 3. Keeping the first diagnosis
+    // reported the lockfile — which had been solved — and hid the real error. The same with
+    // memory: killed at install, raised, then stopped at start by something else.
+    const tooNew = (): ReadyOutcome => ({
+      state: ExecutionState.FAILED, hostPort: null, readiness: { ready: false, attempts: 0, elapsedMs: 0 },
+      failure: { code: FailureCode.WRONG_RUNTIME_VERSION, message: 'OpenSSL 3', phase: 'start', runtimeDirection: 'older' } as ReadyOutcome['failure'],
+    });
+    let n = 0;
+    const spy = limitSpy(() => (++n === 1 ? oom() : tooNew()), vm5910);
+    const s = await run(spy);
+    expect(s.state).toBe(ExecutionState.FAILED);
+    expect(s.failure?.code).toBe(FailureCode.WRONG_RUNTIME_VERSION);
+  });
+
+  it('does not retry the install for a build failure, or add memory for it (test 11)', async () => {
+    const buildFailed = (): ReadyOutcome => ({
+      state: ExecutionState.FAILED, hostPort: null, readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+      failure: { code: FailureCode.BUILD_FAILED, message: 'Build failed.', phase: 'build' },
+    });
+    const spy = limitSpy(() => buildFailed(), vm5910);
+    const s = await run(spy);
+    expect(spy.limits.every((mb) => mb === 1024)).toBe(true);
+    expect((s.repairs ?? []).some((r) => r.type === 'MEMORY_LIMIT_RAISED')).toBe(false);
+    expect(s.failure?.code).toBe(FailureCode.BUILD_FAILED);
+  });
+
+  it('reports a port that never opens as that, not as memory (test 12)', async () => {
+    const neverListens = (): ReadyOutcome => ({
+      state: ExecutionState.FAILED, hostPort: '1', readiness: { ready: false, attempts: 5, elapsedMs: 60000 },
+      failure: { code: FailureCode.PORT_NOT_LISTENING, message: 'Nothing is listening on port 3000.', phase: 'start' },
+    });
+    const spy = limitSpy(() => neverListens(), vm5910);
+    const s = await run(spy);
+    expect(s.failure?.code).toBe(FailureCode.PORT_NOT_LISTENING);
+    expect(spy.limits.every((mb) => mb === 1024)).toBe(true);
+  });
+
+  it('answers a Node heap OOM with a larger heap first, inside the same container', async () => {
+    let n = 0;
+    const spy = limitSpy(() => {
+      n++;
+      return n === 1
+        ? ({ ...oom(), failure: { ...oom().failure!, memory: { kind: 'node-heap', limitMb: 1024, detectedBy: ['log: JavaScript heap limit'] } } } as ReadyOutcome)
+        : ok();
+    }, vm5910);
+    const s = await run(spy);
+    expect(s.state).toBe(ExecutionState.READY);
+    // Same container size, a heap of three quarters of it — never all of it.
+    expect(spy.limits).toEqual([1024, 1024]);
+    expect(spy.heaps).toEqual([undefined, 768]);
+    expect(s.repairs?.[0]).toMatchObject({ type: 'NODE_HEAP_RAISED', after: { nodeHeapMb: 768 } });
+  });
+
+  it('still raises memory after the plan repairs are spent — the two budgets are separate', async () => {
+    // Two port corrections spend the plan-repair allowance; the third run is then killed
+    // for memory. Counted in one budget, that kill would be reported as final at 1024 MB.
+    const portMoved = (port: number): ReadyOutcome => ({
+      state: ExecutionState.FAILED, hostPort: '1', readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+      failure: {
+        code: FailureCode.PORT_NOT_LISTENING, message: 'Nothing is listening on port 3000.', phase: 'start',
+        observedSocket: { address: '0.0.0.0', port, loopbackOnly: false },
+      } as ReadyOutcome['failure'],
+    });
+    const spy = limitSpy((mb, n) => (n === 1 ? portMoved(9101) : n === 2 ? portMoved(9102) : mb < 2048 ? oom() : ok()), vm5910);
+    const s = await run(spy);
+    expect(s.state).toBe(ExecutionState.READY);
+    expect(spy.limits).toEqual([1024, 1024, 1024, 2048]);
+    expect((s.repairs ?? []).map((r) => r.type)).toEqual(['PORT_CORRECTION', 'PORT_CORRECTION', 'MEMORY_LIMIT_RAISED']);
+  });
+
+  it('stops after the configured number of raises, even with room to grow', async () => {
+    process.env.DEVLAUNCH_MEMORY_RETRY_LIMIT = '1';
+    try {
+      const spy = limitSpy(() => oom(), 16 * GB);
+      const s = await run(spy);
+      expect(spy.limits).toEqual([1024, 2048]);
+      expect(s.failure?.memory).toMatchObject({ attempts: 2, retryable: false });
+    } finally {
+      delete process.env.DEVLAUNCH_MEMORY_RETRY_LIMIT;
+    }
+  });
+
+  it('turns escalation off when told to, and says so', async () => {
+    process.env.DEVLAUNCH_MEMORY_RETRY_ENABLED = 'false';
+    try {
+      const spy = limitSpy(() => oom(), vm5910);
+      const s = await run(spy);
+      expect(spy.limits).toEqual([1024]);
+      expect(s.failure?.message).toMatch(/memory retries are off/);
+    } finally {
+      delete process.env.DEVLAUNCH_MEMORY_RETRY_ENABLED;
+    }
   });
 
   it('keeps the raised limit across a later repair', async () => {
     // The limit lives on the session rather than the plan, and a later repair replaces
     // the plan wholesale. A retry that quietly went back to the default would re-run
     // the failure it had just fixed.
-    let call = 0;
-    const { exec, limits } = limitSpy(() => (++call === 1 ? oom() : failed()));
-    const mgr = new SessionManager(exec, deps(exec));
-    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
-    await until(() => s.state === ExecutionState.FAILED, 6000);
-
-    const { config } = await import('../config/index.js');
-    expect(limits.length).toBeGreaterThanOrEqual(2);
-    for (const limit of limits.slice(1)) expect(limit).toBe(config.container.memoryCeilingMb);
-    await mgr.shutdown();
+    const spy = limitSpy((_mb, n) => (n === 1 ? oom() : failed()));
+    await run(spy);
+    expect(spy.limits.length).toBeGreaterThanOrEqual(2);
+    for (const limit of spy.limits.slice(1)) expect(limit).toBe(2048);
   });
 });
 

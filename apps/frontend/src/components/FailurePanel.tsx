@@ -26,6 +26,20 @@ export function FailurePanel({ failure, repairs }: { failure?: FailureDetail; re
 
       <p className="mb-2">{failure.message}</p>
 
+      {/* Which memory ran out, under what limit, and how it was known — the difference
+          between "give it more" and "the machine is the limit" is in these numbers. */}
+      {failure.memory && (
+        <p className="mb-2 text-muted" data-testid="failure-memory">
+          {failure.memory.kind === 'node-heap' ? 'Node heap' : 'container memory'} · limit{' '}
+          {failure.memory.limitMb} MB
+          {failure.memory.maximumMb !== undefined && ` of ${failure.memory.maximumMb} MB available`}
+          {failure.memory.attempts !== undefined &&
+            ` · ${failure.memory.attempts} attempt${failure.memory.attempts === 1 ? '' : 's'}`}
+          {failure.memory.retryable === false && ' · not retried further'}
+          {failure.memory.detectedBy.length > 0 && ` · detected by ${failure.memory.detectedBy.join(', ')}`}
+        </p>
+      )}
+
       {failure.evidence && (
         <pre className="mb-2 overflow-x-auto rounded border border-edge bg-ink p-2 text-muted">
           {failure.evidence}

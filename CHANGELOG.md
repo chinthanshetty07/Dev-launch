@@ -1,5 +1,118 @@
 # Changelog
 
+## 2026-09-29 — Installs are detected in one place, and out-of-memory is climbed, not guessed
+
+`horusyeung/nextjs-nestjs-fullstack-starter` failed `OUT_OF_MEMORY during install`, and the
+recovery had four defects, each found in the live run rather than by reading:
+
+- the shared-install gate released the second service after the first was **killed**, so
+  it ran the same tree at the same limit and died identically;
+- the gate asked about memory only when a container had exited, but a killed yarn leaves
+  the wrapper alive long enough to print its install-failed marker — so the case that
+  actually happens was never asked about (a fake that died without the marker had passed);
+- a memory raise was one jump to the ceiling, counted against the two plan repairs;
+- the single-service OOM retry skipped releasing the dead container, which stayed until the
+  backend restarted.
+
+**Now READY, both services** — its best before was partly running. Measured twice. Under
+the old half-VM ceiling api's shared install climbed 1024 → 2048 → 2955 MB in place, each
+step detected by Docker's own `OOMKilled`, and fitted that run (it does not always: see the
+ceiling below); web waited, then started at the limit the shared install needed; both
+answered 200, and stopping left no container. Under the new ceiling api climbed
+1024 → 2048 → 4096 and installed, web started at 3625 MB — the 4096 it needed, capped by
+the memory measured free at that moment — and both reached READY again.
+
+### Install detection — `analysis/InstallDetection.ts`
+
+One module decides every install; the planner and workspace installs (which had its own
+lockfile table and never read `packageManager`) both ask it. It returns
+`{ packageManager, declaredManager, lockfile, ignoredLockfiles, installCommand,
+relaxedCommand, projectType, confidence, notes }`.
+
+- With a lockfile the install is **strict** — `npm ci`, `pnpm install --frozen-lockfile`,
+  `yarn install --frozen-lockfile` (Yarn 1) or `--immutable` (Yarn 2+, from the lockfile's
+  own format or `packageManager`). A new deterministic repair falls back to the relaxed form
+  **only** on the manager's "lockfile out of date" refusal — captured from the runner image
+  for npm, pnpm and Yarn 1 — and never on any other install failure.
+- **Bun** (`bun.lock`, `bun.lockb`, `bun@`) is recognised and reported, and installed with
+  npm: DevLaunch ships no Bun, by the user's earlier decision.
+- **Python**: requirements.txt, pyproject (buildable or not), Pipfile and poetry.lock are
+  recognised; lockfiles pip does not read are reported as `ignoredLockfiles`, not claimed.
+- *Rewritten tests:* the planner's package-manager test asserted the relaxed commands with a
+  lockfile; it now asserts the strict ones and says why.
+- *Measured, not assumed:* strictness is not what made horusyeung's install large. Peak
+  memory with headroom was 2635 and 2433 MiB with `--immutable`, 2699 and 2703 without.
+
+### The memory policy — `execution/MemoryPolicy.ts`
+
+`memoryPolicy()` is the one place for the initial limit (`DEVLAUNCH_CONTAINER_MEMORY_MB`,
+1024), the ceiling (the VM less its reserve, ≤ 4096 — see below), the step (doubling, or
+`DEVLAUNCH_MEMORY_STEP_MB`), the raise limit (`DEVLAUNCH_MEMORY_RETRY_LIMIT`, 2) and
+`DEVLAUNCH_MEMORY_RETRY_ENABLED`, validated, read at call time (the `.env` trap). On this VM
+the ladder is **1024 → 2048 → 4096**. `MemoryBudget` holds every container's limit,
+databases included, against the VM less `DEVLAUNCH_MEMORY_RESERVE_MB` (512), and an
+escalation takes at most what is free — counting other containers at what they **use**,
+sampled from Docker and capped by their limit. Counted at their limits, an api idling at a
+few hundred MB after a 2955 MB install refused web memory the VM plainly had.
+
+Memory raises have their **own** budget, apart from the two plan repairs, so a ladder cannot
+leave a run without the plan fix it needs once it has memory enough. Bounded twice: by the
+raise count, and by limits that only increase toward the ceiling.
+
+**The ceiling is what the VM has free, not half of it** — the user's decision, from the
+measurements. horusyeung's install peaks at 2.4–2.9 GB with headroom (2635, 2433, 2699,
+2703 MiB over four runs), right at the old ceiling of half this VM (2955 MB), so it fitted
+some runs and not others. `containerMemoryCeilingMb` is now the VM less
+`DEVLAUNCH_MEMORY_RESERVE_MB`, capped at 4096; what the run's other containers need is no
+longer assumed to be the other half, because the ledger counts them as they are. A 2 GB VM
+now gets 1536 at most — never the whole machine. The ceiling tests were rewritten to say so,
+not flipped.
+
+### Out-of-memory detection — `failures/OomDetection.ts`
+
+Measured first: a child OOM-killed inside the container sets `OOMKilled` while the wrapper
+exits **110**; a Node heap failure leaves it false. So Docker's flag decides; a `Killed`
+line or exit 137 stands in only when the flag cannot be read, and is **overruled** when
+Docker says false. A Node heap OOM is its own kind, answered first with
+`NODE_OPTIONS=--max-old-space-size` at three quarters of the container — set by DevLaunch in
+the wrapper's control variables; plans still cannot set `NODE_OPTIONS` — and only then with
+a larger container. Failures carry `memory: { kind, limitMb, detectedBy, maximumMb,
+attempts, retryable }`; the dead-container path no longer assumes every OOM was the install.
+
+### Retries, records, cleanup
+
+- **Retried:** a container OOM, up the ladder; a heap OOM, heap first. **Not retried with
+  memory:** anything else — install errors, a lockfile refusal (which relaxes instead), a
+  build failure, a port that never opens.
+- The final failure says what was tried: *"Dependency installation exceeded the container
+  memory limit. DevLaunch retried with progressively larger memory limits (1024 → 2048 →
+  4096 MB) but it still exceeded the maximum available memory (4096 MB, the 4096 MB
+  DevLaunch gives any one container)."* — or that there was nothing larger to try, or which containers hold
+  the rest. Never that the repository is broken.
+- Every launch is a `LaunchAttempt` (service, attempt, memory, heap, install command,
+  result, phase, `detectedBy`, duration) kept across retries and on the wire with a
+  per-service `install` summary; the log says `[install] api · Attempt 2/3 · memory limit
+  2048 MB · running: yarn install --immutable`, then `OOM detected (docker: OOMKilled)` and
+  `Increasing memory: 1024 MB → 2048 MB`. The dashboard's failure panel shows the memory
+  line.
+- Each retry releases the failed container before its replacement exists; the ledger
+  releases with it.
+
+### What is one limit per container
+
+A container runs install, build and start, so it has one limit; the phase that ran out is
+recorded, and a service raised for its install keeps that limit while it serves. A limit per
+phase would mean resizing a live container between phases, which is not done.
+
+- **Fixtures:** `node-install-oom` — a real 1.4 GB install, killed at 1024 MB and served at
+  2048 MB against real Docker, with no container left and nothing held afterwards.
+- **Tests:** the spec's fourteen scenarios, the shared-install gate with the measured
+  wrapper sequence, the Docker-flag rules, the policy and the ledger. **Mutations:** 35,
+  all killed by the test that names them. Two survived first and gained the tests that
+  kill them — memory escalation gated behind the plan-repair limit, and the workspace
+  manager field — and one kill was discarded because the mutant called a function that
+  did not exist, which proves nothing about the behaviour.
+
 ## 2026-09-29 — A Poetry project is installed within the ranges it declares
 
 A pyproject project that is not a buildable package — several top-level directories, no

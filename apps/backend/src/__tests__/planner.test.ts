@@ -160,9 +160,14 @@ describe('RuleBasedPlanner — Node frameworks', () => {
   });
 
   it.each([
-    [['pnpm-lock.yaml'], 'pnpm', 'pnpm install'],
-    [['yarn.lock'], 'yarn', 'yarn install'],
-    [['package-lock.json'], 'npm', 'npm install --no-audit --no-fund'],
+    // Rewritten, not flipped: with a lockfile the install used to be the relaxed form,
+    // because a strict one fails outright on a lockfile out of step with its manifest. It
+    // is now strict — the versions the repository recorded are the ones that run — and a
+    // repair rule falls back to the relaxed form on exactly that error (see
+    // installDetection.test.ts). The intent, the manager from the lockfile, is unchanged.
+    [['pnpm-lock.yaml'], 'pnpm', 'pnpm install --frozen-lockfile'],
+    [['yarn.lock'], 'yarn', 'yarn install --frozen-lockfile'],
+    [['package-lock.json'], 'npm', 'npm ci --no-audit --no-fund'],
     [[], 'npm', 'npm install --no-audit --no-fund'],
   ])('derives the package manager from %s', (lockfiles, pm, install) => {
     const out = planner.plan(node({ vite: '5' }, { dev: 'vite' }, { lockfiles: lockfiles as string[] }));

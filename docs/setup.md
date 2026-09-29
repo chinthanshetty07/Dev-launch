@@ -98,7 +98,12 @@ Everything is optional; defaults live in `apps/backend/src/config`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DEVLAUNCH_CONTAINER_MEMORY_MB` | 1024 | Per-container memory ceiling |
+| `DEVLAUNCH_CONTAINER_MEMORY_MB` | 1024 | Memory a container starts with |
+| `DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB` | the VM less the reserve, ≤ 4096 | The most one container may be raised to; the ledger decides how much of it is free |
+| `DEVLAUNCH_MEMORY_RETRY_ENABLED` | true | Retry an out-of-memory kill with more memory |
+| `DEVLAUNCH_MEMORY_RETRY_LIMIT` | 2 | Memory raises after the first attempt (0–5) |
+| `DEVLAUNCH_MEMORY_STEP_MB` | (double) | A fixed increment instead of doubling (≥ 64) |
+| `DEVLAUNCH_MEMORY_RESERVE_MB` | 512 | VM memory never promised to containers |
 | `DEVLAUNCH_CONTAINER_CPUS` | 2 | Per-container CPU limit |
 | `DEVLAUNCH_CONTAINER_PIDS_LIMIT` | 256 | Fork-bomb ceiling |
 | `DEVLAUNCH_MAX_CONCURRENT_SESSIONS` | 1 | Raise only with a larger VM |

@@ -7,6 +7,8 @@ import {
   TERMINAL_STATES,
   type RequiredEnvVar,
   type FailureDetail,
+  type LaunchAttempt,
+  type InstallSummary,
   type ReadinessView,
   type RepairRecord,
   type RepositoryMetadata,
@@ -33,9 +35,9 @@ import {
   requiredConfigurationForSingle,
 } from '../planning/RequiredConfiguration.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
-import { lastErrorLine } from '../execution/ExecutionManager.js';
+import { lastErrorLine, phaseLog } from '../execution/ExecutionManager.js';
 import { BackingProvisioner, type ProvisionResult } from '../execution/BackingProvisioner.js';
-import { ProjectExecutor, type ProjectRun } from '../execution/ProjectExecutor.js';
+import { ProjectExecutor, type ProjectRun, type ServiceRun } from '../execution/ProjectExecutor.js';
 import type { BrowserWiringProblem } from '../execution/CrossServiceWiring.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
@@ -44,7 +46,8 @@ import type { AIRepair } from '../ai/AIRepair.js';
 import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
 import { repairPolicyFor } from '../failures/RepairPolicy.js';
 import { tryDeterministicRepair } from '../planning/DeterministicRepair.js';
-import { containerMemoryCeilingMb } from '../execution/MemoryCeiling.js';
+import { memoryLadder, memoryPolicy, nextMemoryMb, nodeHeapMbFor, type MemoryPolicy } from '../execution/MemoryPolicy.js';
+import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
 import { impossibleCommand } from '../planning/Feasibility.js';
 import {
   applySourceRewrites,
@@ -174,6 +177,21 @@ export interface Session {
    * quietly went back to 1 GB would re-run the failure it had just fixed.
    */
   memoryMb?: number;
+  /**
+   * Memory raises spent, against the policy's own limit — not the two-attempt repair
+   * budget, which a memory ladder would otherwise exhaust before a real plan fix could run.
+   */
+  memoryRaises?: number;
+  /** The V8 heap DevLaunch set after a heap OOM, when it did. */
+  nodeHeapMb?: number;
+  /** Every launch, kept across retries: what it ran under and how it ended. */
+  launchAttempts?: LaunchAttempt[];
+  /**
+   * The failure to report when memory escalation ran out, in place of the first diagnosis.
+   * Same cause, with what was tried: kept separate so the first-diagnosis rule stands for
+   * everything else.
+   */
+  memoryExhausted?: FailureDetail;
   /** Model calls spent on repair, against the per-failure budget. */
   aiRepairCalls?: number;
   /** The model's own account of what it inferred. Displayed, never acted on. */
@@ -647,6 +665,7 @@ export class SessionManager extends EventEmitter {
     // because this is a different route to a different launcher.
     this.throwIfStopped(session);
     const executor = new ProjectExecutor(this.exec);
+    const policy = await this.memoryPolicy();
     session.run = await executor.launch({
       sessionId: session.id,
       project,
@@ -657,6 +676,13 @@ export class SessionManager extends EventEmitter {
       discovery: discoveryByService(session, project),
       // Only a clone is ours to edit. See `Session.ownsSource`.
       mayRewriteSource: session.ownsSource === true,
+      memory: {
+        initialMb: policy.initialMb,
+        onLaunch: async (service) => {
+          await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand);
+        },
+        onInstallDied: (service, died) => this.sharedInstallDied(session, service, died),
+      },
     });
 
     if (session.run.rewrites?.length) session.rewrites = session.run.rewrites;
@@ -687,6 +713,10 @@ export class SessionManager extends EventEmitter {
     req: LaunchRequest,
   ): Promise<void> {
     const outcome = await executor.waitForReady(session.run!, req.readinessTimeoutMs);
+    for (const service of session.run?.services ?? []) {
+      const open = [...(session.launchAttempts ?? [])].reverse().find((a) => a.service === service.name && !a.result);
+      this.finishAttempt(open, service.state, service.failure);
+    }
 
     if (outcome.state === ExecutionState.READY) {
       session.readyAt = Date.now();
@@ -702,15 +732,14 @@ export class SessionManager extends EventEmitter {
     // describes the repository as its author wrote it, and every later one describes a
     // plan that was rewritten in response.
     const failing = session.run?.services.find((sv) => sv.state !== ExecutionState.READY);
-    const original = (session.failure ??= withBindRemedy(
-      outcome.failure,
-      failing ? await this.analyseService(sourceDir, failing) : undefined,
-    ));
+    const latest = withBindRemedy(outcome.failure, failing ? await this.analyseService(sourceDir, failing) : undefined);
+    if (progressedPast(session.failure, latest)) session.failure = latest;
+    const original = (session.failure ??= latest);
 
     if (await this.tryRepairService(session, executor, sourceDir, req)) return;
 
     const attempts = session.repairAttempts?.length ?? 0;
-    const kept = original ?? outcome.failure;
+    const kept = session.memoryExhausted ?? original ?? outcome.failure;
     session.failure = kept && attempts > 0 ? { ...kept, repairAttemptsAfter: attempts } : kept;
 
     // What still works, keeps working.
@@ -832,50 +861,38 @@ export class SessionManager extends EventEmitter {
     // This service only. Two containers at the raised ceiling exceed what the VM has,
     // and the one that was killed is the only one that has shown it needs more.
     if (failure.code === FailureCode.OUT_OF_MEMORY) {
-      const current = service.memoryMb ?? config.container.memoryMb;
-      const ceiling = await this.memoryCeiling();
-      if (current >= ceiling) {
-        session.logs.buffer.push(
-          'stdout',
-          `Not raising ${service.name}'s memory again: ${current} MB is already the ` +
-            `ceiling (${this.ceilingSource()}). Give the VM more with ` +
-            '`colima stop && colima start --cpu 4 --memory 8`, or override the ceiling ' +
-            'with DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB.',
-        );
+      const decision = await this.decideMemory(
+        {
+          memoryMb: service.memoryMb,
+          memoryRaises: service.memoryRaises,
+          nodeHeapMb: service.nodeHeapMb,
+          containerId: service.handle?.container?.id,
+        },
+        failure,
+      );
+      if (decision.action === 'exhausted') {
+        service.failure = decision.failure;
+        session.memoryExhausted = decision.failure;
+        session.logs.buffer.push('stderr', `[${failure.phase ?? 'install'}] ${service.name}: ${decision.failure.message}`);
         return false;
       }
-
-      service.memoryMb = ceiling;
-      service.repairAttempts = [...previous, service.plan];
-      // Kept on the session too: it is what the dashboard counts, and what
-      // `repairAttemptsAfter` reports beside the diagnosis.
-      session.repairAttempts = [...(session.repairAttempts ?? []), service.plan];
-      session.repairs = [
-        ...(session.repairs ?? []),
-        {
-          source: 'deterministic',
-          type: 'MEMORY_LIMIT_RAISED',
-          failureCode: FailureCode.OUT_OF_MEMORY,
-          before: { memoryMb: current },
-          after: { memoryMb: ceiling },
-          evidence: [
-            `${service.name} was killed at ${current} MB, which is DevLaunch's limit rather than the repository's`,
-            `${ceiling} MB is what this machine can spare for one container`,
-          ],
-          confidence: 'high',
-          service: service.name,
-        },
-      ];
+      this.logMemoryDecision(session, service.name, failure, decision);
+      session.repairs = [...(session.repairs ?? []), { ...memoryRepairRecord(decision, failure), service: service.name }];
+      service.memoryRaises = (service.memoryRaises ?? 0) + 1;
+      if (decision.action === 'container') {
+        service.memoryMb = decision.toMb;
+        if (service.nodeHeapMb !== undefined) service.nodeHeapMb = nodeHeapMbFor(decision.toMb);
+      } else {
+        service.nodeHeapMb = decision.heapMb;
+      }
       this.setState(session, ExecutionState.REPAIRING);
-      session.logs.buffer.push(
-        'stdout',
-        `Raising ${service.name}'s memory limit from ${current} MB to ${ceiling} MB and ` +
-          'starting it again. The limit is ours, not this repository\'s.',
-      );
 
+      // `restart` releases the failed container before creating its replacement.
+      const attempt = await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand);
       try {
         await service.restart();
       } catch (err) {
+        this.finishAttempt(attempt, ExecutionState.FAILED, { code: FailureCode.CONTAINER_CREATE_FAILED, message: String(err) });
         session.logs.buffer.push(
           'stderr',
           `Could not restart ${service.name}: ${err instanceof Error ? err.message : String(err)}`,
@@ -932,6 +949,8 @@ export class SessionManager extends EventEmitter {
     // one it was launched with.
     service.plan = { ...service.plan, ...deterministic.plan, name: service.name, role: service.role };
 
+    // Every container a service gets is an attempt, whatever caused it.
+    await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand, 'after a plan repair');
     try {
       await service.restart();
     } catch (err) {
@@ -987,6 +1006,12 @@ export class SessionManager extends EventEmitter {
     // individually redundant — no test could tell whether it was there — and a guard no
     // test can distinguish is a guard nobody can maintain.
     this.throwIfStopped(session);
+    const policy = await this.memoryPolicy();
+    const attempt = await this.beginAttempt(
+      session,
+      { memoryMb: session.memoryMb, nodeHeapMb: session.nodeHeapMb, memoryRaises: session.memoryRaises },
+      resolved.installCommand,
+    );
     const handle = await this.exec.launch({
       sessionId: session.id,
       plan: resolved,
@@ -1001,12 +1026,14 @@ export class SessionManager extends EventEmitter {
       sourceDir,
       image,
       logs: session.logs,
-      ...(session.memoryMb ? { memoryMb: session.memoryMb } : {}),
+      memoryMb: session.memoryMb ?? policy.initialMb,
+      ...(session.nodeHeapMb ? { nodeHeapMb: session.nodeHeapMb } : {}),
     });
     session.handle = handle;
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
     const outcome = await handle.waitForReady(req.readinessTimeoutMs);
+    this.finishAttempt(attempt, outcome.state, outcome.failure);
 
     if (outcome.state === ExecutionState.READY) {
       session.readyAt = Date.now();
@@ -1057,10 +1084,12 @@ export class SessionManager extends EventEmitter {
     // later one describes a plan the model invented. Overwriting it answers a question
     // nobody asked — and makes the reported cause depend on model output, which is why
     // an application that plainly binds loopback could be reported as failing to start.
-    const original = (session.failure ??= withBindRemedy(
-      outcome.failure,
-      session.planMetadata ?? session.metadata,
-    ));
+    // The first diagnosis is kept — unless a later attempt got further. A stale lockfile
+    // relaxed by rule, or memory raised past an install that was killed, is a problem that
+    // was solved: reporting it over the failure that stopped the run hides the real one.
+    const latest = withBindRemedy(outcome.failure, session.planMetadata ?? session.metadata);
+    if (progressedPast(session.failure, latest)) session.failure = latest;
+    const original = (session.failure ??= latest);
 
     if (await this.tryRepair(session, outcome.failure, sourceDir, req)) return;
 
@@ -1077,60 +1106,66 @@ export class SessionManager extends EventEmitter {
     // starting `--port 8080` beside "Nothing is listening on port 8000" — which reads
     // as the tool contradicting itself rather than as a deliberate choice.
     const attempts = session.repairAttempts?.length ?? 0;
-    const kept = original ?? outcome.failure;
+    // Memory run out is reported as itself, with what was tried: the same cause as the
+    // first diagnosis, and the only version that says the limit was genuinely reached.
+    const kept = session.memoryExhausted ?? original ?? outcome.failure;
     session.failure = kept && attempts > 0 ? { ...kept, repairAttemptsAfter: attempts } : kept;
     this.setState(session, ExecutionState.FAILED);
     await this.teardown(session);
   }
 
   /**
-   * Give the container more memory, once, up to a ceiling.
+   * Answer an out-of-memory failure of a lone service: a larger limit or heap and a clean
+   * retry, or the final structured failure.
    *
-   * Once, and bounded: one session at a time on a 4 GB VM with a database possibly
-   * beside it, so an unbounded retry trades a reported failure for a wedged machine.
-   * Returns false when the ceiling is already reached, which puts the session back on
-   * the honest report — `OUT_OF_MEMORY` naming a limit that was genuinely tried.
-   *
-   * `repairAttempts` is appended to with the unchanged plan, which is what keeps this
-   * inside the same attempt ceiling as every other repair. It is not a plan change, but
-   * it is an attempt, and an attempt that does not count is how a loop becomes infinite.
+   * Its own budget — the policy's raise limit — and not the two-attempt repair budget: a
+   * memory ladder of two raises would otherwise leave nothing for the plan fix a run might
+   * need once it has memory enough to get that far. Bounded twice: by the raise count, and
+   * by limits that only ever increase toward a ceiling.
    */
-  private async raiseMemory(session: Session, previous: readonly RunPlan[]): Promise<boolean> {
-    const current = session.memoryMb ?? config.container.memoryMb;
-    const ceiling = await this.memoryCeiling();
-    if (current >= ceiling) {
-      session.logs.buffer.push(
-        'stdout',
-        `Not raising the memory limit again: ${current} MB is already the ceiling ` +
-          `(${this.ceilingSource()}). Give the VM more with ` +
-          '`colima stop && colima start --cpu 4 --memory 8`, or override the ceiling ' +
-          'with DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB.',
-      );
+  private async escalateSessionMemory(
+    session: Session,
+    failure: FailureDetail,
+    sourceDir: string,
+    req: LaunchRequest,
+  ): Promise<boolean> {
+    const decision = await this.decideMemory(
+      {
+        memoryMb: session.memoryMb,
+        memoryRaises: session.memoryRaises,
+        nodeHeapMb: session.nodeHeapMb,
+        containerId: session.handle?.container?.id,
+      },
+      failure,
+    );
+    if (decision.action === 'exhausted') {
+      session.memoryExhausted = decision.failure;
+      session.logs.buffer.push('stderr', `[${failure.phase ?? 'install'}] ${decision.failure.message}`);
       return false;
     }
 
-    session.memoryMb = ceiling;
-    session.repairAttempts = [...previous, session.plan!];
-    session.repairs = [
-      ...(session.repairs ?? []),
-      {
-        source: 'deterministic',
-        type: 'MEMORY_LIMIT_RAISED',
-        failureCode: FailureCode.OUT_OF_MEMORY,
-        before: { memoryMb: current },
-        after: { memoryMb: ceiling },
-        evidence: [
-          `the container was killed at ${current} MB, which is DevLaunch's limit rather than the repository's`,
-          `${ceiling} MB is what this machine can spare for one container`,
-        ],
-        confidence: 'high',
-      },
-    ];
-    session.logs.buffer.push(
-      'stdout',
-      `Raising the container memory limit from ${current} MB to ${ceiling} MB and ` +
-        'starting again. The limit is ours, not this repository\'s.',
-    );
+    this.logMemoryDecision(session, undefined, failure, decision);
+    session.repairs = [...(session.repairs ?? []), memoryRepairRecord(decision, failure)];
+    session.memoryRaises = (session.memoryRaises ?? 0) + 1;
+    if (decision.action === 'container') {
+      session.memoryMb = decision.toMb;
+      // A heap already raised keeps its proportion of the larger container.
+      if (session.nodeHeapMb !== undefined) session.nodeHeapMb = nodeHeapMbFor(decision.toMb);
+    } else {
+      session.nodeHeapMb = decision.heapMb;
+    }
+
+    // A clean retry: the failed container is released before its replacement exists, so
+    // no two overlap and none is left behind. (The previous version skipped this, and every
+    // out-of-memory retry left a dead container until the backend next started.)
+    this.setState(session, ExecutionState.REPAIRING);
+    try {
+      await session.handle?.cleanup();
+    } catch {
+      /* a container that will not release must not block the replacement */
+    }
+    session.handle = undefined;
+    await this.startAndVerify(session, sourceDir, req);
     return true;
   }
 
@@ -1302,6 +1337,12 @@ export class SessionManager extends EventEmitter {
       return false;
     }
 
+    // A limit that is ours, before a plan that is theirs — and counted apart from the
+    // plan repairs. See `escalateSessionMemory`.
+    if (failure.code === FailureCode.OUT_OF_MEMORY) {
+      return this.escalateSessionMemory(session, failure, sourceDir, req);
+    }
+
     const previous = session.repairAttempts ?? [];
     if (previous.length >= MAX_REPAIR_ATTEMPTS) {
       session.logs.buffer.push('stderr', `Repair limit of ${MAX_REPAIR_ATTEMPTS} reached.`);
@@ -1314,10 +1355,6 @@ export class SessionManager extends EventEmitter {
     // configuration rather than by a plan" — true, and an odd thing to say about
     // configuration DevLaunch writes. A real Next.js repository is killed by the 1 GB
     // default every time, and was told its own project had failed.
-    if (failure.code === FailureCode.OUT_OF_MEMORY && (await this.raiseMemory(session, previous))) {
-      await this.startAndVerify(session, sourceDir, req);
-      return true;
-    }
 
     const logs = session.logs.buffer.all().map((l) => l.text).join('\n');
 
@@ -1697,7 +1734,10 @@ export class SessionManager extends EventEmitter {
     session.failure = undefined;
 
     try {
-      for (const target of targets) await target.restart();
+      for (const target of targets) {
+        await this.beginAttempt(session, { service: target.name, ...target }, target.plan.installCommand, 'restart requested');
+        await target.restart();
+      }
     } catch (err) {
       this.fail(session, {
         code: FailureCode.UNKNOWN_RUNTIME_ERROR,
@@ -1808,37 +1848,264 @@ export class SessionManager extends EventEmitter {
    * size does not change under a running process — changing it means restarting Colima,
    * which restarts this too.
    */
-  private ceilingMb?: number;
-  private ceilingBytes?: number | null;
-  private async memoryCeiling(): Promise<number> {
-    if (this.ceilingMb === undefined) {
-      // `?.()` on the method too, not just the object: a Docker client that predates
-      // this, or a test double that never needed it, has the property missing rather
-      // than null — and `docker?.hostMemoryBytes()` throws on that, where the whole
-      // point of this lookup is that it degrades to the old constant.
-      const bytes = (await this.exec.docker?.hostMemoryBytes?.().catch(() => null)) ?? null;
-      this.ceilingMb = containerMemoryCeilingMb(process.env, bytes);
-      this.ceilingBytes = bytes;
+  private policyCache?: MemoryPolicy;
+  /**
+   * The memory policy, resolved once: initial limit, ceiling, ladder, retry settings.
+   *
+   * `?.()` on the method too, not just the object: a Docker client that predates this, or
+   * a test double that never needed it, has the property missing rather than null — and
+   * the whole point of the lookup is that it degrades to the fallback ceiling.
+   */
+  private async memoryPolicy(): Promise<MemoryPolicy> {
+    if (!this.policyCache) {
+      const bytes = this.exec.vmMemoryBytes
+        ? await this.exec.vmMemoryBytes().catch(() => null)
+        : ((await this.exec.docker?.hostMemoryBytes?.().catch(() => null)) ?? null);
+      this.policyCache = memoryPolicy({ env: process.env, vmMemoryBytes: bytes });
     }
-    return this.ceilingMb;
+    return this.policyCache;
   }
 
   /**
-   * Where the ceiling came from, for the message that reports hitting it.
+   * What to do about an out-of-memory failure: raise the container, raise the Node heap,
+   * or stop with the final, structured answer.
    *
-   * Naming DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB unconditionally sent people to edit a
-   * variable they had never set and that was not in force: the number is normally half
-   * the VM. Telling them to give the VM more RAM is the advice that actually moves it.
+   * One decision for a lone service, a project's service, and a shared workspace install,
+   * so the three cannot drift. It changes nothing itself; the caller applies it.
    */
-  private ceilingSource(): string {
-    if (process.env.DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB?.trim()) {
-      return 'set by DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB';
+  private async decideMemory(
+    target: { memoryMb?: number; memoryRaises?: number; nodeHeapMb?: number; containerId?: string },
+    failure: FailureDetail,
+  ): Promise<
+    | { action: 'container'; fromMb: number; toMb: number }
+    | { action: 'heap'; memoryMb: number; heapMb: number }
+    | { action: 'exhausted'; failure: FailureDetail }
+  > {
+    const policy = await this.memoryPolicy();
+    const current = target.memoryMb ?? policy.initialMb;
+    const raises = target.memoryRaises ?? 0;
+    const kind = failure.memory?.kind ?? 'container';
+
+    // A heap OOM with room left in the container: a larger heap first, since a larger
+    // container does nothing for V8's own maximum. Once per limit — tried and failed, the
+    // container grows, and the heap is set from the new limit.
+    if (kind === 'node-heap' && policy.retryEnabled && raises < policy.retryLimit) {
+      const heap = nodeHeapMbFor(current);
+      if (target.nodeHeapMb !== heap) return { action: 'heap', memoryMb: current, heapMb: heap };
     }
-    if (this.ceilingBytes !== null && this.ceilingBytes !== undefined) {
-      const vmMb = Math.floor(this.ceilingBytes / (1024 * 1024));
-      return `half of the ${vmMb} MB this Docker VM has`;
+
+    const free = this.exec.availableMb
+      ? await this.exec.availableMb(target.containerId)
+      : (this.exec.memory?.freeMb(target.containerId) ?? null);
+    const next = nextMemoryMb(policy, current, raises, free);
+    if (next !== null) return { action: 'container', fromMb: current, toMb: next };
+
+    return { action: 'exhausted', failure: this.memoryExhaustedFailure(policy, current, raises, free, failure, target.containerId) };
+  }
+
+  /** The final out-of-memory answer: what was tried, where it stopped, and why. */
+  private memoryExhaustedFailure(
+    policy: MemoryPolicy,
+    current: number,
+    raises: number,
+    free: number | null,
+    failure: FailureDetail,
+    containerId?: string,
+  ): FailureDetail {
+    const ladder = memoryLadder(policy).filter((mb) => mb <= current);
+    const tried = ladder.length > 1 ? ` (${ladder.join(' → ')} MB)` : '';
+    const what =
+      failure.phase === 'build' ? 'The build' : failure.phase === 'start' ? 'The application' : 'Dependency installation';
+    let why: string;
+    let remedy: string;
+    if (!policy.retryEnabled) {
+      why = `${what} exceeded the ${current} MB container memory limit, and memory retries are off (DEVLAUNCH_MEMORY_RETRY_ENABLED).`;
+      remedy = 'Turn DEVLAUNCH_MEMORY_RETRY_ENABLED back on, or raise DEVLAUNCH_CONTAINER_MEMORY_MB.';
+    } else if (raises === 0 && current >= policy.maxMb) {
+      why =
+        `${what} exceeded the ${current} MB container memory limit, which is already the maximum ` +
+        `available memory (${policy.maxSource}), so there was nothing larger to retry with.`;
+      remedy =
+        'Give the Docker VM more memory — `colima stop && colima start --cpu 4 --memory 8` — or ' +
+        'raise DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB. The limit is DevLaunch\'s; nothing here ' +
+        'says the repository is broken.';
+    } else if (current >= policy.maxMb || raises >= policy.retryLimit) {
+      why =
+        `${what} exceeded the container memory limit. DevLaunch retried with progressively larger ` +
+        `memory limits${tried} but it still exceeded the maximum available memory ` +
+        `(${policy.maxMb} MB, ${policy.maxSource}).`;
+      remedy =
+        'Give the Docker VM more memory — `colima stop && colima start --cpu 4 --memory 8` — or ' +
+        'raise DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB. The limit is DevLaunch\'s; nothing here ' +
+        'says the repository is broken.';
+    } else {
+      const holders = this.exec.memory?.holders(containerId) ?? [];
+      why =
+        `${what} exceeded the ${current} MB container memory limit, and the VM has no more to give: ` +
+        `${free ?? 0} MB is free after the ${holders.length} other container(s) this run holds ` +
+        `(${holders.map((h) => `${h.mb} MB`).join(', ') || 'none'}).`;
+      remedy = 'Give the Docker VM more memory, or run fewer services or databases alongside this one.';
     }
-    return 'the default, because the VM size could not be read';
+    return {
+      ...failure,
+      code: FailureCode.OUT_OF_MEMORY,
+      message: why,
+      remedy,
+      confidence: 'high',
+      memory: {
+        kind: failure.memory?.kind ?? 'container',
+        limitMb: current,
+        detectedBy: failure.memory?.detectedBy ?? [],
+        maximumMb: policy.maxMb,
+        attempts: raises + 1,
+        retryable: false,
+      },
+    };
+  }
+
+  /**
+   * The install summary a client is shown: one per service, from the launch records.
+   * Synchronous, from the cached policy: a view must not wait on Docker.
+   */
+  installSummaries(session: Session): InstallSummary[] {
+    const attempts = session.launchAttempts ?? [];
+    const names = [...new Set(attempts.map((a) => a.service))];
+    return names.map((name) => {
+      const mine = attempts.filter((a) => a.service === name);
+      const first = mine[0]!;
+      const last = mine[mine.length - 1]!;
+      // The project plan outlives its containers: after teardown `run` is gone, and the
+      // summary still has to say which manager installed.
+      const plan = name
+        ? (session.run?.services.find((sv) => sv.name === name)?.plan ?? session.project?.services.find((sv) => sv.name === name))
+        : session.plan;
+      return {
+        ...(name ? { service: name } : {}),
+        packageManager: plan?.packageManager ?? 'unknown',
+        installCommand: last.installCommand,
+        attempts: mine.length,
+        memory: { initialMb: first.memoryMb, finalMb: last.memoryMb, maximumMb: this.policyCache?.maxMb ?? null },
+        result: last.result === undefined ? 'running' : last.result === 'ok' ? 'success' : last.result,
+        ...(last.phase && last.result !== 'ok' ? { phase: last.phase } : {}),
+      };
+    });
+  }
+
+  /** Start a launch record, and say in the log what this attempt runs under. */
+  private async beginAttempt(
+    session: Session,
+    target: { service?: string; memoryMb?: number; nodeHeapMb?: number; memoryRaises?: number },
+    installCommand: string | null,
+    note?: string,
+  ): Promise<LaunchAttempt> {
+    const policy = await this.memoryPolicy();
+    const memoryMb = target.memoryMb ?? policy.initialMb;
+    const attempts = (session.launchAttempts ??= []);
+    const attempt: LaunchAttempt = {
+      ...(target.service ? { service: target.service } : {}),
+      attempt: attempts.filter((a) => a.service === target.service).length + 1,
+      memoryMb,
+      ...(target.nodeHeapMb ? { nodeHeapMb: target.nodeHeapMb } : {}),
+      installCommand,
+      startedAt: Date.now(),
+    };
+    attempts.push(attempt);
+    const step = (target.memoryRaises ?? 0) + 1;
+    session.logs.buffer.push(
+      'stdout',
+      `[install] ${target.service ? `${target.service} · ` : ''}Attempt ${step}/${policy.retryLimit + 1}` +
+        `${note ? ` (${note})` : ''} · memory limit ${memoryMb} MB` +
+        `${target.nodeHeapMb ? ` · Node heap ${target.nodeHeapMb} MB` : ''}` +
+        ` · running: ${installCommand ?? '(no install step)'}`,
+    );
+    return attempt;
+  }
+
+  /** Close a launch record with how it ended. */
+  private finishAttempt(attempt: LaunchAttempt | undefined, state: ExecutionState, failure?: FailureDetail): void {
+    if (!attempt || attempt.result) return;
+    attempt.durationMs = Date.now() - attempt.startedAt;
+    if (state === ExecutionState.READY || state === ExecutionState.COMPLETED) {
+      attempt.result = 'ok';
+      return;
+    }
+    attempt.result = failure?.code ?? FailureCode.UNKNOWN_RUNTIME_ERROR;
+    if (failure?.phase) attempt.phase = failure.phase;
+    if (failure?.memory?.detectedBy.length) attempt.detectedBy = failure.memory.detectedBy;
+  }
+
+  /** The log lines an out-of-memory decision owes the reader. */
+  private logMemoryDecision(
+    session: Session,
+    name: string | undefined,
+    failure: FailureDetail,
+    decision: { action: 'container'; fromMb: number; toMb: number } | { action: 'heap'; memoryMb: number; heapMb: number },
+  ): void {
+    const phase = failure.phase ?? 'install';
+    const who = name ? `${name}: ` : '';
+    const by = failure.memory?.detectedBy?.join(', ') || 'the log';
+    session.logs.buffer.push(
+      'stdout',
+      `[${phase}] ${who}Process terminated — ${failure.memory?.kind === 'node-heap' ? 'Node heap' : 'container'} OOM detected (${by}).`,
+    );
+    session.logs.buffer.push(
+      'stdout',
+      decision.action === 'container'
+        ? `[${phase}] ${who}Increasing memory: ${decision.fromMb} MB → ${decision.toMb} MB. The limit is DevLaunch\'s, not this repository\'s.`
+        : `[${phase}] ${who}Raising the Node heap to ${decision.heapMb} MB inside the same ${decision.memoryMb} MB container.`,
+    );
+  }
+
+  /**
+   * A shared workspace install's container died before the next service could start.
+   *
+   * Out of memory: raise it by the policy and install again, in place, so the services
+   * waiting behind it start with a limit known to work. Exhausted: say so once, for the
+   * one install that could not fit. Anything else: the install gate proceeds as it did.
+   */
+  private async sharedInstallDied(
+    session: Session,
+    service: ServiceRun,
+    died: ContainerLiveness | undefined,
+  ): Promise<'restarted' | 'exhausted' | 'not-oom'> {
+    const policy = await this.memoryPolicy();
+    const limitMb = service.memoryMb ?? policy.initialMb;
+    const oom = detectOom({
+      ...(died?.kind === 'exited' ? { oomKilled: died.oomKilled, exitCode: died.exitCode } : {}),
+      lines: phaseLog(service.logs, 'install').map((e) => e.text),
+    });
+    const open = [...(session.launchAttempts ?? [])].reverse().find((a) => a.service === service.name && !a.result);
+    if (!oom) return 'not-oom';
+
+    const failure = withMemoryEvidence(
+      { code: FailureCode.OUT_OF_MEMORY, message: '', phase: 'install' },
+      oom,
+      { limitMb, coarse: { code: FailureCode.OUT_OF_MEMORY, message: '' } },
+    );
+    this.finishAttempt(open, ExecutionState.FAILED, failure);
+    const decision = await this.decideMemory({ ...service, containerId: service.handle?.container?.id }, failure);
+    if (decision.action === 'exhausted') {
+      service.failure = decision.failure;
+      service.state = ExecutionState.FAILED;
+      session.memoryExhausted = decision.failure;
+      session.logs.buffer.push('stderr', `[install] ${service.name}: ${decision.failure.message}`);
+      return 'exhausted';
+    }
+    this.logMemoryDecision(session, service.name, failure, decision);
+    session.repairs = [...(session.repairs ?? []), { ...memoryRepairRecord(decision, failure), service: service.name }];
+    service.memoryRaises = (service.memoryRaises ?? 0) + 1;
+    if (decision.action === 'container') {
+      service.memoryMb = decision.toMb;
+      if (service.nodeHeapMb !== undefined) service.nodeHeapMb = nodeHeapMbFor(decision.toMb);
+    } else {
+      service.nodeHeapMb = decision.heapMb;
+    }
+    this.setState(session, ExecutionState.REPAIRING);
+    await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand);
+    // `restart` releases the dead container before creating its replacement.
+    await service.restart();
+    this.setState(session, ExecutionState.STARTING);
+    return 'restarted';
   }
 
   private throwIfStopped(session: Session): void {
@@ -2035,4 +2302,50 @@ function joinRelative(workingDirectory: string | undefined, file: string): strin
  */
 function redactUrl(url: string): string {
   return url.replace(/^([a-z0-9+.-]+:\/\/[^:/@]+):[^@]*@/i, '$1:***@');
+}
+
+/** The typed record of a memory repair, the same for a session and a service. */
+function memoryRepairRecord(
+  decision: { action: 'container'; fromMb: number; toMb: number } | { action: 'heap'; memoryMb: number; heapMb: number },
+  failure: FailureDetail,
+): RepairRecord {
+  const detected = failure.memory?.detectedBy?.join(', ') || 'the log';
+  return decision.action === 'container'
+    ? {
+        source: 'deterministic',
+        type: 'MEMORY_LIMIT_RAISED',
+        failureCode: FailureCode.OUT_OF_MEMORY,
+        before: { memoryMb: decision.fromMb },
+        after: { memoryMb: decision.toMb },
+        evidence: [
+          `killed at ${decision.fromMb} MB during ${failure.phase ?? 'install'} (${detected}), which is DevLaunch's limit rather than the repository's`,
+          `${decision.toMb} MB is the next step the memory policy allows`,
+        ],
+        confidence: 'high',
+      }
+    : {
+        source: 'deterministic',
+        type: 'NODE_HEAP_RAISED',
+        failureCode: FailureCode.OUT_OF_MEMORY,
+        before: { nodeHeapMb: null },
+        after: { nodeHeapMb: decision.heapMb },
+        evidence: [
+          `V8 ran out of heap inside a ${decision.memoryMb} MB container that was not itself killed (${detected})`,
+          `${decision.heapMb} MB is three quarters of the container, leaving the rest for everything else`,
+        ],
+        confidence: 'high',
+      };
+}
+
+const PHASE_ORDER: Record<string, number> = { install: 1, build: 2, start: 3 };
+
+/**
+ * Whether `latest` failed in a strictly later phase than `first` — proof that whatever
+ * stopped `first` was got past. Same phase, or a phase either one does not know, is not.
+ */
+export function progressedPast(first: FailureDetail | undefined, latest: FailureDetail | undefined): boolean {
+  if (!first || !latest) return false;
+  const a = PHASE_ORDER[first.phase ?? ''];
+  const b = PHASE_ORDER[latest.phase ?? ''];
+  return a !== undefined && b !== undefined && b > a;
 }

@@ -84,6 +84,14 @@ Fastify and the generic Node fallback declare `hostBinding: "unknown"` rather th
 Claiming certainty there would turn a precise `PORT_BOUND_TO_LOCALHOST` diagnosis into a
 confusing timeout.
 
+Node installs are decided in one place (`analysis/InstallDetection.ts`): `packageManager`
+first, then the lockfile, then npm. With a lockfile the install is strict — `npm ci`,
+`pnpm install --frozen-lockfile`, `yarn install --frozen-lockfile` (Yarn 1) or
+`--immutable` (Yarn 2+) — so the versions that run are the ones recorded; a deterministic
+repair falls back to the relaxed form only on the manager's own "lockfile out of date"
+error, measured in the runner image for npm, pnpm and Yarn 1. Bun is recognised and
+reported, and installed with npm: DevLaunch ships no Bun.
+
 Python packaging: `requirements.txt` → `pip install -r`, `pyproject.toml` →
 `pip install .` — or, for a project with no package configuration and several top-level
 directories, `pip install -r /workspace/.devlaunch/requirements.txt`, a file DevLaunch

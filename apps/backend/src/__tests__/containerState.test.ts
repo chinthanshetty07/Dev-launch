@@ -98,6 +98,29 @@ describe('container state attribution', () => {
     );
   });
 
+  it('calls an install killed by the kernel OUT_OF_MEMORY from Docker\'s flag, though the wrapper exited 110', async () => {
+    // Measured: yarn killed inside the container leaves the wrapper exiting 110 — the
+    // install-failed code — and sets OOMKilled, because the cgroup is shared.
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: false, ExitCode: 110, OOMKilled: true } })),
+    );
+    const sentinels = new Set(['__DEVLAUNCH:PHASE:INSTALL:BEGIN__', '__DEVLAUNCH:PHASE:INSTALL:FAIL__']);
+    const out = await explain(exec, [container, plan, sentinels, readiness, undefined, 1024]);
+    expect(out.state).toBe('FAILED');
+    expect(out.failure.code).toBe(FailureCode.OUT_OF_MEMORY);
+    expect(out.failure.message).toBe('Dependency installation was killed for exceeding the 1024 MB container memory limit.');
+    expect((out.failure as { memory?: { detectedBy: string[] } }).memory?.detectedBy).toEqual(['docker: OOMKilled']);
+  });
+
+  it('does not call an install failure memory when Docker says it was not', async () => {
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: false, ExitCode: 110, OOMKilled: false } })),
+    );
+    const sentinels = new Set(['__DEVLAUNCH:PHASE:INSTALL:BEGIN__', '__DEVLAUNCH:PHASE:INSTALL:FAIL__']);
+    const out = await explain(exec, [container, plan, sentinels, readiness, undefined, 1024]);
+    expect(out.failure.code).toBe(FailureCode.DEPENDENCY_INSTALL_FAILED);
+  });
+
   it('still attributes a genuinely exited container to its phase', async () => {
     const exec = new ExecutionManager(
       stubDocker(async () => ({ State: { Running: false, ExitCode: 1 } })),

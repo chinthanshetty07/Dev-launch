@@ -19,6 +19,8 @@ import { ReadinessChecker, type ReadinessResult } from '../readiness/ReadinessCh
 import { joinWorkspace } from '../security/PathValidator.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { FailureClassifier } from '../failures/FailureClassifier.js';
+import { MemoryBudget, containerCapacityMb } from './MemoryPolicy.js';
+import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { readCapped } from '../analysis/readCapped.js';
 import { pyprojectRequirements } from '../analysis/ServiceDiscovery.js';
@@ -57,6 +59,8 @@ export interface LaunchOptions {
    * anything the repository did.
    */
   memoryMb?: number;
+  /** A V8 heap size DevLaunch chose after a heap OOM; see `nodeHeapMbFor`. */
+  nodeHeapMb?: number;
 }
 
 export interface ReadyOutcome {
@@ -132,6 +136,28 @@ export async function derivedRequirements(sourceDir: string, workingDirectory: s
   if (dir !== resolve(sourceDir) && !dir.startsWith(resolve(sourceDir) + sep)) return [];
   const raw = await readCapped(join(dir, 'pyproject.toml'));
   return raw === null ? [] : pyprojectRequirements(raw);
+}
+
+/** The phase a container reached, from the sentinels it printed. */
+function phaseFrom(sentinels: Set<string>): Phase {
+  if (sentinels.has(Sentinel.START_BEGIN)) return 'start';
+  if (sentinels.has(Sentinel.BUILD_BEGIN)) return 'build';
+  if (sentinels.has(Sentinel.INSTALL_BEGIN)) return 'install';
+  return 'none';
+}
+
+/**
+ * A failure restated with the memory evidence: Docker's OOM flag first, the phase's own
+ * log second. See `OomDetection`.
+ */
+function memoryVerdict(
+  failure: FailureDetail,
+  ctx: { oomKilled?: boolean; exitCode?: number; logs?: LogManager; phase: Phase; limitMb: number; coarse: FailureDetail },
+): FailureDetail {
+  const lines = ctx.logs ? phaseLog(ctx.logs, ctx.phase).map((e) => e.text) : [];
+  const oom = detectOom({ oomKilled: ctx.oomKilled, exitCode: ctx.exitCode, lines });
+  const withPhase = failure.phase || ctx.phase === 'none' ? failure : { ...failure, phase: ctx.phase };
+  return withMemoryEvidence(withPhase, oom, { limitMb: ctx.limitMb, oomKilled: ctx.oomKilled, coarse: ctx.coarse });
 }
 
 /** A start command that ended with 0 where a server was expected, in one set of words. */
@@ -369,8 +395,38 @@ export class ExecutionManager {
   /** Why the last inspect failed, so an unattributable failure can say what went wrong. */
   private lastInspectError: string | undefined;
 
+  /**
+   * The memory every container this process runs has been promised, against the VM.
+   * Read by escalation before it asks for more; see `MemoryBudget`.
+   */
+  readonly memory: MemoryBudget;
+  private capacityMb: number | null = null;
+  private capacityRead = false;
+
   constructor(readonly docker: DockerManager) {
     this.ports = new PortManager(docker);
+    this.memory = new MemoryBudget(() => this.capacityMb);
+  }
+
+  /** What a container is using now, in MB, or null when it cannot be sampled. */
+  async usageMb(container: Dockerode.Container): Promise<number | null> {
+    const stats = await this.docker.sampleStats?.(container);
+    return stats ? stats.memoryBytes / (1024 * 1024) : null;
+  }
+
+  /** The memory one container could be given, counting the others at what they use. */
+  availableMb(exceptId?: string): Promise<number | null> {
+    return this.memory.measuredFreeMb(exceptId);
+  }
+
+  /** The VM's size, read once, through the daemon the containers run on. */
+  async vmMemoryBytes(): Promise<number | null> {
+    const bytes = (await this.docker.hostMemoryBytes?.().catch(() => null)) ?? null;
+    if (!this.capacityRead) {
+      this.capacityMb = containerCapacityMb(bytes);
+      this.capacityRead = true;
+    }
+    return bytes;
   }
 
   /**
@@ -380,6 +436,7 @@ export class ExecutionManager {
    * will settle on readiness rather than on exit.
    */
   async launch(opts: LaunchOptions): Promise<LaunchHandle> {
+    if (!this.capacityRead) await this.vmMemoryBytes();
     const cleanup = new CleanupManager(this.docker);
 
     // One gate for every plan, whatever produced it. A rejected plan never reaches Docker.
@@ -407,6 +464,7 @@ export class ExecutionManager {
           opts.plan.installDirectory
             ? joinWorkspace(config.container.workspacePath, opts.plan.installDirectory)
             : undefined,
+          opts.nodeHeapMb ? { nodeHeapMb: opts.nodeHeapMb } : {},
         ),
         labels: buildLabels(opts.sessionId),
         hostConfig: buildHostConfig({
@@ -428,6 +486,10 @@ export class ExecutionManager {
       throw err;
     }
     cleanup.trackContainer(container);
+    // The limit is held until this container is cleaned up, so an escalation elsewhere
+    // cannot promise the VM more than it has.
+    const limitMb = opts.memoryMb ?? config.container.memoryMb;
+    this.memory.hold(container.id, limitMb, () => this.usageMb(container));
 
     try {
       // Repository first, wrapper second: both land inside the /workspace volume, and
@@ -498,14 +560,21 @@ export class ExecutionManager {
         waitForLog: (predicate, timeoutMs) => waitForLog(logs, predicate, timeoutMs),
         hostPort: () => this.ports.hostPortFor(container, opts.plan.expectedPort),
         waitForReady: (timeoutMs) =>
-          this.waitForReady(container, opts.plan, sentinels, timeoutMs, logs),
+          this.waitForReady(container, opts.plan, sentinels, timeoutMs, logs, limitMb),
         liveness: () => this.liveness(container),
         clearStartupBudget: () => startupBudget.abort(),
         stop: () => this.docker.stop(container),
-        cleanup: () => cleanup.cleanup(),
+        cleanup: async () => {
+          try {
+            return await cleanup.cleanup();
+          } finally {
+            this.memory.release(container.id);
+          }
+        },
       };
     } catch (err) {
       await cleanup.cleanup();
+      this.memory.release(container.id);
       throw err;
     }
   }
@@ -531,9 +600,14 @@ export class ExecutionManager {
     try {
       const exit = await handle.exit;
       const { state, failure, phase } = classifyExit(exit, handle.sentinels);
-      // Exit codes say which phase died; only the output says why.
+      // Exit codes say which phase died; only the output says why — and Docker says
+      // whether the kernel killed it for memory, which the output cannot.
+      const inspected = failure ? await this.containerState(handle.container) : null;
       const refined = failure
-        ? this.classifier.classify({ logs: phaseLog(handle.logs, phase), exitCode: exit.exitCode, phase, fallback: failure })
+        ? memoryVerdict(
+            this.classifier.classify({ logs: phaseLog(handle.logs, phase), exitCode: exit.exitCode, phase, fallback: failure }),
+            { oomKilled: inspected?.removed ? undefined : inspected?.oomKilled, exitCode: exit.exitCode, logs: handle.logs, phase, limitMb: opts.memoryMb ?? config.container.memoryMb, coarse: failure },
+          )
         : undefined;
 
       return {
@@ -563,6 +637,7 @@ export class ExecutionManager {
     sentinels: Set<string>,
     timeoutMs?: number,
     logs?: LogManager,
+    limitMb: number = config.container.memoryMb,
   ): Promise<ReadyOutcome> {
     const budget = timeoutMs ?? config.timeouts.readinessMs;
 
@@ -598,17 +673,15 @@ export class ExecutionManager {
         const oom = died.oomKilled === true;
         // -1 is this codebase's "inspect gave us no code", not a real exit status.
         const code = died.exitCode === -1 ? undefined : died.exitCode;
-        return {
-          state: ExecutionState.FAILED,
-          hostPort: null,
-          readiness: { ready: false, attempts: 0, elapsedMs: 0 },
-          failure: oom
+        // The phase it died in, from its own markers — not assumed to be the install.
+        const phase = phaseFrom(sentinels);
+        const exited: FailureDetail = oom
             ? {
                 code: FailureCode.OUT_OF_MEMORY,
                 message:
                   'The process was killed for exceeding the container memory limit, before ' +
                   'it opened a port.',
-                phase: 'install',
+                ...(phase !== 'none' ? { phase } : {}),
                 confidence: 'high',
               }
             : {
@@ -624,8 +697,14 @@ export class ExecutionManager {
                       ? `The container exited before opening port ${plan.expectedPort}, and Docker reported no exit code.`
                       : `The container exited with code ${code} before opening port ${plan.expectedPort}.`,
                 ...(code !== undefined ? { exitCode: code } : {}),
+                ...(phase !== 'none' ? { phase } : {}),
                 confidence: 'high',
-              },
+              };
+        return {
+          state: ExecutionState.FAILED,
+          hostPort: null,
+          readiness: { ready: false, attempts: 0, elapsedMs: 0 },
+          failure: memoryVerdict(exited, { oomKilled: died.oomKilled, exitCode: code, logs, phase, limitMb, coarse: exited }),
         };
       }
 
@@ -687,7 +766,7 @@ export class ExecutionManager {
       };
     }
 
-    const explained = await this.explainNotReady(container, plan, sentinels, readiness, logs);
+    const explained = await this.explainNotReady(container, plan, sentinels, readiness, logs, limitMb);
     return { hostPort, readiness, ...explained };
   }
 
@@ -697,6 +776,7 @@ export class ExecutionManager {
     sentinels: Set<string>,
     readiness: ReadinessResult,
     logs?: LogManager,
+    limitMb: number = config.container.memoryMb,
   ): Promise<{ state: ExecutionState; failure?: FailureDetail; diagnosis?: PortDiagnosis }> {
     // One inspect, not two. Calling isRunning() and then inspect() again left a window
     // in which the container could change state between them.
@@ -776,7 +856,7 @@ export class ExecutionManager {
       };
       return {
         state: ExecutionState.FAILED,
-        failure: this.classifier.classify({
+        failure: memoryVerdict(this.classifier.classify({
           // Read at classification time, not when readiness began: the session path
           // calls waitForReady immediately after launch, when nothing has been
           // logged yet, so a snapshot taken then is always empty.
@@ -784,7 +864,7 @@ export class ExecutionManager {
           exitCode,
           phase,
           fallback: coarse,
-        }),
+        }), { oomKilled: state.oomKilled, exitCode, logs, phase, limitMb, coarse }),
       };
     }
 

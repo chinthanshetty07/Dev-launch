@@ -416,7 +416,9 @@ Stated so absence is not mistaken for a clean bill:
   scope. That module is a frozen object evaluated at first import, which happens before
   `loadDotEnv()` runs in `startServer` — so every `intEnv(...)` constant honours an
   exported shell variable and silently ignores the same line in `.env`.
-  `DEVLAUNCH_CONTAINER_MEMORY_MB` in a `.env` file does nothing today.
+  `DEVLAUNCH_CONTAINER_MEMORY_MB` in a `.env` file does nothing for a database container
+  today. (Application containers now take their limit from the memory policy, which reads
+  the environment at call time, like the ceiling — so for them it does apply.)
 
 - **Supply chain.** No `npm audit`, no lockfile-integrity check, no CVE scan of the two
   runner base images that host untrusted code.

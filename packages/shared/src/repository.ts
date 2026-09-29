@@ -12,6 +12,10 @@ export interface RepositoryMetadata {
   packageJson?: PackageJsonSummary;
   /** Lockfiles found at the chosen working directory, in discovery order. */
   lockfiles: string[];
+  /** A `yarn.lock` in Yarn 2+'s format, or a `.yarnrc.yml` — decides `--immutable`. */
+  yarnBerry?: boolean;
+  /** A `pnpm-workspace.yaml` at the working directory. */
+  pnpmWorkspace?: boolean;
   /** Framework configuration files found, e.g. vite.config.ts, next.config.mjs. */
   frameworkConfigs: string[];
 
@@ -236,6 +240,12 @@ export interface PythonSummary {
    */
   packageable?: boolean;
   hasPipfile: boolean;
+  /** `Pipfile.lock` beside it. Recognised and reported; installs go through pip. */
+  hasPipfileLock?: boolean;
+  /** `poetry.lock` beside it. Recognised; not installed from — it was resolved for another Python. */
+  hasPoetryLock?: boolean;
+  /** pyproject.toml configures Poetry (`[tool.poetry]`). */
+  hasPoetry?: boolean;
   /** manage.py at the root is the definitive Django signal. */
   hasManagePy: boolean;
   /** Top-level modules that import a web framework, e.g. { file: 'app.py', framework: 'flask' }. */

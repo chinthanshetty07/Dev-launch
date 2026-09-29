@@ -14,6 +14,7 @@ import type {
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
 import { readCapped } from './readCapped.js';
+import { readNodeInstallFacts } from './InstallDetection.js';
 import { parseEnvExample } from './parseEnvExample.js';
 import {
   backingFromEnvKeys,
@@ -33,7 +34,6 @@ import {
   localImports,
 } from './pythonImports.js';
 
-const LOCKFILES = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb'];
 
 const FRAMEWORK_CONFIG_PATTERNS = [
   /^vite\.config\.[cm]?[jt]s$/,
@@ -153,6 +153,7 @@ export class RepositoryAnalyzer {
     const readme = await this.readReadme(base, fileNames);
 
     const measured = await measureShallow(root);
+    const nodeFacts = await readNodeInstallFacts(base, fileNames);
 
     // Only for the repository itself: a subdirectory analysed on its own belongs to a
     // repository whose warnings are already being reported.
@@ -166,7 +167,9 @@ export class RepositoryAnalyzer {
       hasDockerfile: fileNames.includes('Dockerfile'),
       tsconfig: fileNames.includes('tsconfig.json'),
       packageJson,
-      lockfiles: LOCKFILES.filter((l) => fileNames.includes(l)),
+      lockfiles: [...nodeFacts.lockfiles],
+      ...(nodeFacts.yarnBerry ? { yarnBerry: true } : {}),
+      ...(nodeFacts.pnpmWorkspace ? { pnpmWorkspace: true } : {}),
       frameworkConfigs: fileNames.filter((n) => FRAMEWORK_CONFIG_PATTERNS.some((p) => p.test(n))),
       ...(fileNames.includes('index.html') ? { staticIndex: true } : {}),
       ...(submodules.length ? { submodules } : {}),
@@ -591,6 +594,9 @@ export class RepositoryAnalyzer {
       hasPyproject,
       ...(hasPyproject ? { packageable: await this.isPackageable(base, pyproject ?? '') } : {}),
       hasPipfile,
+      ...(fileNames.includes('Pipfile.lock') ? { hasPipfileLock: true } : {}),
+      ...(fileNames.includes('poetry.lock') ? { hasPoetryLock: true } : {}),
+      ...(pyproject && /^\[tool\.poetry\]/m.test(pyproject) ? { hasPoetry: true } : {}),
       hasManagePy,
       ...(initScripts.length ? { initScripts } : {}),
       entryCandidates,

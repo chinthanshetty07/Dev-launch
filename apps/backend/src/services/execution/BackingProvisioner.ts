@@ -79,6 +79,7 @@ export class BackingProvisioner {
         try {
           await this.exec.docker.stop(db.container);
           await this.exec.docker.remove(db.container);
+          this.exec.memory?.release(db.container.id);
         } catch (err) {
           errors.push(err instanceof Error ? err : new Error(String(err)));
         }
@@ -152,6 +153,9 @@ export class BackingProvisioner {
         dataPaths: spec.dataPaths,
         networkName,
       });
+      // A database's limit counts against the VM like an application's does, so a memory
+      // escalation beside it cannot promise the machine more than it has.
+      this.exec.memory?.hold(container.id, config.container.memoryMb, () => this.exec.usageMb(container));
       await docker.start(container);
       const ready = await this.waitForReady(docker, container, spec.readyCheck, readyMs);
       return { kind: need.kind, alias: spec.alias, container, ready };
@@ -183,6 +187,7 @@ export class BackingProvisioner {
       try {
         await docker.stop(run.container);
         await docker.remove(run.container);
+        this.exec.memory?.release(run.container.id);
       } catch {
         /* a container that will not release must not block the replacement */
       }

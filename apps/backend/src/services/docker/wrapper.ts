@@ -72,7 +72,12 @@ export function buildWrapperScript(): string {
  * Environment handed to the wrapper. `set -u` in the script means every DL_* variable
  * must be defined, so absent commands are passed as empty strings rather than omitted.
  */
-export function buildWrapperEnv(plan: RunPlan, workdir: string, installDir?: string): string[] {
+export function buildWrapperEnv(
+  plan: RunPlan,
+  workdir: string,
+  installDir?: string,
+  control: { nodeHeapMb?: number } = {},
+): string[] {
   const env: Record<string, string> = {};
 
   // Application variables first.
@@ -100,6 +105,14 @@ export function buildWrapperEnv(plan: RunPlan, workdir: string, installDir?: str
   env.DL_INSTALL_CMD = plan.installCommand ?? '';
   env.DL_BUILD_CMD = plan.buildCommand ?? '';
   env.DL_START_CMD = plan.startCommand;
+
+  // A larger V8 heap, after a heap OOM, set by DevLaunch and never by a plan: the validator
+  // refuses NODE_OPTIONS from every plan, because `--require` in it runs code before the
+  // start command. This composes one flag from one integer, and is assigned here, with
+  // the other control variables, so nothing a plan carries can replace it.
+  if (control.nodeHeapMb !== undefined && Number.isInteger(control.nodeHeapMb) && control.nodeHeapMb > 0) {
+    env.NODE_OPTIONS = `--max-old-space-size=${control.nodeHeapMb}`;
+  }
 
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
 }

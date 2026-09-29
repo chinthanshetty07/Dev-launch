@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ExecutionState, FailureCode, RunPlanSchema, type RunPlan } from '@devlaunch/shared';
+import { ExecutionState, FailureCode, RunPlanSchema, Sentinel, type RunPlan } from '@devlaunch/shared';
 import { ExecutionManager } from '../services/execution/ExecutionManager.js';
 import type { DockerManager } from '../services/docker/DockerManager.js';
 
@@ -29,6 +29,7 @@ interface Failure {
   exitCode?: number;
   phase?: string;
   confidence?: string;
+  memory?: { kind: string; detectedBy: string[] };
 }
 
 /**
@@ -54,7 +55,7 @@ function noPortDocker(then: () => Promise<unknown>): DockerManager {
   } as unknown as DockerManager;
 }
 
-async function diagnose(inspect: () => Promise<unknown>): Promise<{
+async function diagnose(inspect: () => Promise<unknown>, sentinels: string[] = []): Promise<{
   state: string;
   failure?: Failure;
 }> {
@@ -65,7 +66,7 @@ async function diagnose(inspect: () => Promise<unknown>): Promise<{
       failure?: Failure;
     }>;
   };
-  return internals.waitForReady({} as never, plan, new Set(), 500);
+  return internals.waitForReady({} as never, plan, new Set(sentinels), 500);
 }
 
 /** A Docker inspect result for a container that has stopped. */
@@ -79,11 +80,24 @@ describe('why there is no published port', () => {
     // published no host mapping" — true, and a symptom. Because the memory repair
     // triggers on OUT_OF_MEMORY, the wrong code meant the one repair that would have
     // fixed the run never fired at all.
-    const out = await diagnose(exited(137, true));
+    //
+    // Rewritten, not flipped: the phase used to be `install` whatever the container had
+    // printed, and this test passed no markers at all. It is now read from the markers the
+    // container did print, so the test gives it the evidence the real case had — an install
+    // that began — and a sibling below holds the case the hardcoding got wrong.
+    const out = await diagnose(exited(137, true), [Sentinel.INSTALL_BEGIN]);
     expect(out.state).toBe(ExecutionState.FAILED);
     expect(out.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
     expect(out.failure?.message).toMatch(/memory limit/i);
     expect(out.failure?.phase).toBe('install');
+  });
+
+  it('says a container killed after it started was killed in the start phase', async () => {
+    const out = await diagnose(exited(137, true), [Sentinel.INSTALL_BEGIN, Sentinel.INSTALL_OK, Sentinel.START_BEGIN]);
+    expect(out.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
+    expect(out.failure?.phase).toBe('start');
+    expect(out.failure?.memory?.kind).toBe('container');
+    expect(out.failure?.memory?.detectedBy[0]).toBe('docker: OOMKilled');
   });
 
   it('reports an ordinary crash with the code the process actually exited on', async () => {

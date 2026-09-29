@@ -9,6 +9,7 @@ import type {
 import { RunPlanSchema } from '@devlaunch/shared';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import { workspaceInstall } from '../analysis/ServiceDiscovery.js';
+import { detectNodeInstall, detectPythonInstall, needsManagerToResolve, type NodeManager } from '../analysis/InstallDetection.js';
 import {
   NODE_FRAMEWORKS,
   PYTHON_FRAMEWORKS,
@@ -73,43 +74,14 @@ const BUILTIN_SINCE: Readonly<Record<string, number>> = Object.freeze({
 });
 
 /**
- * Which tool installs this project.
- *
- * `packageManager` first, because it is the author saying so and a lockfile is only
- * evidence of what ran last. A repository that pins `pnpm@9` and committed no lockfile
- * was installed with npm, which resolves a `workspace:*` protocol not at all.
+ * Which tool installs this project. Decided by `detectNodeInstall`; kept here, with this
+ * signature, for the callers that only need the name.
  */
-export function detectPackageManager(
-  lockfiles: readonly string[],
-  declared?: string,
-): 'npm' | 'yarn' | 'pnpm' {
-  // The name is extracted loosely and judged once. Two guards doing the same job is one
-  // guard no test can distinguish — `bun@1.0.0` has to be declined *somewhere*, and the
-  // comparison below is where, so the pattern above does not need to repeat it.
-  const pinned = /^([a-z]+)@/.exec(declared ?? '')?.[1];
-  if (pinned === 'npm' || pinned === 'yarn' || pinned === 'pnpm') return pinned;
-  if (lockfiles.includes('pnpm-lock.yaml')) return 'pnpm';
-  if (lockfiles.includes('yarn.lock')) return 'yarn';
-  return 'npm';
+export function detectPackageManager(lockfiles: readonly string[], declared?: string): NodeManager {
+  return detectNodeInstall({ lockfiles, ...(declared ? { packageManagerField: declared } : {}) }).packageManager;
 }
 
-/**
- * Whether this project's dependencies will only resolve through its package manager.
- *
- * Yarn 2 and later default to Plug'n'Play: there is no `node_modules`, resolution comes
- * from a generated `.pnp.cjs`, and `node server.js` cannot find a single dependency —
- * while `yarn node server.js` finds all of them. Measured in the runner image rather
- * than assumed: a Yarn 4.6.0 install produced `.pnp.cjs` and no `node_modules`, and bare
- * node failed on `require('lodash')` where `yarn node` returned 4.17.21.
- *
- * Yarn 1 is excluded because it installs a real `node_modules` and needs none of this.
- * A repository that sets `nodeLinker: node-modules` also needs none of it, and is not
- * harmed by it: `yarn node` works whichever linker produced the tree.
- */
-export function needsManagerToResolve(declared?: string): boolean {
-  const major = /^yarn@(\d+)/.exec(declared ?? '')?.[1];
-  return major !== undefined && Number(major) >= 2;
-}
+export { needsManagerToResolve };
 
 /**
  * `<manager> run <script>` with arguments that reach the script as options.
@@ -132,13 +104,6 @@ function bindHostEnv(meta: RepositoryMetadata): EnvVar[] {
   return meta.bindHostEnv ? [{ key: meta.bindHostEnv.key, value: '0.0.0.0', required: false }] : [];
 }
 
-function installFor(pm: 'npm' | 'yarn' | 'pnpm'): string {
-  // `npm ci` would be stricter but fails outright when a lockfile is out of step with
-  // package.json, which is common in repositories nobody has run in a while.
-  if (pm === 'npm') return 'npm install --no-audit --no-fund';
-  if (pm === 'pnpm') return 'pnpm install';
-  return 'yarn install';
-}
 
 /**
  * Warn when a repository's declared Node range plainly excludes the image we have.
@@ -349,7 +314,9 @@ export class RuleBasedPlanner {
       }
       return {
         ...outcome,
-        plan: RunPlanSchema.parse({ ...outcome.plan, installCommand: workspace.command, installDirectory: '.' }),
+        // The manager too: the install is the workspace's, and a plan naming npm beside a
+        // `yarn install` contradicts itself in every summary that reads it.
+        plan: RunPlanSchema.parse({ ...outcome.plan, installCommand: workspace.command, installDirectory: '.', packageManager: workspace.manager }),
         warnings: [
           ...rootMeta.warnings,
           `Workspace detected; installing once at the repository root with ${workspace.manager}.`,
@@ -437,7 +404,14 @@ export class RuleBasedPlanner {
     workingDirectory: string,
     warnings: string[],
   ): PlanningOutcome | null {
-    const pm = detectPackageManager(meta.lockfiles, pkg.packageManager);
+    const install = detectNodeInstall({
+      lockfiles: meta.lockfiles,
+      ...(pkg.packageManager ? { packageManagerField: pkg.packageManager } : {}),
+      ...(meta.yarnBerry ? { yarnBerry: true } : {}),
+      ...(meta.pnpmWorkspace ? { pnpmWorkspace: true } : {}),
+    });
+    const pm = install.packageManager;
+    warnings.push(...install.notes);
     const nodeVersion = nodeVersionFor(meta);
     const versionWarning = nodeVersionWarning(pkg.engineNode, nodeVersion);
     if (versionWarning) warnings.push(versionWarning);
@@ -538,7 +512,7 @@ export class RuleBasedPlanner {
         plan: RunPlanSchema.parse({
           runtime: { language: 'node', version: nodeVersion },
           packageManager: pm,
-          installCommand: installFor(pm),
+          installCommand: install.installCommand,
           buildCommand: null,
           // Through the manager when it is the only thing that can resolve the
           // dependencies. See `needsManagerToResolve`.
@@ -588,7 +562,7 @@ export class RuleBasedPlanner {
       plan: RunPlanSchema.parse({
         runtime: { language: 'node', version: nodeVersion },
         packageManager: pm,
-        installCommand: installFor(pm),
+        installCommand: install.installCommand,
         // Dev servers build on the fly; a separate build step would only slow start-up.
         buildCommand: null,
         startCommand,
@@ -625,16 +599,11 @@ export class RuleBasedPlanner {
       return null;
     }
 
-    let install: string | null;
-    let installFromImports = false;
-    if (py.requirements.length > 0) {
-      install = 'pip install -r requirements.txt';
-    } else if (py.hasPyproject) {
-      install = pyprojectInstall(py, warnings);
-    } else {
-      installFromImports = true;
-      install = null; // Filled in below, once the framework — and its runner — are known.
-    }
+    const detected = detectPythonInstall(py);
+    warnings.push(...detected.notes);
+    let install: string | null = detected.installCommand;
+    // Filled in below, once the framework — and its runner — are known.
+    const installFromImports = detected.source === 'from-imports';
 
     // Both manifests, because a packaged project declares its framework only in
     // pyproject.toml — and read from requirements.txt alone it declared nothing, planned
@@ -891,29 +860,3 @@ function declarableImports(py: PythonSummary): string[] {
   return (py.imports ?? []).filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d)).slice(0, 12);
 }
 
-function pyprojectInstall(py: PythonSummary, warnings: string[]): string | null {
-  if (py.packageable !== false) return 'pip install .';
-
-  const declared = py.runtimeDependencies ?? py.dependencies ?? [];
-  const deps = declared.filter((d) => /^[a-z0-9][a-z0-9._-]*$/i.test(d));
-  if (deps.length === 0) {
-    warnings.push(
-      'pyproject.toml declares no dependencies and the project is not a buildable ' +
-        'package, so nothing is installed. Imports it needs may be missing.',
-    );
-    return null;
-  }
-
-  // Through a requirements file DevLaunch writes from pyproject.toml at launch, so the
-  // version ranges the project declares survive. On the command line they could not: the
-  // allowlist permits no `<`, `>` or quotes, and by name alone `pydantic = "^1.9"` became
-  // pydantic 2.
-  warnings.push(
-    `Installing ${deps.length} declared ${deps.length === 1 ? 'dependency' : 'dependencies'} with the version ranges pyproject.toml ` +
-      'gives them: this project has several top-level directories and no package ' +
-      'configuration, so `pip install .` cannot build it. DevLaunch writes the ranges into ' +
-      `${config.container.generatedRequirementsPath} inside the container — never into the ` +
-      'repository.',
-  );
-  return `pip install -r ${config.container.generatedRequirementsPath}`;
-}

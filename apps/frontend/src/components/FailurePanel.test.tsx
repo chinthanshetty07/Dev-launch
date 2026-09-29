@@ -98,3 +98,19 @@ describe('<FailurePanel> for a project', () => {
     expect(html).toMatch(/9001/);
   });
 });
+
+describe('a failure that ran out of memory', () => {
+  it('says which memory, the limit it reached, the most there was, and how it was known', () => {
+    const out = text({
+      code: FailureCode.OUT_OF_MEMORY,
+      message: 'Dependency installation exceeded the container memory limit.',
+      phase: 'install',
+      memory: { kind: 'container', limitMb: 2955, maximumMb: 2955, attempts: 3, retryable: false, detectedBy: ['docker: OOMKilled'] },
+    });
+    expect(out).toContain('container memory · limit 2955 MB of 2955 MB available · 3 attempts · not retried further · detected by docker: OOMKilled');
+  });
+
+  it('says nothing about memory for a failure that was not memory', () => {
+    expect(text(base)).not.toContain('memory · limit');
+  });
+});
