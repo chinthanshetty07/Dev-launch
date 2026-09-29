@@ -420,6 +420,28 @@ network and of the runner image's certificate store. It was classified as a depe
 install failure and repaired twice, each attempt re-running the same download against the
 same certificate.
 
+## A phase is explained by its own output
+
+Sentinels never enter the log buffer, so for a long time the log could not say which
+phase a line belonged to, and every classification read all of it. A start that failed
+was then explained by whatever the install had printed: husky's `git command not found`,
+from a `prepare` script during an install that went on to succeed, was reported as the
+reason `ng serve` would not run; npm's `EBADENGINE` *warnings* for transitive packages
+became `WRONG_RUNTIME_VERSION`, and a repair was spent moving the run to Node 22, where it
+failed the same way on a missing `.env`.
+
+`LogManager` now remembers where each sentinel fell, and a failure is classified against
+the log from its phase's opening marker — as are the "last thing the application said"
+helpers, which describe a running application and not the install before it. The latest
+marker wins, so a repaired attempt writing into the same session log is divided by its
+own.
+
+A signature can also name lines that are never its evidence. Package managers warn and
+fail in nearly the same words — `npm warn EBADENGINE` and `npm error code EBADENGINE` —
+and only one of them stops anything. pnpm's fatal form, `ERR_PNPM_UNSUPPORTED_ENGINE`,
+was not recognised at all, which cost a model call on a failure the deterministic Node
+22 move exists for.
+
 ## An unclassified failure still quotes the application
 
 When no signature matches, the verdict stays the coarse fallback at low confidence —

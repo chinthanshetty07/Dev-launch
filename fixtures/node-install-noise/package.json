@@ -1,0 +1,9 @@
+{
+  "name": "node-install-noise",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node noise.js",
+    "start": "node --env-file=.env server.js"
+  }
+}

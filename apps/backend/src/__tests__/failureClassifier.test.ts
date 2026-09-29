@@ -391,3 +391,52 @@ describe('a broken import of the repository\'s own file', () => {
     expect(verdict.remedy).toMatch(/case/);
   });
 });
+
+describe('an engine warning is not an engine failure', () => {
+  it('does not call npm warnings a runtime mismatch', () => {
+    // npm installs the package anyway; the run in the corpus failed for another reason
+    // entirely, and was reported — and repaired — as a version problem.
+    const verdict = classify(
+      [
+        'npm warn EBADENGINE Unsupported engine {',
+        "npm warn EBADENGINE   required: { node: '>=22' },",
+        'npm warn EBADENGINE }',
+        'npm error code E401',
+      ].join('\n'),
+    );
+    expect(verdict.code).not.toBe(FailureCode.WRONG_RUNTIME_VERSION);
+  });
+
+  it('does not call pnpm or yarn warnings one either', () => {
+    for (const line of [
+      ' WARN  Unsupported engine: wanted: {"node":">=24"} (current: {"node":"v20.20.2"})',
+      '../..                                    |  WARN  Unsupported engine: wanted: {"node":">=24"}',
+      'warning some-pkg@1.0.0: The engine "node" is incompatible with this module.',
+    ]) {
+      expect(classify(line).code, line).not.toBe(FailureCode.WRONG_RUNTIME_VERSION);
+    }
+  });
+
+  it('still recognises the fatal forms, from npm, pnpm and yarn', () => {
+    for (const line of [
+      'npm error code EBADENGINE',
+      ' ERR_PNPM_UNSUPPORTED_ENGINE  Unsupported environment (bad pnpm and/or Node.js version)',
+      'error some-pkg@1.0.0: The engine "node" is incompatible with this module. Expected version ">=22".',
+    ]) {
+      expect(classify(line).code, line).toBe(FailureCode.WRONG_RUNTIME_VERSION);
+    }
+  });
+});
+
+describe('a dotenv file the start script needs and the repository lacks', () => {
+  it('names the file, as missing configuration rather than a missing command', () => {
+    const verdict = classify(['> tsx --env-file=.env ./src/server.ts', 'node: .env: not found'].join('\n'), 'start');
+    expect(verdict.code).toBe(FailureCode.MISSING_ENV);
+    expect(verdict.evidence).toBe('node: .env: not found');
+    expect(verdict.message).toBe('The start script loads .env with --env-file, and the repository has no such file.');
+  });
+
+  it('leaves an ordinary missing command to the generic rule', () => {
+    expect(classify('sh: 1: bunx: not found', 'start').code).toBe(FailureCode.START_COMMAND_FAILED);
+  });
+});

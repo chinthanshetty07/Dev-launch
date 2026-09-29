@@ -8,6 +8,14 @@ export interface Signature {
   /** Phases this signature can apply to. Empty means any. */
   phases?: Phase[];
   patterns: RegExp[];
+  /**
+   * Lines that are never evidence for this signature, whatever they contain.
+   *
+   * A package manager warns about exactly the things it fails on, in nearly the same
+   * words: `npm warn EBADENGINE Unsupported engine` and `npm error code EBADENGINE` differ
+   * only in severity, and one of them is fatal.
+   */
+  exclude?: RegExp;
   /** What the user can do about it. */
   remedy: string;
   /** Explains the match; `{evidence}` is replaced with the matching line. */
@@ -174,8 +182,16 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
   {
     id: 'wrong-runtime-version',
     code: FailureCode.WRONG_RUNTIME_VERSION,
+    // A warning is not the failure. npm prints `npm warn EBADENGINE` for every transitive
+    // package whose `engines` field the running Node misses and installs it regardless;
+    // a run that then died on something else entirely was reported as this, and a repair
+    // spent moving it to another Node that failed the same way.
+    exclude: /^\s*(?:npm\s+)?(?:warn|WARN|warning)\b|\s WARN\s/,
     patterns: [
       /EBADENGINE/,
+      // pnpm's fatal form, under `engine-strict=true`. It was a generic install failure,
+      // and the deterministic move to Node 22 that answers it never fired.
+      /ERR_PNPM_UNSUPPORTED_ENGINE/,
       /engine\s+["']?node["']?\s+is incompatible/i,
       /requires Node(?:\.js)? version/i,
       /Unsupported engine/i,
@@ -387,6 +403,25 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     patterns: [/EADDRINUSE/, /Address already in use/i],
     remedy: 'Something inside the container already holds that port.',
     describe: () => 'The application could not bind its port because it was already in use.',
+  },
+  {
+    // `node --env-file=.env` exits at once when the file is not there, printing
+    // `node: .env: not found`. A repository commits `.env.example` and a README telling a
+    // person to copy it; a clone has neither the copy nor the person. Read by the generic
+    // rule below it was "the start command could not be run", which sent a repair after
+    // a command that exists.
+    id: 'env-file-missing',
+    code: FailureCode.MISSING_ENV,
+    phases: ['start'],
+    patterns: [/^node: (\S+): not found\s*$/],
+    remedy:
+      'The start script loads a dotenv file with Node\'s --env-file, and the repository ' +
+      'does not contain it — usually it is meant to be copied from .env.example. Create ' +
+      'it in the repository, or change the script to --env-file-if-exists (Node 22+). ' +
+      'DevLaunch passes configuration as environment variables, which a missing file ' +
+      'stops Node from ever reading.',
+    describe: (e) =>
+      `The start script loads ${/^node: (\S+):/.exec(e.trim())?.[1] ?? 'a dotenv file'} with --env-file, and the repository has no such file.`,
   },
   {
     id: 'command-not-found',

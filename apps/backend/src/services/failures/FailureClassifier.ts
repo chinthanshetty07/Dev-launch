@@ -90,6 +90,7 @@ export class FailureClassifier {
   private findEvidence(sig: Signature, lines: string[]): string | null {
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i]!;
+      if (sig.exclude?.test(line)) continue;
       if (sig.patterns.some((p) => p.test(line))) return line;
     }
     return null;

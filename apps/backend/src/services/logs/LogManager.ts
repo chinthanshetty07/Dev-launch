@@ -64,6 +64,16 @@ export interface LogManagerEvents {
 export class LogManager extends EventEmitter {
   readonly buffer: LogBuffer;
   private ended = false;
+  /**
+   * Where each sentinel fell in the log: the sequence number the next line will get.
+   *
+   * Sentinels never enter the buffer, so without this the log cannot say which phase a
+   * line belongs to — and a start that failed was explained by an install-time line.
+   * Husky's `git command not found`, printed by a successful install, was reported as
+   * the reason `ng serve` would not run. The latest occurrence wins, so a repaired run
+   * that reuses this log is divided by its own attempt's markers.
+   */
+  private readonly marks = new Map<string, number>();
 
   constructor(buffer: LogBuffer = new LogBuffer()) {
     super();
@@ -109,11 +119,24 @@ export class LogManager extends EventEmitter {
     this.emit('entry', this.buffer.push(stream, text, ts));
   }
 
+  /**
+   * The log from a sentinel onwards, or all of it when that sentinel was never seen.
+   *
+   * A phase that failed failed after it began, so everything from its opening marker is
+   * the part that can explain it.
+   */
+  since(sentinel: string): LogEntry[] {
+    const from = this.marks.get(sentinel);
+    const all = this.buffer.all();
+    return from === undefined ? all : all.filter((e) => e.seq >= from);
+  }
+
   private ingest(stream: LogStream, raw: string): void {
     const line = stripAnsi(raw);
     if (line.length === 0) return;
     const ts = Date.now();
     if (isSentinel(line)) {
+      this.marks.set(line.trim(), this.buffer.stats.nextSeq);
       this.emit('sentinel', line.trim(), ts);
       return;
     }

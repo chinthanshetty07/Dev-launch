@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { ExecutionState, type RunPlan } from '@devlaunch/shared';
+import { ExecutionState, FailureCode, type RunPlan } from '@devlaunch/shared';
 import { DockerManager } from '../../services/docker/DockerManager.js';
 import { ExecutionManager } from '../../services/execution/ExecutionManager.js';
 import { CleanupManager } from '../../services/cleanup/CleanupManager.js';
@@ -74,5 +74,33 @@ describe('failures the real-world corpus found', () => {
     const plan = await planFixture('node-angular-build');
     const outcome = await runFixture('node-angular-build', plan);
     expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+  }, 300_000);
+
+  it('explains a failed start by the start, not by what the install printed (fastify/demo, angular-realworld)', async () => {
+    // The install succeeds while printing npm's EBADENGINE warnings and husky's `git
+    // command not found`; the start then fails on `node: .env: not found`. The warnings
+    // were reported as WRONG_RUNTIME_VERSION — and a repair spent moving to Node 22 —
+    // and the husky line as the reason `ng serve` would not run.
+    const plan = await planFixture('node-install-noise');
+    // Past the configuration gate, as the corpus runs it: the variable is not the point.
+    const outcome = await runFixture('node-install-noise', { ...plan, environmentVariables: plan.environmentVariables.filter((v) => v.value !== null) });
+    expect(outcome.state).toBe(ExecutionState.FAILED);
+    expect(outcome.failure?.code, JSON.stringify(outcome.failure)).toBe(FailureCode.MISSING_ENV);
+    expect(outcome.failure?.evidence).toBe('node: .env: not found');
+    expect(outcome.failure?.message).toMatch(/loads \.env with --env-file/);
+  }, 300_000);
+
+  it('quotes the start, not the install, when the start failed in words nothing recognises', async () => {
+    // angular-realworld's `ng serve` refused a flag, which no signature knows. The generic
+    // "not found" rule then matched husky's install-time `git command not found`, and the
+    // report said the start command could not be run.
+    const plan = await planFixture('node-install-noise');
+    const exited = await runFixture('node-install-noise', { ...plan, startCommand: 'node bad-flag.js' });
+    expect(exited.failure?.evidence, JSON.stringify(exited.failure)).toBe('Error: Unknown argument: disable-host-check');
+
+    // And through the readiness path, where the process lives and never listens.
+    const idle = await runFixture('node-install-noise', { ...plan, startCommand: 'node idle.js' }, 20_000);
+    expect(idle.failure?.evidence ?? '', JSON.stringify(idle.failure)).not.toMatch(/git command not found/);
+    expect(idle.failure?.code).not.toBe(FailureCode.START_COMMAND_FAILED);
   }, 300_000);
 });

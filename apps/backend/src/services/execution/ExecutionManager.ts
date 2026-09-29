@@ -115,6 +115,24 @@ export interface RunResult {
 }
 
 /**
+ * The part of the log that can explain a failure in `phase`: from that phase's opening
+ * sentinel on. An install prints hundreds of lines, and a signature matching any of them
+ * explained a start that failed for a different reason — the one in the start's own
+ * output. With no marker for the phase, the whole log, as before.
+ */
+export function phaseLog(logs: LogManager, phase: Phase): LogEntry[] {
+  const marker =
+    phase === 'start'
+      ? Sentinel.START_BEGIN
+      : phase === 'build'
+        ? Sentinel.BUILD_BEGIN
+        : phase === 'install'
+          ? Sentinel.INSTALL_BEGIN
+          : undefined;
+  return marker ? logs.since(marker) : logs.buffer.all();
+}
+
+/**
  * Map a wrapper exit code plus observed sentinels onto a failure class.
  *
  * Neither input is sufficient alone: the wrapper `exec`s the start command, so a
@@ -465,11 +483,9 @@ export class ExecutionManager {
     try {
       const exit = await handle.exit;
       const { state, failure, phase } = classifyExit(exit, handle.sentinels);
-      const logs = handle.logs.buffer.all();
-
       // Exit codes say which phase died; only the output says why.
       const refined = failure
-        ? this.classifier.classify({ logs, exitCode: exit.exitCode, phase, fallback: failure })
+        ? this.classifier.classify({ logs: phaseLog(handle.logs, phase), exitCode: exit.exitCode, phase, fallback: failure })
         : undefined;
 
       return {
@@ -478,7 +494,7 @@ export class ExecutionManager {
         timedOut: exit.timedOut,
         phaseReached: phase,
         failure: refined,
-        logs,
+        logs: handle.logs.buffer.all(),
       };
     } finally {
       await handle.cleanup();
@@ -691,7 +707,7 @@ export class ExecutionManager {
           // Read at classification time, not when readiness began: the session path
           // calls waitForReady immediately after launch, when nothing has been
           // logged yet, so a snapshot taken then is always empty.
-          logs: logs?.buffer.all() ?? [],
+          logs: logs ? phaseLog(logs, phase) : [],
           exitCode,
           phase,
           fallback: coarse,
@@ -791,7 +807,7 @@ export class ExecutionManager {
         state: ExecutionState.FAILED,
         diagnosis,
         failure: this.classifier.classify({
-          logs: logs?.buffer.all() ?? [],
+          logs: logs ? phaseLog(logs, 'start') : [],
           exitCode: 0,
           phase: 'start',
           fallback: portFailure,
@@ -933,6 +949,17 @@ export class ExecutionManager {
 }
 
 /**
+ * What the application itself has printed: the log from the start marker on.
+ *
+ * These helpers describe a running application, and an install that finished before it
+ * began is not the application talking. Read whole, the last "error-shaped" line of a
+ * process that never listened was husky's install-time `git command not found`.
+ */
+function startLog(logs: LogManager | undefined): LogEntry[] {
+  return logs?.since(Sentinel.START_BEGIN) ?? [];
+}
+
+/**
  * The application's last error line, for a failure that otherwise has none.
  *
  * Deliberately narrow: an arbitrary tail of a build log is noise, and a stack frame is
@@ -951,7 +978,7 @@ export function lastErrorLine(logs: LogManager | undefined): string | undefined 
   const ERRNO = /\bE[A-Z]{3,}\b/;
   const NOISE = /^(node\.js v|npm (error )?a complete log|at\s)/i;
 
-  const entries = logs?.buffer.all() ?? [];
+  const entries = startLog(logs);
   for (let i = entries.length - 1; i >= 0; i--) {
     const text = entries[i]!.text.trim();
     if (!text || NOISE.test(text) || /^\s*at /.test(text)) continue;
@@ -970,7 +997,7 @@ export function lastErrorLine(logs: LogManager | undefined): string | undefined 
  */
 export function lastOutputLine(logs: LogManager | undefined): string | undefined {
   const NOISE = /^(node\.js v|npm (error )?a complete log|at\s|__DEVLAUNCH:)/i;
-  const entries = logs?.buffer.all() ?? [];
+  const entries = startLog(logs);
   for (let i = entries.length - 1; i >= 0; i--) {
     const text = entries[i]!.text.trim();
     if (!text || NOISE.test(text) || /^\s*at /.test(text)) continue;
@@ -989,7 +1016,7 @@ export function lastOutputLine(logs: LogManager | undefined): string | undefined
  * is not there leaves exactly this shape — two INFO lines and silence.
  */
 export function stalledStartup(logs: LogManager | undefined): boolean {
-  const text = (logs?.buffer.all() ?? []).map((e) => e.text).join('\n');
+  const text = startLog(logs).map((e) => e.text).join('\n');
   const began = /Waiting for application startup|Starting (?:development )?server|Booting worker/i;
   const finished = /Application startup complete|Uvicorn running on|Running on http|Listening on|listening at/i;
   return began.test(text) && !finished.test(text);

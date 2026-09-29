@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-09-29 — A failure is explained by the phase that failed
+
+Three corpus repositories were misdiagnosed, and each misdiagnosis cost something:
+
+- `fastify/demo` failed on `node: .env: not found` — its dev script is
+  `tsx --env-file=.env`, and the repository ships `.env.example`. It was reported as
+  `WRONG_RUNTIME_VERSION` from npm's `EBADENGINE` *warnings* during an install that
+  succeeded, with the evidence line `npm warn EBADENGINE }`, and a repair moved it to
+  Node 22 to fail identically.
+- `angular-realworld`'s `ng serve` refused a flag; the report quoted husky's
+  install-time `git command not found` as the start command that could not be run.
+- `sveltejs/realworld` failed on pnpm's fatal `ERR_PNPM_UNSUPPORTED_ENGINE`, which no
+  signature knew. It was a generic install failure and went to the model; the
+  deterministic Node 22 move that answers it never fired.
+
+`LogManager` now records where each sentinel fell — sentinels never enter the buffer, so
+nothing had — and `phaseLog` gives the classifier the log from the failed phase's opening
+marker. `lastErrorLine`, `lastOutputLine` and `stalledStartup` describe the running
+application and read from the start marker. With no marker, all of it, as before.
+
+A signature may now `exclude` lines that are never its evidence: the runtime-version
+signature ignores npm, pnpm and Yarn warnings. `ERR_PNPM_UNSUPPORTED_ENGINE` is
+recognised, and `env-file-missing` reports `node: <file>: not found` in the start phase as
+`MISSING_ENV`, naming the file.
+
+- **Fixture:** `node-install-noise`. Before: `WRONG_RUNTIME_VERSION`, evidence
+  `npm warn EBADENGINE }`, exactly as in the corpus. After: `MISSING_ENV`, evidence
+  `node: .env: not found`; a refused flag is quoted as itself; a process that never
+  listens is not blamed on husky.
+- **Found by the test, not the corpus:** the first version sliced the classifier's input
+  and missed `lastErrorLine`, which builds the port failure's evidence before the
+  classifier sees it. The readiness-path case failed on the fixed code and named it.
+- **Mutations:** eleven, all killed. The first pass reported two call-site mutants as
+  killed when they were not: the kill came from an unfixed case in the same test file.
+  Every mutation since runs filtered to the tests that concern it.
+
 ## 2026-09-29 — `--disable-host-check` only where Angular accepts it
 
 Every Angular plan ended in `--disable-host-check`, and `gothinkster/angular-realworld-example-app`
