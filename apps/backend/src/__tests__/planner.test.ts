@@ -5,6 +5,7 @@ import {
   detectPackageManager,
   healthPathFor,
   needsManagerToResolve,
+  runScript,
 } from '../services/planning/RuleBasedPlanner.js';
 import { RunPlanValidator } from '../services/planning/RunPlanValidator.js';
 import { NODE_FRAMEWORKS } from '../services/planning/frameworks.js';
@@ -954,6 +955,33 @@ describe('a project that pins its package manager', () => {
     expect(detectPackageManager(['yarn.lock'], '')).toBe('yarn');
     // A hash suffix is the documented form and must still parse.
     expect(detectPackageManager([], 'pnpm@9.12.3+sha512.abc')).toBe('pnpm');
+  });
+});
+
+describe('arguments that reach a package script', () => {
+  it('uses `--` under npm, which strips it, and nowhere else', () => {
+    // pnpm and Yarn 2+ hand a literal `--` to the script, and Vite reads everything after
+    // it as positional: `pnpm run dev -- --host 0.0.0.0` served on loopback.
+    const args = ['--host', '0.0.0.0', '--port', '5173'];
+    expect(runScript('npm', 'dev', args)).toBe('npm run dev -- --host 0.0.0.0 --port 5173');
+    expect(runScript('pnpm', 'dev', args)).toBe('pnpm run dev --host 0.0.0.0 --port 5173');
+    expect(runScript('yarn', 'dev', args)).toBe('yarn run dev --host 0.0.0.0 --port 5173');
+  });
+
+  it('adds nothing when there is nothing to pass', () => {
+    expect(runScript('pnpm', 'start', [])).toBe('pnpm run start');
+    expect(runScript('npm', 'start', [])).toBe('npm run start');
+  });
+
+  it('plans a pnpm Vite project with its flags as options, and the plan still validates', () => {
+    const outcome = planner.plan(
+      node({}, { dev: 'vite' }, {
+        lockfiles: ['pnpm-lock.yaml'],
+        packageJson: { scripts: { dev: 'vite' }, dependencies: {}, devDependencies: { vite: '^5.0.0' } },
+      }),
+    );
+    expect(outcome.plan?.startCommand).toBe('pnpm run dev --host 0.0.0.0 --port 5173');
+    expect(() => validator.validate({ plan: outcome.plan })).not.toThrow();
   });
 });
 

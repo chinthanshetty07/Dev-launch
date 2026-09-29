@@ -1,0 +1,12 @@
+{
+  "name": "node-pnpm-vite-args",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "pnpm@9.12.3",
+  "scripts": {
+    "dev": "vite dev"
+  },
+  "devDependencies": {
+    "vite": "file:./vendor/vite"
+  }
+}

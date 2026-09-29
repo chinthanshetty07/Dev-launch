@@ -106,6 +106,22 @@ export function needsManagerToResolve(declared?: string): boolean {
   return major !== undefined && Number(major) >= 2;
 }
 
+/**
+ * `<manager> run <script>` with arguments that reach the script as options.
+ *
+ * `--` belongs to npm alone. npm strips it and passes what follows to the script; without
+ * it npm reads `--host` as its own configuration. pnpm and Yarn 2+ do the opposite: they
+ * forward a literal `--` to the script, and a CLI that parses `--` as the end of its
+ * options — Vite's does — then treats `--host 0.0.0.0` as positional and binds loopback.
+ * Yarn 1 strips it with a deprecation warning, and passes options through without it.
+ * Measured in the runner image, not recalled: pnpm 9.12, 10.20 and 12.6 and Yarn 4.6
+ * all delivered `["--","--host","0.0.0.0"]` to the script.
+ */
+export function runScript(pm: 'npm' | 'yarn' | 'pnpm', script: string, args: readonly string[]): string {
+  if (args.length === 0) return `${pm} run ${script}`;
+  return pm === 'npm' ? `npm run ${script} -- ${args.join(' ')}` : `${pm} run ${script} ${args.join(' ')}`;
+}
+
 function installFor(pm: 'npm' | 'yarn' | 'pnpm'): string {
   // `npm ci` would be stricter but fails outright when a lockfile is out of step with
   // package.json, which is common in repositories nobody has run in a while.
@@ -460,8 +476,7 @@ export class RuleBasedPlanner {
 
     const port = portFor(framework, meta);
     const args = framework ? bindingArgs(framework, port) : [];
-    // `--` is what forwards arguments through the package manager to the script itself.
-    const startCommand = `${pm} run ${script}${args.length > 0 ? ` -- ${args.join(' ')}` : ''}`;
+    const startCommand = runScript(pm, script, args);
 
     const env: EnvVar[] = [
       { key: 'HOST', value: '0.0.0.0', required: false },

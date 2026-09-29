@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-09-29 — Flags reach a pnpm or Yarn 4 script as options
+
+`sveltejs/realworld` ended `PORT_BOUND_TO_LOCALHOST` against a plan reading
+`pnpm run dev -- --host 0.0.0.0 --port 5173`. Measured in the runner image rather than
+recalled: pnpm 9.12, 10.20 and 12.6 and Yarn 4.6 all hand the script
+`["--","--host","0.0.0.0"]` — they forward the `--` — while npm and Yarn 1 strip it.
+Vite's argument parser reads everything after `--` as positional, so the flags that bind
+the server to `0.0.0.0` never arrived, under every pnpm or Yarn 4 Vite, SvelteKit, Astro
+or Nuxt project.
+
+`runScript(pm, script, args)` puts `--` in front of the arguments under npm only, which
+needs it — without it npm reads `--host` as its own configuration. `planning-strategy.md`
+stated the npm behaviour as a rule for every manager, and is corrected.
+
+- **Fixture:** `node-pnpm-vite-args`, a pnpm project whose `vite` is a vendored stand-in
+  with cac's end-of-options behaviour. Before: `PORT_BOUND_TO_LOCALHOST` on
+  `127.0.0.1:5173`, as in the corpus. After: READY.
+- **Mutations:** four — `--` for every manager, for none, for Yarn, and a separator with
+  no arguments. All killed.
+
 ## 2026-09-29 — A corpus of real repositories, and a clone of the commit it names
 
 DevLaunch had been measured against real repositories twice, both times by a harness in a

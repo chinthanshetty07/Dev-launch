@@ -1,0 +1,6 @@
+{
+  "name": "vite",
+  "version": "0.0.0-fixture",
+  "description": "Stands in for vite. Reproduces one behaviour only: flags after a literal `--` are not options.",
+  "bin": { "vite": "bin/vite.js" }
+}

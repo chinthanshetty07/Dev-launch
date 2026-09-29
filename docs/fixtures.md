@@ -44,6 +44,23 @@ They are deliberately not in the automated suite.
 | `python-async-postgres` | One service that needs a Postgres it does not contain, reached through an **async** driver. Proves provisioning happens outside the multi-service path, and that the injected URL names the declared driver — a plain `postgresql://` sends SQLAlchemy to psycopg2 and fails against a healthy database. It answers only after a real `SELECT 1` |
 | `node-fullstack` | `frontend/` + `backend/` with no root manifest, a hardcoded `http://localhost:5001` in the frontend, a backend that binds `5000`, and a MongoDB dependency. The ordinary shape of a web project, and the one a single-service runner gets wrong |
 
+## Corpus regressions
+
+One per DevLaunch bug the real-world corpus (`scripts/corpus/`) found, each driven by
+`integration/corpusRegressions.test.ts` through analysis, rule-based planning, the
+sandbox and readiness — so the test proves the application answers, not only that the
+plan changed. Each was run against the unfixed code first and failed the way the real
+repository did.
+
+Where the defect lives in a tool's behaviour, the tool is **stood in for** by a tiny
+package vendored under the fixture's `vendor/` and installed as a `file:` dependency:
+the planner still recognises it by name, and nothing is downloaded. Each stand-in
+reproduces the one behaviour at issue, quoted from the real tool in its source.
+
+| Fixture | Reproduces |
+|---|---|
+| `node-pnpm-vite-args` | `sveltejs/realworld`: pnpm forwards a literal `--` to the script, and a Vite-like parser reads the flags after it as positional — so the server binds loopback |
+
 ## Instrumentation
 
 | Fixture | Purpose |

@@ -61,8 +61,12 @@ specific first, always.
 
 Four details that are the difference between a plan that works and one that hangs:
 
-- **Arguments reach the dev server only through `--`.** `npm run dev --host 0.0.0.0`
-  passes the flag to npm; `npm run dev -- --host 0.0.0.0` passes it to the script.
+- **Arguments reach the dev server through `--` under npm, and only under npm.**
+  `npm run dev --host 0.0.0.0` passes the flag to npm; `npm run dev -- --host 0.0.0.0`
+  passes it to the script. pnpm and Yarn 2+ forward a literal `--` to the script, where
+  Vite's parser reads everything after it as positional — so under them the flags follow
+  the script name directly. This was written as a rule for every manager for a long time,
+  and every pnpm SvelteKit, Astro or Vite project bound loopback because of it.
 - **Angular needs `--disable-host-check`**, because it rejects requests whose Host
   header it does not recognise — which is every request arriving through a port mapping.
 - **Streamlit needs `--server.headless`**, or it prompts for an email address on first
