@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-09-29 — A server DevLaunch planned that exits 0 has stopped, not finished
+
+`ahfarmer/calculator`'s dev server closed on an empty stdin and the session said
+`COMPLETED` — "the expected shape for a script" — about a plan DevLaunch had built to serve
+port 3000. The `CI=true` fix keeps that server up; this fixes the report, for the next
+server that stops itself for a reason nobody has met yet.
+
+A single-service run that exits 0 before readiness is now a failure when the plan is a
+server — `hostBinding: 'forced'`, a recognised framework told where to listen — and
+`COMPLETED` otherwise, as before, for scripts, CLIs and entry files DevLaunch could not
+bind. The failure is `APPLICATION_EXITED`, worded as the sibling path for a container
+found dead before readiness already worded it ("the start command finished successfully
+instead of serving"), with the last line the process printed and no repair: the command
+was right and the reason is in the log. The two paths now share that sentence. A
+project's services were already treated this way; single services now agree with them.
+
+Decided by the user, from the options put to them after the corpus run.
+
+- **Unchanged test, still true:** a `node server.js` plan exiting 0 is `COMPLETED`
+  (`containerState.test.ts`); its plan binds nothing, so it is not a planned server.
+- **Fixture:** `node-cra-stdin` without `CI=true`. Before: `COMPLETED`. After: `FAILED`,
+  `APPLICATION_EXITED`.
+- **Mutations:** a planned server still `COMPLETED` (unit and integration), and every exit
+  0 a failure. All killed, the last by the unchanged CLI test.
+
 ## 2026-09-29 — The corpus runner no longer overwrites a report
 
 The reproduction command given for the after-run, `run.mjs --name after`, wrote into the

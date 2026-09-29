@@ -315,6 +315,15 @@ A clean exit before readiness is now `COMPLETED`. The session says what happened
 ran, it finished, it never opened a port, and that is the expected shape for a script —
 and no repair is attempted, because there is nothing wrong to repair.
 
+**Unless DevLaunch planned a server.** A plan with `hostBinding: 'forced'` is one where a
+framework was recognised and told where to listen, and a dev server that stops with 0
+before opening that port has stopped rather than finished. Reported as `COMPLETED`, it hid
+a Create React App dev server closing on an empty stdin — about a plan built to serve port
+3000 — under a sentence calling it the expected shape for a script. It is now
+`APPLICATION_EXITED`, "finished successfully instead of serving", with the last line the
+process printed and no repair: the command was the right one, and the reason is in the
+log. A script, a CLI or an entry file DevLaunch could not bind is still `COMPLETED`.
+
 ## A pyproject.toml is not a promise of a buildable package
 
 `pip install .` failed with setuptools' own refusal — *Multiple top-level packages

@@ -81,6 +81,23 @@ describe('container state attribution', () => {
     expect(out.failure).toBeUndefined();
   });
 
+  it('calls a planned server that exited 0 a failure, naming the port it never opened', async () => {
+    // `hostBinding: 'forced'`: a framework DevLaunch recognised and told where to listen.
+    // Stopping with 0 is not finishing — a CRA dev server closing on an empty stdin was
+    // reported COMPLETED, "the expected shape for a script".
+    const exec = new ExecutionManager(
+      stubDocker(async () => ({ State: { Running: false, ExitCode: 0 } })),
+    );
+    const sentinels = new Set(['__DEVLAUNCH:PHASE:START:BEGIN__']);
+    const server = { ...plan, hostBinding: 'forced' as const };
+    const out = await explain(exec, [container, server, sentinels, readiness, undefined]);
+    expect(out.state).toBe('FAILED');
+    expect(out.failure.code).toBe(FailureCode.APPLICATION_EXITED);
+    expect(out.failure.message).toBe(
+      'The start command finished successfully instead of serving; nothing ever listened on port 3000.',
+    );
+  });
+
   it('still attributes a genuinely exited container to its phase', async () => {
     const exec = new ExecutionManager(
       stubDocker(async () => ({ State: { Running: false, ExitCode: 1 } })),

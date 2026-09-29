@@ -151,4 +151,15 @@ describe('failures the real-world corpus found', () => {
     expect(outcome.failure?.runtimeDirection).toBe('older');
     expect(outcome.failure?.remedy).toMatch(/NODE_OPTIONS=--openssl-legacy-provider/);
   }, 300_000);
+
+  it('reports a planned dev server that exits 0 as stopped, not completed (ahfarmer/calculator)', async () => {
+    // The CRA fixture without the CI=true that keeps it up: the shape the corpus met first.
+    // It was COMPLETED; a server DevLaunch planned that stops by itself has failed to serve.
+    const plan = await planFixture('node-cra-stdin');
+    const withoutCi = { ...plan, environmentVariables: plan.environmentVariables.filter((v) => v.key !== 'CI') };
+    const outcome = await runFixture('node-cra-stdin', withoutCi, 30_000);
+    expect(outcome.state).toBe(ExecutionState.FAILED);
+    expect(outcome.failure?.code, JSON.stringify(outcome.failure)).toBe(FailureCode.APPLICATION_EXITED);
+    expect(outcome.failure?.message).toMatch(/finished successfully instead of serving/);
+  }, 300_000);
 });

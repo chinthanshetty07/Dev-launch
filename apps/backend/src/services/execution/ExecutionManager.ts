@@ -114,6 +114,11 @@ export interface RunResult {
   logs: LogEntry[];
 }
 
+/** A start command that ended with 0 where a server was expected, in one set of words. */
+function finishedInsteadOfServing(plan: RunPlan): string {
+  return `The start command finished successfully instead of serving; nothing ever listened on port ${plan.expectedPort}.`;
+}
+
 /**
  * The part of the log that can explain a failure in `phase`: from that phase's opening
  * sentinel on. An install prints hundreds of lines, and a signature matching any of them
@@ -571,7 +576,7 @@ export class ExecutionManager {
                 // that the plan is starting the wrong command.
                 message:
                   code === 0
-                    ? `The start command finished successfully instead of serving; nothing ever listened on port ${plan.expectedPort}.`
+                    ? finishedInsteadOfServing(plan)
                     : code === undefined
                       ? `The container exited before opening port ${plan.expectedPort}, and Docker reported no exit code.`
                       : `The container exited with code ${code} before opening port ${plan.expectedPort}.`,
@@ -695,7 +700,32 @@ export class ExecutionManager {
       // — the exact shape of unhelpful failure this exists to prevent. `runToCompletion`
       // had always classified it correctly; only readiness, which is watching for a port
       // that is never going to open, did not.
-      if (exitState === ExecutionState.COMPLETED) return { state: ExecutionState.COMPLETED };
+      //
+      // Unless DevLaunch itself planned a server. `hostBinding: 'forced'` means a framework
+      // was recognised and told where to listen — a dev server, not a script — and a dev
+      // server that stops with 0 before opening its port has stopped, not finished. Called
+      // COMPLETED, "the expected shape for a script", it hid a CRA dev server closing on an
+      // empty stdin, about a plan built minutes earlier to serve port 3000. The sibling
+      // path above, for a container found dead before readiness began, already said so.
+      if (exitState === ExecutionState.COMPLETED) {
+        if (plan.hostBinding !== 'forced') return { state: ExecutionState.COMPLETED };
+        return {
+          state: ExecutionState.FAILED,
+          failure: {
+            code: FailureCode.APPLICATION_EXITED,
+            message: finishedInsteadOfServing(plan),
+            exitCode: 0,
+            phase: 'start',
+            evidence: lastOutputLine(logs),
+            remedy:
+              'DevLaunch started this as a server and it stopped by itself, reporting success. ' +
+              'A dev server that exits cleanly has usually been told to: an ended stdin, a ' +
+              'script that builds rather than serves, or a flag it read as "run once". The ' +
+              'last lines of the log say which.',
+            confidence: 'high',
+          },
+        };
+      }
 
       const coarse = failure ?? {
         code: FailureCode.UNKNOWN_RUNTIME_ERROR,
