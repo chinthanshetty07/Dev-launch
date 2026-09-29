@@ -135,7 +135,12 @@ export class ProjectPlanner {
     }
 
     return {
-      plan: ProjectPlanSchema.parse({ services, planSource: 'rule-based' }),
+      plan: ProjectPlanSchema.parse({
+        services,
+        planSource: 'rule-based',
+        // Every service was given the same root install; they must not run it at once.
+        ...(workspace ? { sharedInstall: true } : {}),
+      }),
       skipped,
       warnings,
     };

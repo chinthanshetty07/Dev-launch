@@ -44,6 +44,7 @@ import type { AIRepair } from '../ai/AIRepair.js';
 import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
 import { repairPolicyFor } from '../failures/RepairPolicy.js';
 import { tryDeterministicRepair } from '../planning/DeterministicRepair.js';
+import { containerMemoryCeilingMb } from '../execution/MemoryCeiling.js';
 import { impossibleCommand } from '../planning/Feasibility.js';
 import {
   applySourceRewrites,
@@ -822,13 +823,14 @@ export class SessionManager extends EventEmitter {
     // and the one that was killed is the only one that has shown it needs more.
     if (failure.code === FailureCode.OUT_OF_MEMORY) {
       const current = service.memoryMb ?? config.container.memoryMb;
-      const ceiling = config.container.memoryCeilingMb;
+      const ceiling = await this.memoryCeiling();
       if (current >= ceiling) {
         session.logs.buffer.push(
           'stdout',
           `Not raising ${service.name}'s memory again: ${current} MB is already the ` +
-            'ceiling (DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB). Give the VM more with ' +
-            '`colima stop && colima start --cpu 4 --memory 8` and raise the ceiling.',
+            `ceiling (${this.ceilingSource()}). Give the VM more with ` +
+            '`colima stop && colima start --cpu 4 --memory 8`, or override the ceiling ' +
+            'with DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB.',
         );
         return false;
       }
@@ -848,6 +850,7 @@ export class SessionManager extends EventEmitter {
           after: { memoryMb: ceiling },
           evidence: [
             `${service.name} was killed at ${current} MB, which is DevLaunch's limit rather than the repository's`,
+            `${ceiling} MB is what this machine can spare for one container`,
           ],
           confidence: 'high',
           service: service.name,
@@ -1082,15 +1085,16 @@ export class SessionManager extends EventEmitter {
    * inside the same attempt ceiling as every other repair. It is not a plan change, but
    * it is an attempt, and an attempt that does not count is how a loop becomes infinite.
    */
-  private raiseMemory(session: Session, previous: readonly RunPlan[]): boolean {
+  private async raiseMemory(session: Session, previous: readonly RunPlan[]): Promise<boolean> {
     const current = session.memoryMb ?? config.container.memoryMb;
-    const ceiling = config.container.memoryCeilingMb;
+    const ceiling = await this.memoryCeiling();
     if (current >= ceiling) {
       session.logs.buffer.push(
         'stdout',
         `Not raising the memory limit again: ${current} MB is already the ceiling ` +
-          `(DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB). Give the VM more with ` +
-          '`colima stop && colima start --cpu 4 --memory 8` and raise the ceiling.',
+          `(${this.ceilingSource()}). Give the VM more with ` +
+          '`colima stop && colima start --cpu 4 --memory 8`, or override the ceiling ' +
+          'with DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB.',
       );
       return false;
     }
@@ -1105,7 +1109,10 @@ export class SessionManager extends EventEmitter {
         failureCode: FailureCode.OUT_OF_MEMORY,
         before: { memoryMb: current },
         after: { memoryMb: ceiling },
-        evidence: [`the container was killed at ${current} MB, which is DevLaunch's limit rather than the repository's`],
+        evidence: [
+          `the container was killed at ${current} MB, which is DevLaunch's limit rather than the repository's`,
+          `${ceiling} MB is what this machine can spare for one container`,
+        ],
         confidence: 'high',
       },
     ];
@@ -1297,7 +1304,7 @@ export class SessionManager extends EventEmitter {
     // configuration rather than by a plan" — true, and an odd thing to say about
     // configuration DevLaunch writes. A real Next.js repository is killed by the 1 GB
     // default every time, and was told its own project had failed.
-    if (failure.code === FailureCode.OUT_OF_MEMORY && this.raiseMemory(session, previous)) {
+    if (failure.code === FailureCode.OUT_OF_MEMORY && (await this.raiseMemory(session, previous))) {
       await this.startAndVerify(session, sourceDir, req);
       return true;
     }
@@ -1784,6 +1791,46 @@ export class SessionManager extends EventEmitter {
    * terminal guard in `setState` already makes the *state* safe; this is what makes the
    * work stop rather than run to completion against a session that no longer exists.
    */
+  /**
+   * The most memory a repair may raise a container to, for this machine.
+   *
+   * Asked of the daemon once and remembered: `docker info` is a round trip, and the VM's
+   * size does not change under a running process — changing it means restarting Colima,
+   * which restarts this too.
+   */
+  private ceilingMb?: number;
+  private ceilingBytes?: number | null;
+  private async memoryCeiling(): Promise<number> {
+    if (this.ceilingMb === undefined) {
+      // `?.()` on the method too, not just the object: a Docker client that predates
+      // this, or a test double that never needed it, has the property missing rather
+      // than null — and `docker?.hostMemoryBytes()` throws on that, where the whole
+      // point of this lookup is that it degrades to the old constant.
+      const bytes = (await this.exec.docker?.hostMemoryBytes?.().catch(() => null)) ?? null;
+      this.ceilingMb = containerMemoryCeilingMb(process.env, bytes);
+      this.ceilingBytes = bytes;
+    }
+    return this.ceilingMb;
+  }
+
+  /**
+   * Where the ceiling came from, for the message that reports hitting it.
+   *
+   * Naming DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB unconditionally sent people to edit a
+   * variable they had never set and that was not in force: the number is normally half
+   * the VM. Telling them to give the VM more RAM is the advice that actually moves it.
+   */
+  private ceilingSource(): string {
+    if (process.env.DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB?.trim()) {
+      return 'set by DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB';
+    }
+    if (this.ceilingBytes !== null && this.ceilingBytes !== undefined) {
+      const vmMb = Math.floor(this.ceilingBytes / (1024 * 1024));
+      return `half of the ${vmMb} MB this Docker VM has`;
+    }
+    return 'the default, because the VM size could not be read';
+  }
+
   private throwIfStopped(session: Session): void {
     if (session.stopped) throw new SessionStopped();
   }

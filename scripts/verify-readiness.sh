@@ -156,6 +156,29 @@ else
   printf '%s' "$out" | grep -q 'failed' && bad "frontend suite" "$out" || ok "frontend suite ($(printf '%s' "$out" | tr -s ' '))"
 fi
 
+echo "== the memory ceiling follows the machine =="
+# Goes red if the ceiling becomes a constant again, which is how a 4 GB tuning survived
+# onto a 6 GB VM and killed a repository with gigabytes to spare.
+grep -q "containerMemoryCeilingMb" apps/backend/src/services/session/SessionManager.ts \
+  && ok "repairs derive the ceiling" || bad "repairs derive the ceiling" "back to a constant"
+grep -q "MAX_CEILING_MB" apps/backend/src/services/execution/MemoryCeiling.ts \
+  && ok "the ceiling is capped" || bad "the ceiling is capped" "the cap is gone"
+
+echo "== a workspace installs one service at a time =="
+# Goes red if the wait is dropped, which is how two concurrent installs of the same tree
+# exhausted the VM.
+grep -q "sharedInstall" packages/shared/src/runPlan.ts \
+  && ok "the plan can say a workspace is shared" || bad "the plan can say a workspace is shared" "the field is gone"
+grep -q "waitForInstall(logs" apps/backend/src/services/execution/ProjectExecutor.ts \
+  && ok "the launch loop waits between services" || bad "the launch loop waits between services" "it no longer waits"
+
+echo "== a dead container is diagnosed, not described =="
+# Goes red if the exit cause stops being read, which made an OOM look like a missing port
+# mapping and stopped the memory repair ever firing.
+grep -q "Ask \*why\* there is no mapping" apps/backend/src/services/execution/ExecutionManager.ts \
+  && ok "the exit cause is read before the symptom" \
+  || bad "the exit cause is read before the symptom" "back to reporting the absence"
+
 echo "== the report's own open items =="
 # STRICT became dead code the moment F1 closed: nothing incremented the counter any
 # more, so "STRICT=1 exits 0" was true because the flag did nothing. It counts what the

@@ -1,5 +1,131 @@
 # Changelog
 
+## 2026-09-29 — The ceiling follows the machine, and a workspace installs once
+
+Two changes to the same failure. `horusyeung/nextjs-nestjs-fullstack-starter` died with
+OUT_OF_MEMORY during install: both services started, both ran `pnpm install` on the same
+workspace at the same time, and the VM could not hold two copies of that dependency tree.
+The memory repair then raised each container to a hard-coded 2048 MB regardless of how
+much the VM actually had.
+
+### 1. The memory ceiling is derived from the VM
+
+`containerMemoryCeilingMb(env, vmBytes)` returns an explicit
+`DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB` when set, otherwise half the VM capped at
+4096 MB. `DockerManager.hostMemoryBytes()` reads `docker info` MemTotal, through the same
+daemon the containers run on, and returns null rather than throwing.
+
+There is deliberately **no floor**. The first version kept the old 2048 constant as a
+minimum, so a small VM would not get weaker repairs than before — which on a 2 GB machine
+offers one container the entire thing, with the daemon and possibly a database already
+inside it. That is the exact wedge the ceiling exists to prevent. The constant now
+applies only when the VM size cannot be read at all.
+
+- **Verified:** `docker info` reports `6197440512` bytes (5910 MB) on this VM; the
+  derived ceiling is 2955 MB, and the repair raises to it. A 2 GB VM derives 1024 MB,
+  which equals the default container size, so no raise is offered and the session reports
+  the machine as the limit instead of restarting into the same kill.
+- The "already at the ceiling" message now names where the number came from — *"half of
+  the 5910 MB this Docker VM has"* — rather than blaming
+  `DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB`, a variable the reader had almost certainly
+  never set.
+
+### 2. A shared workspace installs one service at a time
+
+`ProjectPlanner` marks a workspace project `sharedInstall`, and every service is pointed
+at one root install command. `ProjectExecutor` then waits for each service's install to
+finish before starting the next — for shared workspaces only, and never for the last
+service, which has nothing queued behind it.
+
+The wait is bounded by `timeToReadyMs` and proceeds on timeout; a stuck install is
+diagnosed by readiness like any other failure rather than hanging the project. The
+liveness poll asks **Docker** whether the container is still alive, not our own state,
+which is not written until readiness — after this loop. An OOM-killed container stalled
+the wait for the full ten minutes before that was corrected.
+
+- **Verified:** with the last-service exemption removed, the gate's own suite takes
+  120 s instead of 0.1 s — the timeout, paid once per run, for nothing.
+
+### 3. A dead container is diagnosed, not described
+
+A container that has exited publishes no port, so `waitForReady` reported *"Docker
+published no host mapping"* — a symptom of the death rather than its cause. For an OOM
+kill that was actively harmful: the memory repair keys off `OUT_OF_MEMORY`, so the wrong
+code meant the one repair that would have fixed the run never fired.
+
+`waitForReady` now inspects the container first. It attributes `OUT_OF_MEMORY` on the
+kernel's OOM flag — the only evidence a SIGKILLed process leaves — and
+`APPLICATION_EXITED` otherwise, and it refuses to attribute anything at all when the
+container was merely removed or could not be inspected. Exit 0 is reported in its own
+words: the start command finished instead of serving, which means the plan starts the
+wrong thing, and sending the reader to look for a crash that printed nothing wastes their
+time.
+
+### What an independent verifier caught
+
+A blocker, and it is the reason the tests here are shaped the way they are:
+**`waitForInstall` listened on the wrong channel.** `LogManager.ingest` emits a sentinel
+on its own `'sentinel'` channel and returns — sentinels never reach the buffer or
+`'entry'` listeners. Listening on `'entry'` meant the feature could not work against a
+real container at any time. Its tests passed because they pushed into the log buffer by
+hand. They now drive the real Docker-framed ingestion path through `logs.attach()`, and
+`src/__tests__/helpers/dockerFramed.ts` exists so the next test cannot make the same
+mistake quietly.
+
+The verifier also found that *every* behavioural change in the first draft except the
+pure ceiling function survived its own deletion — four mutations, 784/784 still green.
+The launch-loop gate, the planner flag, the ceiling wiring and the exit diagnosis now
+have tests, and each was confirmed by mutation:
+
+| Mutation | Result |
+|---|---|
+| gate removed entirely | 1 failed |
+| gate waits without `sharedInstall` | 1 failed |
+| last service waits too | 2 failed (and 120 s) |
+| `sharedInstall` flag not set | 1 failed |
+| root install command not applied | 1 failed |
+| workspace never detected | 3 failed |
+| VM never consulted for the ceiling | 3 failed |
+| ceiling message blames the env var | 2 failed |
+| removed container treated as an exit | 1 failed |
+| `-1` printed as a real exit code | 1 failed |
+| exit 0 described as a crash | 1 failed |
+| OOM flag ignored | 1 failed |
+| whole exit branch removed | 3 failed |
+| install wait listens on `'entry'` again | 3 failed |
+| any sentinel ends the wait | 1 failed |
+| liveness probe rejection uncaught | 1 failed |
+
+- **Full suite:** 889 passed, 3 skipped, 0 failed, 46 files (backend); 63 passed
+  (frontend). `STRICT=1 scripts/verify-readiness.sh` → 33 passed, 0 failed.
+
+### Disputed and not changed
+
+The verifier reported that `sharedInstall` is set only on the rule-based path and not on
+the AI-fallback path. It is not a gap: `ProjectPlanSchema.parse` is called in exactly one
+place (`ProjectPlanner.ts:138`), and the AI fallback (`SessionManager.ts:489`) produces a
+single-service `RunPlan`. One service has no sibling to race with, so there is nothing to
+sequence.
+
+### Known limitations
+
+- Sequencing installs costs wall-clock on a cold cache — one install's duration per
+  service, for shared workspaces only. That is the trade being made deliberately: peak
+  memory is bounded to one install, which is what was failing.
+- The derived ceiling is read once per SessionManager and cached. Resizing the VM while
+  the backend is running will not be noticed until it restarts.
+- `horusyeung/nextjs-nestjs-fullstack-starter` reaches PARTIALLY_READY, not READY: `api`
+  serves `{"name":"Full-Stack Starter API",...}` on `http://localhost:3001/` with HTTP
+  200, while `web` fails honestly with `READINESS_TIMEOUT` because a Next.js dev server's
+  first compile exceeds the 60 s readiness budget. Not addressed here.
+
+### Explicitly not done
+
+- The `config/index.ts` evaluation-order trap (constants read before `loadDotEnv()`) is
+  unchanged and still recorded as open in `docs/production-readiness.md`.
+- No live re-run of the full 28-repository sweep after these changes; the evidence above
+  is the suite, the mutations and the readiness script.
+
 ## 2026-09-29 — Closing the readiness findings
 
 F1–F7 closed, F8 half-closed by decision. `docs/production-readiness.md` carries each

@@ -2303,11 +2303,15 @@ describe('running out of memory under our own ceiling', () => {
   });
 
   /** Records the memory limit each container was created with. */
-  function limitSpy(outcome: () => ReadyOutcome) {
+  function limitSpy(outcome: () => ReadyOutcome, vmBytes?: number) {
     const limits: (number | undefined)[] = [];
     return {
       limits,
       exec: {
+        // Present only when a test says how big the VM is. Its *absence* is the
+        // pre-existing case — a Docker client that cannot answer — and the reason every
+        // other test here sees the fallback constant.
+        ...(vmBytes === undefined ? {} : { docker: { hostMemoryBytes: async () => vmBytes } }),
         async launch(o: { logs?: LogManager; memoryMb?: number }) {
           limits.push(o.memoryMb);
           return {
@@ -2342,6 +2346,52 @@ describe('running out of memory under our own ceiling', () => {
       type: 'MEMORY_LIMIT_RAISED',
       failureCode: FailureCode.OUT_OF_MEMORY,
     });
+    await mgr.shutdown();
+  });
+
+  it('raises to half the VM, not to a constant that ignores the machine', async () => {
+    // The wiring, which nothing exercised: every other test here leaves the Docker
+    // double without `hostMemoryBytes`, so the ceiling degrades to the old constant and
+    // passes whether the VM is consulted or not. On a 6 GB VM the answer is 3072, and
+    // 2048 would mean the lookup is not connected.
+    const { exec, limits } = limitSpy(oom, 6 * 1024 * 1024 * 1024);
+    const mgr = new SessionManager(exec, deps(exec));
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 6000);
+
+    expect(limits[1]).toBe(3072);
+    await mgr.shutdown();
+  });
+
+  it('will not hand a small VM its entire memory, so it reports instead of retrying', async () => {
+    // A 2 GB machine has a daemon and possibly a database in it. Half of it is 1024 MB,
+    // which is already the default container size — so there is no raise to make, and
+    // the honest move is to say the machine is the limit rather than restart into the
+    // same kill. The earlier draft of this test expected a second container at 1024;
+    // that expectation was wrong, not the behaviour.
+    const { exec, limits } = limitSpy(oom, 2 * 1024 * 1024 * 1024);
+    const mgr = new SessionManager(exec, deps(exec));
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 6000);
+
+    expect(limits).toHaveLength(1);
+    expect(s.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
+    const text = s.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(text).toMatch(/already the ceiling \(half of the 2048 MB this Docker VM has\)/);
+    await mgr.shutdown();
+  });
+
+  it('blames the VM for the ceiling, not a variable nobody set', async () => {
+    // The message used to name DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB unconditionally,
+    // sending people to edit a variable that was not in force. The number comes from
+    // the machine, and so should the advice.
+    const { exec } = limitSpy(oom, 6 * 1024 * 1024 * 1024);
+    const mgr = new SessionManager(exec, deps(exec));
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 6000);
+
+    const text = s.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(text).toMatch(/already the ceiling \(half of the 6144 MB this Docker VM has\)/);
     await mgr.shutdown();
   });
 

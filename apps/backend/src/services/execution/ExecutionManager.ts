@@ -516,6 +516,55 @@ export class ExecutionManager {
 
     const hostPort = await this.ports.hostPortFor(container, plan.expectedPort);
     if (hostPort === null) {
+      // Ask *why* there is no mapping before describing its absence.
+      //
+      // A container that has already exited has no published port, so this reported
+      // "Docker published no host mapping" — a symptom of the death rather than its
+      // cause. For an OOM kill that is worse than unhelpful: the memory repair keys off
+      // OUT_OF_MEMORY, so a wrong code meant the one repair that would have fixed the
+      // run never fired. Seen against a real workspace repository, whose service was
+      // killed at 1024 MB and reported as a missing port mapping.
+      const died = await this.containerState(container);
+      // `removed` is not a death. A container that 404s was swept by cleanup or stopped
+      // by the user; it carries the -1 placeholder exit code, and the first version of
+      // this branch duly reported "exited with code -1" for a run nobody's application
+      // had anything to do with. The sibling path below (`state.removed`) already
+      // refuses to attribute that, and so does this one.
+      if (died?.running === false && died.removed !== true) {
+        const oom = died.oomKilled === true;
+        // -1 is this codebase's "inspect gave us no code", not a real exit status.
+        const code = died.exitCode === -1 ? undefined : died.exitCode;
+        return {
+          state: ExecutionState.FAILED,
+          hostPort: null,
+          readiness: { ready: false, attempts: 0, elapsedMs: 0 },
+          failure: oom
+            ? {
+                code: FailureCode.OUT_OF_MEMORY,
+                message:
+                  'The process was killed for exceeding the container memory limit, before ' +
+                  'it opened a port.',
+                phase: 'install',
+                confidence: 'high',
+              }
+            : {
+                code: FailureCode.APPLICATION_EXITED,
+                // Exit 0 is its own story: the start command ran to completion instead
+                // of staying up to serve. Reporting that as a crash sends the reader
+                // looking for an error that was never printed, when the real answer is
+                // that the plan is starting the wrong command.
+                message:
+                  code === 0
+                    ? `The start command finished successfully instead of serving; nothing ever listened on port ${plan.expectedPort}.`
+                    : code === undefined
+                      ? `The container exited before opening port ${plan.expectedPort}, and Docker reported no exit code.`
+                      : `The container exited with code ${code} before opening port ${plan.expectedPort}.`,
+                ...(code !== undefined ? { exitCode: code } : {}),
+                confidence: 'high',
+              },
+        };
+      }
+
       return {
         state: ExecutionState.FAILED,
         hostPort: null,

@@ -69,6 +69,19 @@ export const ServiceRunPlanSchema = RunPlanSchema.extend({
 export const ProjectPlanSchema = z.object({
   services: z.array(ServiceRunPlanSchema).min(1),
   planSource: z.enum(['rule-based', 'ai-fallback']),
+  /**
+   * Every service installs the same workspace, so they must not do it at once.
+   *
+   * A workspace's packages reference each other as `workspace:*`, which no package
+   * manager resolves for one package alone, so each service is given the *root* install
+   * — the whole tree, once per service. They then ran concurrently, and a NestJS plus
+   * Next.js monorepo needed more memory than the VM had: both containers were killed
+   * mid-fetch, and the limit that killed them was DevLaunch's own.
+   *
+   * Set only for a detected workspace. Two unrelated services with their own manifests
+   * install different things and gain nothing from waiting for each other.
+   */
+  sharedInstall: z.boolean().optional(),
 });
 
 export type ServiceRunPlan = z.infer<typeof ServiceRunPlanSchema>;

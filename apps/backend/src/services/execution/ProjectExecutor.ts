@@ -2,6 +2,7 @@ import type Dockerode from 'dockerode';
 import {
   ExecutionState,
   FailureCode,
+  Sentinel,
   type BackingService,
   type FailureDetail,
   type ProjectPlan,
@@ -311,7 +312,7 @@ export class ProjectExecutor {
       internalUrls[plan.name] = `http://${aliasesFor(plan.name)[0]}:${plan.expectedPort}`;
     }
 
-    for (const base of ordered) {
+    for (const [position, base] of ordered.entries()) {
       // A variable the repository already supplies wins: the user's own value for
       // MONGO_URI is a decision, and overwriting it would be DevLaunch overruling it.
       const declared = new Set(base.environmentVariables.filter((v) => v.value !== null).map((v) => v.key));
@@ -390,6 +391,42 @@ export class ProjectExecutor {
           },
         };
         services.push(entry);
+
+        // One workspace install at a time.
+        //
+        // The loop was already sequential, but `exec.launch` returns once the container
+        // has *started* — the installs then ran side by side inside them. For a shared
+        // workspace that is the same dependency tree fetched twice at once, and a NestJS
+        // plus Next.js monorepo needed more memory than the VM had: both containers were
+        // killed mid-fetch. Waiting costs wall-clock on a cold cache and bounds peak
+        // memory to one install, which is the thing that was failing.
+        //
+        // Only for a shared workspace (`sharedInstall`). Independent services install
+        // different things and gain nothing from queueing behind each other.
+        // The loop's own index, not `indexOf`: a scan by value is a scan, and it
+        // answers "where is an element equal to this" when the question is "how far
+        // through am I". The last service waits for nobody — there is nothing behind it.
+        if (opts.project.sharedInstall && position < ordered.length - 1) {
+          opts.logs.write('stdout', `Waiting for ${plan.name} to finish installing before starting the next service...`);
+          const outcome = await waitForInstall(logs, {
+            timeoutMs: config.timeouts.timeToReadyMs,
+            // Docker's answer, not ours: our own state is not written until readiness,
+            // which runs after this loop.
+            hasExited: async () => {
+              const live = await entry.handle.liveness?.().catch(() => undefined);
+              return live !== undefined && live.kind !== 'running' && live.kind !== 'unknown';
+            },
+          });
+          if (outcome === 'timeout') {
+            // Proceed rather than hang. A stuck install must not stop the project; it
+            // will be diagnosed by readiness like any other failure.
+            opts.logs.write(
+              'stderr',
+              `${plan.name} is still installing after ${Math.round(config.timeouts.timeToReadyMs / 1000)}s; ` +
+                'starting the next service anyway.',
+            );
+          }
+        }
       } catch (err) {
         // A service that cannot even be created sinks the project: releasing what is
         // already running is better than leaving a half-started one behind.
@@ -505,6 +542,73 @@ function startRank(role: ServiceRole): number {
  * Pure, and separate from applying them, so the decision can be checked without Docker:
  * which file, which literal, which replacement, and the sentence explaining it.
  */
+/**
+ * Wait until a service has finished installing, or has stopped trying.
+ *
+ * The wrapper prints `INSTALL_OK` or `INSTALL_FAIL` around the install step, so this
+ * needs no new plumbing — it watches the log the service is already writing.
+ *
+ * Resolves rather than rejects, always. Its job is to decide when the *next* service may
+ * start, and every outcome answers that: finished, failed, the container died, or it
+ * took longer than anyone should wait. A hang here would stop the project rather than
+ * pace it, which is worse than installing concurrently ever was.
+ */
+export function waitForInstall(
+  logs: LogManager,
+  opts: { timeoutMs: number; hasExited?: () => Promise<boolean> | boolean },
+): Promise<'ok' | 'failed' | 'exited' | 'timeout'> {
+  return new Promise((resolve) => {
+    let done = false;
+    // Declared before the scan below, which can finish immediately — reading a `const`
+    // timer from inside `finish` before that line ran threw `Cannot access 'timer'
+    // before initialization`, turning the fast path into the only broken one.
+    let timer: NodeJS.Timeout | undefined;
+    let poll: NodeJS.Timeout | undefined;
+
+    const finish = (outcome: 'ok' | 'failed' | 'exited' | 'timeout'): void => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      if (poll) clearInterval(poll);
+      logs.off('sentinel', onSentinel);
+      resolve(outcome);
+    };
+
+    // `sentinel`, not `entry`.
+    //
+    // `LogManager.ingest` recognises a phase marker, emits it on its own channel and
+    // *returns* — it never reaches the buffer and never becomes an `entry`. The first
+    // version of this watched `entry` and scanned the buffer, so it could not see an
+    // install finish at all: it fell through to the timeout every time, and the only
+    // reason a live run ever proceeded was that the container had died and `hasExited`
+    // fired. The tests passed because they pushed to the buffer by hand, which is the
+    // one route production never takes.
+    const onSentinel = (marker: string): void => {
+      if (marker.includes(Sentinel.INSTALL_OK)) finish('ok');
+      else if (marker.includes(Sentinel.INSTALL_FAIL)) finish('failed');
+    };
+
+    logs.on('sentinel', onSentinel);
+    timer = setTimeout(() => finish('timeout'), opts.timeoutMs);
+    // A container that died mid-install prints nothing more, so the sentinel never
+    // arrives — waiting the full timeout for a corpse delays every sibling behind it.
+    // Asked of the container, not of our own bookkeeping.
+    //
+    // The first version read the service's recorded state, which is set by the readiness
+    // check — and readiness runs *after* this loop finishes. So a container that was
+    // OOM-killed during its install stayed "STARTING" for the full ten-minute budget
+    // while the next service waited behind it. Observed exactly once, which was enough.
+    poll = setInterval(() => {
+      void Promise.resolve(opts.hasExited?.())
+        .then((exited) => {
+          if (exited) finish('exited');
+        })
+        // A rejecting predicate must not become an unhandled rejection inside a timer.
+        .catch(() => undefined);
+    }, 500);
+  });
+}
+
 export function proxyRewrites(
   services: readonly ServiceRunPlan[],
   devProxies: Record<string, { file: string; target: string }>,

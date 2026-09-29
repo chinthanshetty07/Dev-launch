@@ -99,6 +99,26 @@ export class DockerManager {
     }
   }
 
+  /**
+   * How much memory the machine running the containers has, in bytes.
+   *
+   * The *daemon's* view, deliberately: on this setup that is the Colima VM rather than
+   * the Mac it sits on, and the VM is what a container's limit has to fit inside. Asking
+   * the host would report 8 GB where 5.8 is available and hand out a ceiling that cannot
+   * be honoured.
+   *
+   * Null when it cannot be read, which the caller must treat as "use the old constant"
+   * rather than as any particular number.
+   */
+  async hostMemoryBytes(): Promise<number | null> {
+    try {
+      const info = (await this.docker.info()) as { MemTotal?: number };
+      return typeof info.MemTotal === 'number' && info.MemTotal > 0 ? info.MemTotal : null;
+    } catch {
+      return null;
+    }
+  }
+
   async ensureVolume(name: string): Promise<void> {
     try {
       await this.docker.getVolume(name).inspect();
