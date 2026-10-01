@@ -721,6 +721,7 @@ export class RuleBasedPlanner {
     let startCommand: string;
     // The step between installing and starting, when the framework has one of its own.
     let frameworkBuild: string | null = null;
+    let protocol: 'https' | undefined;
 
     switch (kind) {
       case 'django':
@@ -749,6 +750,18 @@ export class RuleBasedPlanner {
         if (!moduleName) return null;
         const appVar = entry?.appVariable ?? 'app';
         startCommand = `uvicorn ${moduleName}:${appVar} --host 0.0.0.0 --port ${fw.defaultPort}`;
+        // Served the way its README serves it, when that is over TLS with files it ships.
+        // An application that refuses plain HTTP answers every request 403 otherwise.
+        if (meta.tls) {
+          startCommand += ` --ssl-certfile ${meta.tls.certFile} --ssl-keyfile ${meta.tls.keyFile}`;
+          protocol = 'https';
+          warnings.push(
+            `Served over HTTPS with the repository's own certificate (${meta.tls.certFile}), ` +
+              'as its README runs it. Your browser will say the connection is not private, ' +
+              'because that certificate was made on its author\'s machine: choose Advanced, then ' +
+              'Proceed, to open it.',
+          );
+        }
         break;
       }
 
@@ -800,6 +813,7 @@ export class RuleBasedPlanner {
         environmentVariables: env,
         healthCheck: { path: healthPathFor(meta), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
         planSource: 'rule-based',
+        ...(protocol ? { protocol } : {}),
       }),
     };
   }

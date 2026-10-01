@@ -45,6 +45,16 @@ export const RunPlanSchema = z.object({
   environmentVariables: z.array(EnvVarSchema).default([]),
   healthCheck: HealthCheckSchema.default({}),
   planSource: z.enum(['rule-based', 'ai-fallback']),
+  /**
+   * How the application answers: over plain HTTP, or over TLS with a certificate the
+   * repository ships. Absent means HTTP, which is nearly everything.
+   *
+   * Exists for applications that refuse plain HTTP outright — `nkwus/fastapi-starter`
+   * answers every request with `403 HTTPS is required for all requests.` and its README
+   * starts uvicorn with `--ssl-certfile certs/localhost.pem`. Served over HTTP it was up,
+   * and useless.
+   */
+  protocol: z.enum(['http', 'https']).optional(),
 });
 
 /**

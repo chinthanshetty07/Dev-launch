@@ -72,6 +72,12 @@ export interface RepositoryMetadata {
    */
   declaredPort?: number;
   /**
+   * The certificate and key the repository's own run instructions serve TLS with, when
+   * its README starts uvicorn with `--ssl-certfile` and `--ssl-keyfile` and both files are
+   * in the repository. Paths are relative to the analysed directory.
+   */
+  tls?: { certFile: string; keyFile: string; evidence: string };
+  /**
    * The builder `angular.json` names for `ng serve`, e.g. `@angular/build:dev-server`.
    *
    * It decides which flags `ng serve` accepts. `--disable-host-check` belongs to

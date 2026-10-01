@@ -138,6 +138,38 @@ describe('Full pipeline — analyse, plan, gate, run', () => {
     await sessions.cancel(s.id);
   }, 600_000);
 
+  it('serves an application that refuses plain HTTP over its own certificate (nkwus/fastapi-starter)', async () => {
+    // Its README runs uvicorn with --ssl-certfile/--ssl-keyfile; over HTTP every route is
+    // a 403. A copy with a throwaway certificate, so no key is ever committed.
+    const { mkdtemp, cp } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { request } = await import('node:https');
+    const { selfSignedCert } = await import('../helpers/selfSignedCert.js');
+    const dir = await mkdtemp(join(tmpdir(), 'devlaunch-https-it-'));
+    await cp(`${FIXTURES}/python-fastapi-https`, dir, { recursive: true });
+    await selfSignedCert(join(dir, 'certs'));
+
+    sessions = newManager();
+    const s = await sessions.launch({ sourceDir: dir });
+    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED], 300_000);
+    expect(s.state, JSON.stringify(s.failure)).toBe(ExecutionState.READY);
+    expect(s.plan?.protocol).toBe('https');
+    expect(s.url).toMatch(/^https:\/\/localhost:\d+\/api_health$/);
+
+    const answer = await new Promise<{ status?: number; body: string }>((resolve, reject) => {
+      const req = request(s.url!, { rejectUnauthorized: false }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(answer).toEqual({ status: 200, body: '{"status":"ok"}' });
+    await sessions.cancel(s.id);
+  }, 600_000);
+
   it('asks which package to run rather than guessing, then runs the chosen one', async () => {
     sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-monorepo-ambiguous` });

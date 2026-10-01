@@ -262,7 +262,7 @@ export class ProjectExecutor {
         taken,
       );
       hostPorts[plan.name] = choice.port;
-      urls[plan.name] = `http://localhost:${choice.port}/`;
+      urls[plan.name] = `${plan.protocol ?? 'http'}://localhost:${choice.port}/`;
       if (choice.substituted && choice.preferred) {
         opts.logs.write(
           'stderr',
@@ -340,7 +340,7 @@ export class ProjectExecutor {
     const internalUrls: Record<string, string> = {};
     for (const plan of ordered) {
       if (plan.expectedPort === null) continue;
-      internalUrls[plan.name] = `http://${aliasesFor(plan.name)[0]}:${plan.expectedPort}`;
+      internalUrls[plan.name] = `${plan.protocol ?? 'http'}://${aliasesFor(plan.name)[0]}:${plan.expectedPort}`;
     }
 
     // A shared install's learned memory, and the service whose install could not be given

@@ -1,3 +1,4 @@
+import { request } from 'node:https';
 import type { HealthCheck } from '@devlaunch/shared';
 
 export interface ReadinessOptions {
@@ -5,6 +6,8 @@ export interface ReadinessOptions {
   port: string | number;
   healthCheck: HealthCheck;
   timeoutMs: number;
+  /** `https` for an application that serves TLS itself (`RunPlan.protocol`). */
+  protocol?: 'http' | 'https';
   /** Consulted between attempts; returning true stops polling immediately. */
   abortIf?: () => boolean | Promise<boolean>;
   /** Injectable for tests. */
@@ -61,7 +64,7 @@ export class ReadinessChecker {
     const now = opts.now ?? (() => Date.now());
     const sleep = opts.sleep ?? defaultSleep;
     const host = opts.host ?? '127.0.0.1';
-    const url = `http://${host}:${opts.port}${opts.healthCheck.path}`;
+    const url = `${opts.protocol ?? 'http'}://${host}:${opts.port}${opts.healthCheck.path}`;
 
     const started = now();
     let attempts = 0;
@@ -85,13 +88,16 @@ export class ReadinessChecker {
 
       attempts++;
       try {
-        const res = await fetch(url, {
-          method: opts.healthCheck.method,
-          redirect: 'manual', // A 302 is an answer, not something to follow.
-          // Never outlive the budget: a request started near the deadline must not
-          // extend the total wait past what the caller asked for.
-          signal: AbortSignal.timeout(Math.min(10_000, remaining)),
-        });
+        const res =
+          opts.protocol === 'https'
+            ? await httpsProbe(url, opts.healthCheck.method, Math.min(10_000, remaining))
+            : await fetch(url, {
+                method: opts.healthCheck.method,
+                redirect: 'manual', // A 302 is an answer, not something to follow.
+                // Never outlive the budget: a request started near the deadline must not
+                // extend the total wait past what the caller asked for.
+                signal: AbortSignal.timeout(Math.min(10_000, remaining)),
+              });
 
         const healthHintOk = opts.healthCheck.expectedStatusCodes.includes(res.status);
         return {
@@ -127,7 +133,7 @@ export class ReadinessChecker {
  * problem in its title and its body text, so tags are stripped and the first real
  * sentence is taken.
  */
-async function firstLine(res: Response): Promise<string | undefined> {
+async function firstLine(res: { text(): Promise<string> }): Promise<string | undefined> {
   try {
     const text = (await res.text()).slice(0, 4000);
     if (!/^\s*<(?:!doctype|html)/i.test(text)) {
@@ -148,4 +154,32 @@ async function firstLine(res: Response): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * One HTTPS request to an application that serves TLS with its own certificate.
+ *
+ * The certificate is the repository's — made on its author's machine, trusted by nobody
+ * else — so it is not verified. That is safe here and only here: the request goes to the
+ * port Docker published for this session's own container on this machine, and asks only
+ * whether it answers. Redirects are not followed, as for HTTP.
+ */
+function httpsProbe(url: string, method: string, timeoutMs: number): Promise<{ status: number; text(): Promise<string> }> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { method, rejectUnauthorized: false, timeout: timeoutMs }, (res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on('data', (c: Buffer) => {
+        if (size < 8192) {
+          chunks.push(c);
+          size += c.length;
+        }
+      });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: async () => Buffer.concat(chunks).toString('utf8') }));
+      res.on('error', reject);
+    });
+    req.on('timeout', () => req.destroy(new Error('TimeoutError: no answer in time')));
+    req.on('error', reject);
+    req.end();
+  });
 }

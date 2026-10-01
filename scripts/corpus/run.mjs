@@ -20,6 +20,7 @@
  * the working tree is not a result. Pass --allow-stale to override, and the report says so.
  */
 import { execFile } from 'node:child_process';
+import { request as httpsRequest } from 'node:https';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,6 +99,19 @@ async function remoteTip(repo, ref) {
 /** Whether the URL a session handed out actually answers. READY is a claim; this checks it. */
 async function probe(url) {
   if (!url) return null;
+  // An application serving TLS with its repository's own certificate, which nobody
+  // trusts: only whether it answers is asked, of this machine's own published port.
+  if (url.startsWith('https://localhost:')) {
+    return new Promise((resolve) => {
+      const req = httpsRequest(url, { rejectUnauthorized: false, timeout: 10_000 }, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.on('error', (err) => resolve(`error: ${err.code ?? err.message}`));
+      req.end();
+    });
+  }
   try {
     const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
     return res.status;

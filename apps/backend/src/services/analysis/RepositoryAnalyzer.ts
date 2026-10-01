@@ -118,6 +118,33 @@ function flaskFactory(source: string): string | undefined {
   return callable ? m[1] : undefined;
 }
 
+/**
+ * The certificate and key a repository's README serves TLS with, for uvicorn.
+ *
+ * Read from the README because that is where a repository says how it is run, and only
+ * believed when both files are really there: the README is untrusted text, and a path
+ * that is absolute, climbs out with `..`, or holds anything but plain path characters is
+ * not a path DevLaunch will hand to a start command. `nkwus/fastapi-starter` refuses plain
+ * HTTP with a 403 on every route, and documents
+ * `uvicorn main:app ... --ssl-certfile certs/localhost.pem --ssl-keyfile certs/localhost-key.pem`.
+ */
+async function readReadmeTls(base: string, fileNames: string[]): Promise<Pick<RepositoryMetadata, 'tls'>> {
+  const name = fileNames.find((n) => /^readme(\.md|\.rst|\.txt)?$/i.test(n));
+  if (!name) return {};
+  const raw = await readCapped(join(base, name));
+  if (raw === null) return {};
+  const safe = (p: string) => /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(p) && !p.split('/').includes('..');
+  for (const line of raw.split('\n')) {
+    if (!/\buvicorn\b/.test(line)) continue;
+    const cert = /--ssl-certfile[= ]+["']?([^\s"']+)/.exec(line)?.[1];
+    const key = /--ssl-keyfile[= ]+["']?([^\s"']+)/.exec(line)?.[1];
+    if (!cert || !key || !safe(cert) || !safe(key)) continue;
+    if (!(await exists(join(base, cert))) || !(await exists(join(base, key)))) continue;
+    return { tls: { certFile: cert, keyFile: key, evidence: line.trim().slice(0, 200) } };
+  }
+  return {};
+}
+
 function detectPythonFramework(source: string): Pick<PythonEntry, 'framework' | 'appVariable' | 'appFactory'> {
   if (/^\s*from\s+flask\s+import|^\s*import\s+flask/m.test(source)) {
     // Module level only. `app = Flask(__name__)` indented inside `create_app` is a local,
@@ -193,6 +220,7 @@ export class RepositoryAnalyzer {
       python,
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,
+      ...(await readReadmeTls(base, fileNames)),
       ...(await this.readRoutes(base, fileNames, packageJson?.entryFiles ?? [], python?.entryCandidates.map((e) => e.file) ?? [])),
       ...(await this.readBinding(base, packageJson)),
       ...(fileNames.includes('angular.json') ? await readAngularDevServer(join(base, 'angular.json')) : {}),

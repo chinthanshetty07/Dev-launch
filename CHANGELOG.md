@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-01 — Serve an application over HTTPS when its README does
+
+`nkwus/fastapi-starter` refuses plain HTTP: every route, the favicon included, answers
+`403 HTTPS is required for all requests.` Its README starts uvicorn with
+`--ssl-certfile certs/localhost.pem --ssl-keyfile certs/localhost-key.pem`, files it ships.
+DevLaunch served it over HTTP, so the run was up and could not be used.
+
+- The analyzer reads the README for a uvicorn command with `--ssl-certfile` and
+  `--ssl-keyfile`. It believes it only when both files exist and both paths are plain and
+  stay inside the repository. The README is untrusted text.
+- A FastAPI plan then starts uvicorn with those files and carries `protocol: 'https'`. The
+  plan warns that the browser will call the connection not private, because the certificate
+  was made on the author's machine, and says how to proceed.
+- Readiness probes over HTTPS, accepting that untrusted certificate only for this
+  session's own published port. The session's link, and a project's browser and internal
+  links, use `https://`. The corpus runner's link check does the same.
+- Live: fastapi-starter went from 403 everywhere to READY in 9 seconds, with
+  `/api_health` answering 200 over HTTPS.
+
+New fixture `python-fastapi-https`. Its tests make a throwaway certificate with openssl, so
+no private key is committed. Eight tests, one of them end to end in real Docker. Eight
+mutations, all caught by a named test.
+
 ## 2026-10-01 — Say a TypeScript server does not compile, and run it unchecked once
 
 `niksbanna/mern-boilerplate`'s server failed as `PORT_NOT_LISTENING`, uncertain, quoting a

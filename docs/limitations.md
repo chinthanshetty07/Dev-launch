@@ -319,3 +319,12 @@ For an application — Flask, Express, Next and the rest — the 404 is the appl
 answer, the same one it gives on the developer's machine, and DevLaunch leaves it alone.
 Answering it would mean a proxy between the browser and every application, which changes
 what the application's own URL is and is not done for a console message.
+
+## HTTPS only where the repository serves it, and only for uvicorn
+
+An application that refuses plain HTTP is served over TLS when its README starts uvicorn
+with `--ssl-certfile` and `--ssl-keyfile` and both files are in the repository. The link is
+then `https://`, and the browser warns once that the certificate is not trusted, because it
+was made on the author's machine. Other servers that terminate TLS themselves (hypercorn,
+gunicorn, a Node `https.createServer`) are not recognised yet. DevLaunch does not make
+certificates of its own.

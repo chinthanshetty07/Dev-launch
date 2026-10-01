@@ -877,6 +877,7 @@ export class ExecutionManager {
     const readiness = await this.readiness.waitForReady({
       port: hostPort,
       healthCheck: plan.healthCheck,
+      ...(plan.protocol ? { protocol: plan.protocol } : {}),
       timeoutMs: budget,
       // Polling a container that has already died just burns the whole budget — but
       // only abort when we *know* it is gone. An inspect failure means unknown, and
@@ -888,7 +889,7 @@ export class ExecutionManager {
       return {
         state: ExecutionState.READY,
         hostPort,
-        url: `http://localhost:${hostPort}${plan.healthCheck.path}`,
+        url: `${plan.protocol ?? 'http'}://localhost:${hostPort}${plan.healthCheck.path}`,
         readiness,
       };
     }
