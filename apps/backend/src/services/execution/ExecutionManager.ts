@@ -592,11 +592,25 @@ export class ExecutionManager {
     }
   }
 
+  /**
+   * The generated requirements file, when any step of the plan names it.
+   *
+   * Install only, at first, because the rule that writes the path puts it there. A model's
+   * plan rewrite for `nsidnev/fastapi-realworld-example-app` installed a pinned asyncpg
+   * first and moved `pip install -r` of this file into the build step — a reasonable plan,
+   * which died on `Could not open requirements file` before reaching anything about the
+   * repository. Which step names the path does not change what is in the file: that is
+   * derived from the repository's own pyproject.toml, never from the plan.
+   */
   private async installGeneratedRequirements(
     container: Dockerode.Container,
     opts: LaunchOptions,
   ): Promise<string[] | null> {
-    if (!opts.plan.installCommand?.includes(config.container.generatedRequirementsPath)) return null;
+    const { installCommand, buildCommand, startCommand } = opts.plan;
+    const named = [installCommand, buildCommand, startCommand].some((c) =>
+      c?.includes(config.container.generatedRequirementsPath),
+    );
+    if (!named) return null;
     const lines = await derivedRequirements(opts.sourceDir, opts.plan.workingDirectory);
     await this.docker.installFile(
       container,

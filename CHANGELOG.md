@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-01 — Write the generated requirements file for whichever step uses it
+
+In after4, `nsidnev/fastapi-realworld-example-app`'s rule plan was rewritten by the model:
+install `asyncpg==0.29.0` first, a version that has a Python 3.12 wheel, then
+`pip install -r /workspace/.devlaunch/requirements.txt` as the build step. That was a
+reasonable plan. It died at once on `Could not open requirements file`, because DevLaunch
+wrote that file only when the **install** command named it.
+
+The file is now written when the install, build or start command names it. Nothing a plan
+controls changed: the content still comes only from the repository's own pyproject.toml,
+rebuilt and checked line by line (`docs/security.md`). A plan that never names the path
+still gets no file.
+
+Tested by four unit tests (each step, and a plan that never names it) and by a real-Docker
+test that runs the after4 plan shape against `python-poetry-ranges` to READY. Five
+mutations, all caught by a named test, one of them against the real-Docker test. Not
+re-run live on nsidnev: a dashboard session was running, and restarting the backend would
+have ended it. Underneath, nsidnev's own problem is unchanged: its declared
+`asyncpg ^0.26` has no Python 3.12 wheel.
+
 ## 2026-10-01 — A static site no longer logs a favicon 404
 
 Every browser asks for `/favicon.ico` on its own. A repository of plain HTML without one

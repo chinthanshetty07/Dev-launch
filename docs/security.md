@@ -122,7 +122,8 @@ repository so the repository cannot shadow it. It is never written to a checkout
 clone. Three properties keep it from being a way around the allowlist:
 
 - **Its content comes from the repository at launch, not from a plan.** A plan — a
-  model's included — can name the path; it cannot choose what the file says.
+  model's included — can name the path, in any of its steps; it cannot choose what the
+  file says. Which step names it changes only *when* it is used, never what is in it.
 - **Every line is rebuilt, then checked** against `SAFE_REQUIREMENT`: a name, optional
   extras, version clauses. A requirements file obeys options (`--index-url`, `-e`, `-r`),
   and none can be expressed. Anything else becomes the bare name, which is what was

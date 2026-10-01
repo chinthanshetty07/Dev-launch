@@ -220,4 +220,24 @@ describe('failures the real-world corpus found', () => {
     expect(log).toMatch(/Wrote \/workspace\/\.devlaunch\/requirements\.txt from pyproject\.toml: 1 requirements/);
     expect(log).toMatch(/Successfully installed .*flask-2\./i);
   }, 400_000);
+
+  it('writes the generated requirements file for a build step that names it (nsidnev/fastapi-realworld-example-app)', async () => {
+    // A model's rewrite installed one pinned package first and moved `pip install -r` of
+    // the generated file into the build step. The file was written only for the install
+    // step, so the build died on `Could not open requirements file` before the repository
+    // was reached at all.
+    const rule = await planFixture('python-poetry-ranges');
+    const plan = {
+      ...rule,
+      installCommand: 'pip install itsdangerous',
+      buildCommand: 'pip install -r /workspace/.devlaunch/requirements.txt',
+      planSource: 'ai-fallback' as const,
+    };
+    const logs = new LogManager();
+    const outcome = await runFixture('python-poetry-ranges', plan, 180_000, logs);
+    const log = logs.buffer.all().map((l) => l.text).join('\n');
+    expect(outcome.state, `${JSON.stringify(outcome.failure)}\n${log.slice(-1500)}`).toBe(ExecutionState.READY);
+    expect(log).not.toMatch(/Could not open requirements file/);
+    expect(log).toMatch(/Successfully installed .*flask-2\./i);
+  }, 400_000);
 });

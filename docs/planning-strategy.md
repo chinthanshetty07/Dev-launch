@@ -96,7 +96,8 @@ Python packaging: `requirements.txt` → `pip install -r`, `pyproject.toml` →
 `pip install .` — or, for a project with no package configuration and several top-level
 directories, `pip install -r /workspace/.devlaunch/requirements.txt`, a file DevLaunch
 writes from pyproject.toml's runtime dependencies, Poetry's `^`/`~` translated, so the
-declared version ranges survive. A Pipfile-only project is declined rather than guessed at. The runner
+declared version ranges survive. The file is written whenever any step of the plan names it — a
+model's rewrite may install from it in the build step, after pinning something first. A Pipfile-only project is declined rather than guessed at. The runner
 image puts `$HOME/.local/bin` on `PATH`, because pip installs console scripts there when
 running non-root and every Python start command otherwise fails with exit 127.
 
