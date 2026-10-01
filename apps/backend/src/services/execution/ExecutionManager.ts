@@ -11,6 +11,7 @@ import { config } from '../../config/index.js';
 import { DockerManager, type ExitResult } from '../docker/DockerManager.js';
 import { buildHostConfig, buildLabels } from '../docker/ContainerSecurity.js';
 import { buildWrapperEnv, buildWrapperScript } from '../docker/wrapper.js';
+import { STATIC_SERVER_SCRIPT } from '../docker/staticServer.js';
 import { CleanupManager } from '../cleanup/CleanupManager.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { LogEntry } from '../logs/LogBuffer.js';
@@ -508,6 +509,7 @@ export class ExecutionManager {
       await this.docker.copyDirInto(container, opts.sourceDir, config.container.workspacePath);
       await this.docker.installWrapper(container, buildWrapperScript(), config.container.wrapperPath);
       const generated = await this.installGeneratedRequirements(container, opts);
+      await this.installStaticServer(container, opts);
 
       const logs = opts.logs ?? new LogManager();
       if (generated !== null) {
@@ -603,6 +605,17 @@ export class ExecutionManager {
       dirname(config.container.generatedRequirementsPath),
     );
     return lines;
+  }
+
+  /** DevLaunch's static server, when the plan starts it — and only then. */
+  private async installStaticServer(container: Dockerode.Container, opts: LaunchOptions): Promise<void> {
+    if (!opts.plan.startCommand.includes(config.container.staticServerPath)) return;
+    await this.docker.installFile(
+      container,
+      basename(config.container.staticServerPath),
+      STATIC_SERVER_SCRIPT,
+      dirname(config.container.staticServerPath),
+    );
   }
 
   /** Convenience for workloads that terminate on their own (fixtures, build steps). */

@@ -142,6 +142,49 @@ describe('failures the real-world corpus found', () => {
     expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
   }, 300_000);
 
+  it('answers the favicon request a static site never made with 204, and nothing else differently', async () => {
+    // Every browser asks for /favicon.ico. The fixture has none, and http.server's 404
+    // showed in the console of a page that worked. A missing *other* file is still a 404.
+    const plan = await planFixture('static-site');
+    const handle = await exec.launch({
+      sessionId: 'corpus-static-favicon', plan, sourceDir: `${FIXTURES}/static-site`,
+      image: imageForRuntime(plan.runtime.language, plan.runtime.version),
+      packageCacheVolume: cacheVolumeFor('fixture:static-site'),
+    });
+    try {
+      const outcome = await handle.waitForReady(30_000);
+      expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+      const base = outcome.url!.replace(/\/$/, '');
+      expect((await fetch(`${base}/`)).status).toBe(200);
+      const icon = await fetch(`${base}/favicon.ico`);
+      expect(icon.status).toBe(204);
+      expect(await icon.text()).toBe('');
+      expect((await fetch(`${base}/favicon.ico?v=2`)).status).toBe(204);
+      expect((await fetch(`${base}/not-here.png`)).status).toBe(404);
+    } finally {
+      await handle.cleanup();
+    }
+  }, 300_000);
+
+  it('serves a favicon.ico the repository has, unchanged', async () => {
+    // The 204 is for a site without one. A site with one gets its own file.
+    const plan = await planFixture('static-site-favicon');
+    const handle = await exec.launch({
+      sessionId: 'corpus-static-own-favicon', plan, sourceDir: `${FIXTURES}/static-site-favicon`,
+      image: imageForRuntime(plan.runtime.language, plan.runtime.version),
+      packageCacheVolume: cacheVolumeFor('fixture:static-site-favicon'),
+    });
+    try {
+      const outcome = await handle.waitForReady(30_000);
+      expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+      const icon = await fetch(`${outcome.url!.replace(/\/$/, '')}/favicon.ico`);
+      expect(icon.status).toBe(200);
+      expect(await icon.text()).toBe('not-really-an-icon\n');
+    } finally {
+      await handle.cleanup();
+    }
+  }, 300_000);
+
   it('names a runtime too new for the build tool, and does not retry on a newer one (ahfarmer/calculator)', async () => {
     // webpack 4's md4 hash under OpenSSL 3. It was START_COMMAND_FAILED at low confidence,
     // and a model was asked; the diagnosis is the runtime, and the only image that would

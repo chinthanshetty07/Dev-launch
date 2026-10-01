@@ -58,7 +58,7 @@ specific first, always.
 | `fastapi` | FastAPI | 8000 | `uvicorn mod:app --host 0.0.0.0` |
 | `streamlit` | Streamlit | 8501 | `--server.address 0.0.0.0 --server.headless` |
 | `gradio` | Gradio | 7860 | `GRADIO_SERVER_NAME` |
-| `index.html` and no manifest | static site | 8000 | `python -m http.server` (all interfaces by default) |
+| `index.html` and no manifest | static site | 8000 | `python /workspace/.devlaunch/serve.py 8000` — DevLaunch's own `http.server` (all interfaces), which answers a missing `/favicon.ico` with 204 instead of a 404 |
 
 Four details that are the difference between a plan that works and one that hangs:
 

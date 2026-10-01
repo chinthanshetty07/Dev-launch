@@ -375,9 +375,10 @@ export class RuleBasedPlanner {
           packageManager: 'pip',
           installCommand: null,
           buildCommand: null,
-          // No --bind: http.server listens on every interface unless told otherwise,
-          // measured — the flag made no difference a test could see.
-          startCommand: `python -m http.server ${STATIC_PORT}`,
+          // DevLaunch's own http.server (`docker/staticServer.ts`): the same server, but a
+          // missing /favicon.ico — which every browser asks for — is 204, not a 404 in the
+          // console of a working page. It listens on every interface, as http.server does.
+          startCommand: `python ${config.container.staticServerPath} ${STATIC_PORT}`,
           workingDirectory,
           expectedPort: STATIC_PORT,
           hostBinding: 'forced',

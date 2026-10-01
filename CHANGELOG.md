@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-01 — A static site no longer logs a favicon 404
+
+Every browser asks for `/favicon.ico` on its own. A repository of plain HTML without one
+showed `favicon.ico: 404 (File not found)` in the console of a page that was working, for
+a request the page never made. Seen live on `chinthanshetty07/Customer-Churn-Prediction`.
+
+A static site is served by a server DevLaunch chose, so the answer is DevLaunch's to give.
+The static plan now starts `python /workspace/.devlaunch/serve.py 8000`, which is Python's
+`http.server` with one difference: a missing `/favicon.ico` gets `204 No Content`.
+
+- A `favicon.ico` the repository has is served unchanged, and every other missing file is
+  still an honest 404.
+- No icon is invented. The request log and the bind to every interface are the same as
+  `http.server`'s.
+- The script is copied in beside the wrapper, after the repository, and only when the plan
+  starts it — the same route as the generated requirements file. `python <path>` already
+  passes the command validator, so no allowlist changed.
+- Applications are untouched: Flask's or Express's 404 is the application's own answer, the
+  same one it gives on the developer's machine (see `docs/limitations.md`).
+
+Tested in the runner image and in real Docker against two fixtures: `static-site` (no icon:
+204) and the new `static-site-favicon` (its own icon: 200, same bytes). Six mutations, all
+caught by a named test.
+
 ## 2026-10-01 — The memory ledger asks Docker before it counts a container
 
 A dashboard run of `wrrnlim/nextjs-docker-postgres-template` was refused memory: "the VM

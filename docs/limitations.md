@@ -285,3 +285,17 @@ With the flag on, those two literals are rewritten. The constraints are the poin
 - **Every edit is shown** — in the log, and in a panel above the plan and the output, with
   both sides of the change and the reason. Passwords are redacted from the log line,
   because a credential in the literal may be a real one its author pasted.
+
+## A missing favicon is answered only where DevLaunch chose the server
+
+Every browser asks for `/favicon.ico`, whether the page links one or not, and a repository
+without one shows `favicon.ico: 404` in the console of a page that works. For a static site
+the server is DevLaunch's choice, so DevLaunch answers it: its static server is Python's
+`http.server` with a missing `/favicon.ico` answered `204 No Content`. A favicon the
+repository has is served as it is, and every other missing file is still a 404. No icon is
+invented.
+
+For an application — Flask, Express, Next and the rest — the 404 is the application's own
+answer, the same one it gives on the developer's machine, and DevLaunch leaves it alone.
+Answering it would mean a proxy between the browser and every application, which changes
+what the application's own URL is and is not done for a console message.

@@ -111,6 +111,11 @@ export const config = {
      * cannot shadow it. Its content is derived at launch, never carried by a plan.
      */
     generatedRequirementsPath: '/workspace/.devlaunch/requirements.txt',
+    /**
+     * DevLaunch's static file server (`docker/staticServer.ts`), installed the same way and
+     * for the same reason: a static site is served by a server DevLaunch chose.
+     */
+    staticServerPath: '/workspace/.devlaunch/serve.py',
     /** npm needs scratch space, and the rootfs is read-only. */
     tmpSizeMb: intEnv('DEVLAUNCH_CONTAINER_TMP_MB', 64),
   },

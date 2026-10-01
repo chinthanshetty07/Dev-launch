@@ -1006,7 +1006,11 @@ describe('a page with nothing to build', () => {
   it('is served as it stands when there is no manifest', () => {
     const out = planner.plan(meta({ staticIndex: true }));
     expect(out.detected).toBe('static');
-    expect(out.plan?.startCommand).toBe('python -m http.server 8000');
+    // Rewritten, not flipped: this was `python -m http.server 8000`. The server is now
+    // DevLaunch's own http.server, which answers a missing /favicon.ico with 204 rather
+    // than a 404 in the console of a working page. Still `python`, still port 8000, and
+    // still accepted by the command validator — asserted just below.
+    expect(out.plan?.startCommand).toBe('python /workspace/.devlaunch/serve.py 8000');
     expect(out.plan?.runtime).toEqual({ language: 'python', version: '3.12' });
     expect(() => validator.validate({ plan: out.plan })).not.toThrow();
   });
