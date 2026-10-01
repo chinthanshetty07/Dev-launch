@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-01 — Start a project's service on the port it is watched on
+
+A project's services are moved to the port the repository declares, so siblings agree on
+it. The plan's port and `PORT` moved, but the `--port 5173` the planner had written into a
+Vite start command did not. Vite obeys the flag over its config: `niksbanna/mern-boilerplate`'s
+client listened on 5173 while DevLaunch watched 3000 (from its compose file), and was
+reported as failing. The port flag now moves with the port: `--port`, `--port=` and `-p`, as
+DevLaunch writes them. Three tests and three mutations, all caught.
+
 ## 2026-10-01 — Start a repository's next run with the memory it needed last time
 
 `wrrnlim/nextjs-docker-postgres-template` needs about 2 GB to install. Every run started at

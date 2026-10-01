@@ -117,6 +117,11 @@ export class ProjectPlanner {
         // moving the backend to 3000. The repository's own number is the only one
         // everything else already agrees on.
         expectedPort: port,
+        // And the port flag DevLaunch wrote into the start command, when it wrote one.
+        // `niksbanna/mern-boilerplate`'s client declares 3000 in vite.config.ts; the plan
+        // moved to 3000 and kept `--port 5173`, which Vite obeys over its config — so it
+        // listened on 5173 while DevLaunch watched 3000, and the client never came up.
+        startCommand: withStartPort(outcome.plan.startCommand, outcome.plan.expectedPort, port),
         // PORT is injected as an environment variable too, and the variable is what the
         // application actually reads. Changing the plan's port without changing it moves
         // the number DevLaunch watches while the service keeps binding the old one.
@@ -152,6 +157,16 @@ export class ProjectPlanner {
 }
 
 /** Replace the planner's PORT with the project's, leaving every other variable alone. */
+/**
+ * A start command's port flag moved from one port to another: `--port 5173`,
+ * `--port=5173` and `-p 5173` — the forms `bindingArgs` writes. Nothing else in the
+ * command is touched, and nothing changes when the ports agree or there is no such flag.
+ */
+export function withStartPort(command: string, from: number | null, to: number | null): string {
+  if (from === null || to === null || from === to) return command;
+  return command.replace(new RegExp(`(--port[= ]|-p )${from}(?![0-9])`, 'g'), `$1${to}`);
+}
+
 function withPort(
   vars: { key: string; value: string | null; required: boolean }[],
   port: number | null,
