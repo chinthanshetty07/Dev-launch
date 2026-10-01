@@ -1,0 +1,6 @@
+{
+  "nsidnev/fastapi-realworld-example-app": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "asyncpg ^0.26 has no Python 3.12 wheel and does not build; DevLaunch ships one Python. Reached by the rule plan now that the generated requirements file is written for every step that names it."
+  }
+}

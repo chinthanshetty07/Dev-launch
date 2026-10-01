@@ -1,0 +1,72 @@
+{
+  "name": "nsidnev-genreq",
+  "startedAt": "2026-10-01T10:38:19.632Z",
+  "backend": {
+    "running": "4b53edb8b439ea2149f3fcf12b3398d0ddd462ed",
+    "stale": false,
+    "egress": "enforced"
+  },
+  "results": [
+    {
+      "repo": "nsidnev/fastapi-realworld-example-app",
+      "category": "poetry",
+      "exercises": "FastAPI, Poetry, Postgres",
+      "pinnedSha": "029eb7781c60d5f563ee8990a0cbfb79b244538c",
+      "ref": null,
+      "remoteTip": "029eb7781c60d5f563ee8990a0cbfb79b244538c",
+      "sessionId": "cbcdf094-8746-4076-bbe4-bc84c09fd8bc",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "fastapi",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "python 3.11",
+        "install": "pip install -r requirements.txt",
+        "start": "uvicorn app.main:application --host 0.0.0.0 --port 8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "DEPENDENCY_INSTALL_FAILED",
+      "failureService": null,
+      "stage": "install",
+      "message": "Dependency installation failed.",
+      "evidence": "ERROR: Failed to build installable wheels for some pyproject.toml based projects (asyncpg)",
+      "confidence": "low",
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Installing 14 declared dependencies with the version ranges pyproject.toml gives them: this project has several top-level directories and no package configuration, so `pip install .` cannot build it. DevLaunch writes the ranges into /worksp"
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 96
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 108
+        },
+        {
+          "state": "FAILED",
+          "atS": 110
+        }
+      ],
+      "durationS": 110
+    }
+  ],
+  "note": "One repository, re-run on `4b53edb` (the generated requirements file is written for whichever step names it). Only one attempt launched: the rule plan, `pip install -r /workspace/.devlaunch/requirements.txt` on Python 3.12, which reached the repository's own failure — asyncpg ^0.26 builds no wheel for 3.12. The plan shown is the model's later rewrite (Python 3.11, requirements.txt); the session records no launch of it. No `Could not open requirements file` this time. The after4 plan shape, with the file used in the build step, did not recur live; it is covered by a real-Docker test."
+}
