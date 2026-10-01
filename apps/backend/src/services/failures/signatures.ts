@@ -182,6 +182,26 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     describe: (e) => `This Node version has no such built-in module: ${e.trim().slice(0, 160)}`,
   },
   {
+    // ts-node type-checks before it runs anything, and refuses on a type error:
+    // `TSError: ⨯ Unable to compile TypeScript:` followed by tsc's own diagnostic lines.
+    // Under nodemon the process then waits for a file change, so the container stays up
+    // with nothing listening — and the run was reported as `PORT_NOT_LISTENING`,
+    // uncertain, quoting a line from the middle of the error. Seen on
+    // `niksbanna/mern-boilerplate`: no lockfile, so a newer @types/jsonwebtoken than the
+    // author had, and `src/utils/jwt.ts(6,14): error TS2769`.
+    id: 'typescript-compile-error',
+    code: FailureCode.START_COMMAND_FAILED,
+    phases: ['start'],
+    patterns: [/\.[cm]?tsx?\(\d+,\d+\): error TS\d+:/],
+    remedy:
+      'The code does not pass its own type check, so ts-node refuses to run it. Code that ' +
+      'type-checked for its author often does not with newer type definitions — a ' +
+      'repository with no lockfile gets the newest. DevLaunch retries once with type ' +
+      'checking off (TS_NODE_TRANSPILE_ONLY=true), which runs the same code; the type ' +
+      'error itself is the repository\'s to fix.',
+    describe: (evidence) => `The TypeScript code does not compile: ${evidence.trim()}`,
+  },
+  {
     // webpack 4 hashes with md4, which OpenSSL 3 — Node 17 and later — no longer offers:
     // `error:0308010C:digital envelope routines::unsupported`. It reads like a crash in
     // the application and went to a model, whose one idea, NODE_OPTIONS, the validator

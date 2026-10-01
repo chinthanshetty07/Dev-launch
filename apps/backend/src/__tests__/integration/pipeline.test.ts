@@ -117,6 +117,27 @@ describe('Full pipeline — analyse, plan, gate, run', () => {
     await sessions.cancel(s.id);
   }, 600_000);
 
+  it('runs a TypeScript server that does not type-check, with type checking off (niksbanna/mern-boilerplate)', async () => {
+    // ts-node refuses code with a type error before running any of it. The first try says
+    // so plainly; the retry turns ts-node's check off and the same code serves.
+    sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-ts-type-error` });
+    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED], 300_000);
+
+    const log = s.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(s.state, `${JSON.stringify(s.failure)}\n${log.slice(-2000)}`).toBe(ExecutionState.READY);
+    // The first try's verdict, as the repair recorded it; the session itself is READY.
+    expect(s.repairs?.[0]).toMatchObject({
+      source: 'deterministic', failureCode: 'START_COMMAND_FAILED', after: { TS_NODE_TRANSPILE_ONLY: 'true' },
+    });
+    expect(s.repairs?.[0]?.evidence.join(' ')).toMatch(/server\.ts\(\d+,\d+\): error TS2322/);
+    // And the log says, in words, what the retry did and that the type error remains.
+    expect(log).toMatch(/Repair 1 \(START_COMMAND_CORRECTION\): ts-node: TSError: Unable to compile TypeScript; .*retrying with type checking off/);
+    const res = await fetch(s.url!);
+    expect(await res.text()).toBe('hello from a file that does not type-check');
+    await sessions.cancel(s.id);
+  }, 600_000);
+
   it('asks which package to run rather than guessing, then runs the chosen one', async () => {
     sessions = newManager();
     const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-monorepo-ambiguous` });

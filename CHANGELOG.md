@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-01 — Say a TypeScript server does not compile, and run it unchecked once
+
+`niksbanna/mern-boilerplate`'s server failed as `PORT_NOT_LISTENING`, uncertain, quoting a
+line from the middle of a type error. What happened: the repository has no lockfile, so it
+got today's `@types/jsonwebtoken`, against which its `jwt.ts` does not type-check, and
+ts-node refuses to run code that does not type-check. Under nodemon the container stays
+up, with nothing listening.
+
+- New signature: tsc's own diagnostic line during start (`src/utils/jwt.ts(6,14): error
+  TS2769: …`) is reported as "The TypeScript code does not compile: …", with high
+  confidence. Build-step type errors are not claimed by it.
+- New deterministic repair: on ts-node's own refusal (`TSError: Unable to compile
+  TypeScript`), retry once with `TS_NODE_TRANSPILE_ONLY=true`. That runs the same code
+  without the check, and the log says so. It is never used for a crash, and never twice.
+- Live: mern-boilerplate went from failed to READY in 104 seconds. The repair's restart
+  reused the installed packages and took 1 second.
+
+New fixture `node-ts-type-error`, served for real by the pipeline suite. Six unit tests and
+six mutations, all caught by a named test.
+
 ## 2026-10-01 — Start a project's service on the port it is watched on
 
 A project's services are moved to the port the repository declares, so siblings agree on

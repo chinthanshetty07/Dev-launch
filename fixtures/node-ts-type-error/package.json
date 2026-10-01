@@ -1,0 +1,10 @@
+{
+  "name": "fixture-node-ts-type-error",
+  "private": true,
+  "scripts": { "start": "ts-node src/server.ts" },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

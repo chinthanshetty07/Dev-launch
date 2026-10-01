@@ -103,6 +103,49 @@ interface Rule {
 }
 
 const RULES: readonly Rule[] = [
+  // --- ts-node refused to run code that does not type-check ---------------------------
+  //
+  // ts-node checks types before it runs anything. Code that type-checked for its author
+  // often does not against newer type definitions, and a repository with no lockfile gets
+  // the newest: `niksbanna/mern-boilerplate`'s `jwt.sign(..., { expiresIn })` against
+  // today's @types/jsonwebtoken. The code runs; only the check refuses. ts-node's own
+  // switch turns the check off and runs the same code. Once — a plan that already has it
+  // is not offered it again — and only on ts-node's own refusal, never on a crash.
+  {
+    applies: (c) =>
+      c === FailureCode.START_COMMAND_FAILED ||
+      c === FailureCode.PORT_NOT_LISTENING ||
+      c === FailureCode.APPLICATION_EXITED,
+    propose: ({ plan, failure, logs }) => {
+      const text = [failure.evidence ?? '', failure.message, logs.slice(-8000)].join('\n');
+      if (!/TSError: \S* ?Unable to compile TypeScript/.test(text)) return null;
+      if (plan.environmentVariables.some((v) => v.key === 'TS_NODE_TRANSPILE_ONLY')) return null;
+      const first = /[^\s]+\.[cm]?tsx?\(\d+,\d+\): error TS\d+:[^\n]*/.exec(text)?.[0];
+      return {
+        plan: {
+          ...plan,
+          environmentVariables: [
+            ...plan.environmentVariables,
+            { key: 'TS_NODE_TRANSPILE_ONLY', value: 'true', required: false },
+          ],
+        },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: failure.code,
+          before: { TS_NODE_TRANSPILE_ONLY: null },
+          after: { TS_NODE_TRANSPILE_ONLY: 'true' },
+          evidence: [
+            'ts-node: TSError: Unable to compile TypeScript',
+            ...(first ? [first.slice(0, 200)] : []),
+            'retrying with type checking off: the same code runs, unchecked; the type error is the repository\'s to fix',
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
+
   // --- a strict install refused a lockfile that does not match its manifest -----------
   //
   // Installs are strict when a lockfile exists — `npm ci`, `--frozen-lockfile`,
