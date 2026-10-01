@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-01 — Say "retrying" while a run is retrying
+
+The red failure panel appeared as soon as a first try failed, and stayed on screen while
+DevLaunch retried. A `wrrnlim` run that was retrying at 2048 MB after an out-of-memory kill
+looked finished and broken, and was stopped from the dashboard mid-retry. While a session is
+still running, the dashboard now shows a yellow "retrying" panel in plain words — "The last
+try ran out of memory at 1024 MB. Trying again with 2048 MB…" — and keeps the red panel for
+when every try is spent.
+
+Six tests. Three mutations, all caught by a named test.
+
 ## 2026-10-01 — Remove what finished starting after a stop
 
 `testdrivenio/fastapi-crud-sync` was stopped from the dashboard 13 seconds in, while its

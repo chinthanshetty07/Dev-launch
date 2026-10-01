@@ -11,6 +11,7 @@ import { EndpointsPanel } from './components/EndpointsPanel';
 import { PlanPanel } from './components/PlanPanel';
 import { InputGate } from './components/InputGate';
 import { FailurePanel } from './components/FailurePanel';
+import { RetryPanel, stillRunning } from './components/RetryPanel';
 import { LogTerminal } from './components/LogTerminal';
 import { Collapsible } from './components/Collapsible';
 import { RewritePanel } from './components/RewritePanel';
@@ -249,6 +250,10 @@ export default function App() {
         <BrowserWiringPanel problems={session?.browserProblems} />
         {state === 'COMPLETED' && <CompletedHero reason={session?.endedReason} />}
         {state === 'FAILED' && <FailurePanel failure={session?.failure} repairs={session?.repairs} />}
+        {/* Still running: the failure is why it is trying again, not how it ended. */}
+        {stillRunning(state) && session?.failure && (
+          <RetryPanel failure={session.failure} repairs={session.repairs} />
+        )}
 
         {/* Above the plan and above the log, whatever the session is doing. Editing
             someone's repository is a real liberty, and the only thing that makes it a
@@ -278,7 +283,7 @@ export default function App() {
 
         {/* A failure that is not the headline still belongs on the page: a session can
             be CANCELLED or READY-after-repair and carry one worth reading. */}
-        {state !== 'FAILED' && session?.failure && (
+        {state !== 'FAILED' && !stillRunning(state) && session?.failure && (
           <FailurePanel failure={session.failure} repairs={session.repairs} />
         )}
 
