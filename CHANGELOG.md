@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-01 — Remove what finished starting after a stop
+
+`testdrivenio/fastapi-crud-sync` was stopped from the dashboard 13 seconds in, while its
+database was starting. The stop's teardown ran at once and found no database to remove:
+the session records one only once it is ready. When it became ready, the session saw it had
+been stopped and simply returned. The database ran on, alone, for 28 minutes, holding its
+memory, until it was found and removed by hand.
+
+- When a session notices it was stopped, it now tears down again. Teardown removes only
+  what exists, so the second pass costs nothing when the first got everything.
+- The same check now runs right after an application container, or a project's services,
+  are created, so a stop that arrives during creation removes them too.
+
+Reproduced first by a test that fails on the old code: a database that is not ready
+until after the stop. Four tests in all: a single service's database, its container, a
+project's services, and a run resumed after asking for input. Four mutations, all caught by
+a named test.
+
 ## 2026-10-01 — Keep a session's installed packages between its containers
 
 Every container started from an empty workspace, so every restart installed everything

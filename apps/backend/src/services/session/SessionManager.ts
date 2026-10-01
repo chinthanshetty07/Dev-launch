@@ -397,8 +397,16 @@ export class SessionManager extends EventEmitter {
       session.sourceDir = dir;
       await this.analyseAndPlan(session, dir, req);
     } catch (err) {
-      // A stop is not a failure, and the state it wants is already set.
-      if (err instanceof SessionStopped) return;
+      // A stop is not a failure, and the state it wants is already set. But its teardown
+      // ran when the stop arrived, and may have found nothing: a database still starting
+      // is recorded on the session only once it is ready. Seen live — a stop 13 seconds
+      // into `testdrivenio/fastapi-crud-sync` left its database running, alone, for 28
+      // minutes. Whatever finished starting since is removed now; a second teardown takes
+      // only what exists.
+      if (err instanceof SessionStopped) {
+        await this.teardown(session);
+        return;
+      }
       this.fail(session, {
         code: err instanceof Error && 'code' in err
           ? ((err as { code: FailureCode }).code)
@@ -626,7 +634,11 @@ export class SessionManager extends EventEmitter {
       session.pending = undefined;
       await this.startAndVerify(session, session.sourceDir, {});
     } catch (err) {
-      if (err instanceof SessionStopped) return;
+      // As in `run`: remove what finished starting after the stop's own teardown.
+      if (err instanceof SessionStopped) {
+        await this.teardown(session);
+        return;
+      }
       this.fail(session, {
         code: FailureCode.UNKNOWN_RUNTIME_ERROR,
         message: err instanceof Error ? err.message : String(err),
@@ -685,6 +697,8 @@ export class SessionManager extends EventEmitter {
       },
     });
 
+    // The same for a project's services, created while a stop was arriving.
+    this.throwIfStopped(session);
     if (session.run.rewrites?.length) session.rewrites = session.run.rewrites;
     if (session.run.browserProblems?.length) session.browserProblems = session.run.browserProblems;
 
@@ -1033,6 +1047,9 @@ export class SessionManager extends EventEmitter {
       ...(session.nodeHeapMb ? { nodeHeapMb: session.nodeHeapMb } : {}),
     });
     session.handle = handle;
+    // A stop while this container was being created found no handle to remove; now
+    // there is one, and the stop's handler removes it.
+    this.throwIfStopped(session);
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
     const outcome = await handle.waitForReady(req.readinessTimeoutMs);
