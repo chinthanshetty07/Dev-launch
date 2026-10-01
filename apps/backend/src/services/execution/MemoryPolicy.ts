@@ -147,12 +147,15 @@ export function nodeHeapMbFor(containerMb: number): number {
  */
 export class MemoryBudget {
   private readonly held = new Map<string, number>();
-  private readonly samplers = new Map<string, () => Promise<number | null>>();
+  private readonly samplers = new Map<string, () => Promise<number | null | 'gone'>>();
 
   constructor(private readonly capacity: () => number | null) {}
 
-  /** `usageMb`, when given, reads what the container is using now, in MB. */
-  hold(id: string, mb: number, usageMb?: () => Promise<number | null>): void {
+  /**
+   * `usageMb`, when given, reads what the container is using now, in MB — or `'gone'`
+   * when Docker says the container no longer exists, which releases the hold.
+   */
+  hold(id: string, mb: number, usageMb?: () => Promise<number | null | 'gone'>): void {
     this.held.set(id, mb);
     if (usageMb) this.samplers.set(id, usageMb);
   }
@@ -162,14 +165,30 @@ export class MemoryBudget {
     this.samplers.delete(id);
   }
 
-  /** Free memory counting every other container at what it uses now, capped by its limit. */
+  /**
+   * Free memory counting every other container at what it uses now, capped by its limit.
+   *
+   * A hold whose container Docker no longer has is released here, whatever removed it.
+   * Every path that removes a container is meant to release its hold, and at least one
+   * does not: after a dashboard session of repeated stops, a live run was refused memory
+   * because "the VM has no more to give: 86 MB is free after the 8 other container(s)",
+   * beside a Docker with no DevLaunch container in it at all. A gone container's sample
+   * cannot be read, and an unreadable sample counts at the full limit — so each leaked
+   * hold cost 1024 MB for the life of the process. One path that does it was reproduced
+   * (the label sweep on shutdown removing a database still being created); the one the
+   * dashboard took was not. Checking against Docker covers both, and the next.
+   */
   async measuredFreeMb(exceptId?: string): Promise<number | null> {
     const cap = this.capacity();
     if (cap === null) return null;
     let used = 0;
-    for (const [id, limit] of this.held) {
+    for (const [id, limit] of [...this.held]) {
       if (id === exceptId) continue;
       const sampled = await this.samplers.get(id)?.().catch(() => null);
+      if (sampled === 'gone') {
+        this.release(id);
+        continue;
+      }
       used += sampled === null || sampled === undefined ? limit : Math.min(limit, Math.ceil(sampled));
     }
     return Math.max(0, cap - used);

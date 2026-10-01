@@ -122,6 +122,18 @@ describe('the memory budget', () => {
     expect(await budget.measuredFreeMb('silent')).toBe(5398 - 1000 - 500);
   });
 
+  it('releases a hold whose container Docker no longer has', async () => {
+    // Live: "86 MB is free after the 8 other container(s) this run holds (1024 MB, …)",
+    // with no DevLaunch container running. Gone is not unreadable: an unreadable sample
+    // still counts at the limit; a gone one gives its memory back.
+    const budget = new MemoryBudget(() => 5398);
+    for (let i = 0; i < 8; i++) budget.hold(`leaked-${i}`, 1024, async () => 'gone');
+    budget.hold('db', 1024, async () => null);
+    expect(budget.freeMb()).toBe(0); // by limits alone, nothing — what the live run was told
+    expect(await budget.measuredFreeMb()).toBe(5398 - 1024);
+    expect(budget.holders()).toEqual([{ id: 'db', mb: 1024 }]);
+  });
+
   it('constrains nothing when the VM size is unknown', () => {
     expect(new MemoryBudget(() => null).freeMb()).toBeNull();
     expect(containerCapacityMb(null)).toBeNull();

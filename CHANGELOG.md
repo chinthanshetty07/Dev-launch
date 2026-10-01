@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-01 — The memory ledger asks Docker before it counts a container
+
+A dashboard run of `wrrnlim/nextjs-docker-postgres-template` was refused memory: "the VM
+has no more to give: 86 MB is free after the 8 other container(s) this run holds (1024 MB,
+…)". Docker had no DevLaunch container in it at all.
+
+The ledger trusted every removal path to release a container's hold, and at least one did
+not. A container that no longer exists cannot be sampled, and an unreadable sample counts at
+the full limit, so each leaked hold cost 1024 MB for the life of the process. After a
+session of dashboard stops there were eight of them.
+
+- `usageMb` now tells *gone* (Docker answers 404) apart from *unreadable*. The ledger
+  releases a gone container's hold; an unreadable one still counts at its limit, so nothing
+  is undercounted.
+- One leaking path was reproduced: the shutdown label sweep removing a database that was
+  still being created. The path the dashboard took was not identified. Tearing down again on
+  a caught stop was tried and taken out, because it made no difference any test could see.
+  The check against Docker covers both paths, and any later one.
+
+Tested by a unit test and by a real-Docker test that removes a running container behind the
+ledger's back (`integration/memoryLedger.test.ts`). Two mutations, both caught by a named
+test. The `after4` corpus ran on a backend with this fix and an empty ledger.
+
 ## 2026-09-30 — Plan a Flask application factory by rule
 
 `JayBhatt2021/improved-flask-tutorial-app` keeps its application where the official Flask

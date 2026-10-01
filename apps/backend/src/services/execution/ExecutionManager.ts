@@ -409,9 +409,20 @@ export class ExecutionManager {
   }
 
   /** What a container is using now, in MB, or null when it cannot be sampled. */
-  async usageMb(container: Dockerode.Container): Promise<number | null> {
+  /**
+   * What a container is using now, in MB; `'gone'` when Docker no longer has it, which is
+   * different from a sample that could not be read and is treated differently: the
+   * ledger releases a gone container's hold, and counts an unreadable one at its limit.
+   */
+  async usageMb(container: Dockerode.Container): Promise<number | null | 'gone'> {
     const stats = await this.docker.sampleStats?.(container);
-    return stats ? stats.memoryBytes / (1024 * 1024) : null;
+    if (stats) return stats.memoryBytes / (1024 * 1024);
+    try {
+      await this.docker.inspect(container);
+      return null;
+    } catch (err) {
+      return (err as { statusCode?: number }).statusCode === 404 ? 'gone' : null;
+    }
   }
 
   /** The memory one container could be given, counting the others at what they use. */

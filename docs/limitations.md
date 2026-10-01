@@ -155,6 +155,13 @@ maximum. A Node heap OOM is answered first with a larger heap (three quarters of
 container) and only then with a larger container. Memory raises have their own budget and
 do not spend the two plan repairs.
 
+"What the VM has free" is a ledger of the containers this process started, and it is checked
+against Docker rather than trusted: a container Docker no longer has stops counting the
+next time the ledger is asked. It was trusted once, and a run of dashboard stops left eight
+holds behind with no container under any of them — a later run was refused memory with
+"86 MB is free after the 8 other container(s)" beside an empty Docker. The ledger is per
+process; a restart starts it empty.
+
 The limit is one per container, and a container runs install, build and start. The phase
 that ran out is recorded; a separate limit per phase would mean resizing a live container
 between phases, which is not done. So a service raised for its install keeps that limit
