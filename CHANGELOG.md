@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-01 — Quote what failed in an npm install, not npm's sign-off
+
+A failed install was explained by `npm error A complete log of this run can be found in:
+…`, which says where the real error is and nothing else. The line that said what failed,
+`npm error enoent Could not read package.json`, was passed over. npm 7 and later write
+`npm error` where npm 6 wrote `npm ERR!`, and only the old spelling of npm's boilerplate
+(code, errno, syscall, path, the sign-off) was skipped. Both spellings are skipped now,
+along with npm's "This is related to npm not being able to find a file". Tested against
+npm's output captured from the runner image. Two mutations, both caught.
+
 ## 2026-10-01 — Serve an application over HTTPS when its README does
 
 `nkwus/fastapi-starter` refuses plain HTTP: every route, the favicon included, answers

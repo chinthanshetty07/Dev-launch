@@ -126,8 +126,12 @@ const EXCEPTION_LINE =
  * These are epilogues rather than diagnoses: every one of them is true, none of them is
  * news, and all of them are printed *after* the thing worth reading.
  */
+// npm 7+ writes `npm error` where npm 6 wrote `npm ERR!`. Only the old spelling was known, so
+// a failed install was explained by npm's sign-off — "A complete log of this run can be
+// found in: …" — and the line that said what failed ("Could not read package.json") was
+// passed over (`RefugioDiaz1/fullstack-docker-react-node-postgres`).
 const RUNNER_EPILOGUE =
-  /^(?:error Command failed with exit code|info Visit https:\/\/yarnpkg\.com|error This is probably not a problem with npm|npm ERR! (?:code |errno |syscall |path |command |Failed at |This is probably not a problem)|ELIFECYCLE|Command failed with exit code|Node\.js v\d)/;
+  /^(?:error Command failed with exit code|info Visit https:\/\/yarnpkg\.com|error This is probably not a problem with npm|npm (?:ERR!|error) (?:code |errno |syscall |path |command |Failed at |This is probably not a problem|enoent This is related to npm|enoent$|You can rerun the command|Log files were not written)|ELIFECYCLE|Command failed with exit code|Node\.js v\d)/;
 
 /**
  * The last line worth showing a person.
@@ -149,7 +153,7 @@ function lastMeaningfulLine(lines: readonly string[]): string | undefined {
     const line = lines[i]!.trim();
     if (line === '') continue;
     // Stack frames, and the shell's own accounting of what it ran.
-    if (/^(?:at |File "|\s{2,}\^+\s*$|\.{3}|\[nodemon\]|npm ERR! A complete log)/.test(line)) continue;
+    if (/^(?:at |File "|\s{2,}\^+\s*$|\.{3}|\[nodemon\]|npm (?:ERR!|error) A complete log)/.test(line)) continue;
     if (/^(?:Traceback \(most recent call last\)|During handling of)/.test(line)) continue;
     if (RUNNER_EPILOGUE.test(line)) continue;
     if (line.length < 8) continue;
