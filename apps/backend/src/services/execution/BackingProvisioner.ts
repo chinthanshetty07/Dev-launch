@@ -206,7 +206,17 @@ export class BackingProvisioner {
     return run;
   }
 
-  /** Poll the image's own health command until it succeeds, or the budget runs out. */
+  /**
+   * Poll the image's own health command until it succeeds, the container stops, or the
+   * budget runs out.
+   *
+   * A container that has stopped will not become ready, however long it is polled. It
+   * used to be polled anyway: `postgres:15.1-alpine`, named by a compose file, exits under
+   * the sandbox profile within two seconds, and the health command was retried against the
+   * dead container for the whole 90-second budget before the fallback image — ready 1.6
+   * seconds after it started — was tried. Measured on `testdrivenio/fastapi-crud-sync`:
+   * 92 of its 107 seconds. A database still starting is running, and keeps its budget.
+   */
   private async waitForReady(
     docker: ExecutionManager['docker'],
     container: Dockerode.Container,
@@ -215,6 +225,7 @@ export class BackingProvisioner {
   ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (await this.hasStopped(docker, container)) return false;
       try {
         const out = await docker.execCapture(container, check);
         // Every one of these commands prints something recognisable on success and
@@ -226,6 +237,16 @@ export class BackingProvisioner {
       await new Promise((r) => setTimeout(r, 500));
     }
     return false;
+  }
+
+  /** Whether Docker says the container is no longer running. Unknown counts as running. */
+  private async hasStopped(docker: ExecutionManager['docker'], container: Dockerode.Container): Promise<boolean> {
+    try {
+      const info = await docker.inspect(container);
+      return info.State?.Running === false;
+    } catch (err) {
+      return (err as { statusCode?: number }).statusCode === 404;
+    }
   }
 }
 

@@ -1193,6 +1193,31 @@ describe('a database image the repository names', () => {
     await mgr.shutdown();
   }, 120_000);
 
+  it('falls back as soon as the named image has exited, not after the whole budget (testdrivenio/fastapi-crud-sync)', async () => {
+    // `postgres:15.1-alpine` exits under the sandbox within two seconds; its health
+    // command was retried against the dead container for all 90 seconds. With a budget of
+    // 30 seconds here, only a wait that notices the exit finishes in time.
+    const created: string[] = [];
+    const exec = fakeExec(ready) as ExecutionManager & { docker: unknown };
+    exec.docker = {
+      ...pickyDocker(created, 'postgres:16'),
+      inspect: async (c: { id: string }) => ({ State: { Running: c.id === 'postgres:16' } }),
+    } as never;
+
+    const mgr = new SessionManager(exec, {
+      analyzer: analyzed('postgres:15.1-alpine') as never,
+      planner: planned as never,
+      backingReadyMs: 30_000,
+    });
+    const started = Date.now();
+    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await until(() => session.state === ExecutionState.READY, 5000);
+
+    expect(created).toEqual(['postgres:15.1-alpine', 'postgres:16']);
+    expect(Date.now() - started).toBeLessThan(5000);
+    await mgr.shutdown();
+  }, 60_000);
+
   it('says why, rather than quietly running something else', async () => {
     // A repository asking for pgvector and quietly getting plain Postgres fails later on
     // its first `CREATE EXTENSION`, and deserves to know which it got.

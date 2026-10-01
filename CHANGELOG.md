@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-01 — Stop waiting for a database container that has already exited
+
+A compose file's `postgres:15.1-alpine` exits under the sandbox within two seconds, but its
+health check was retried against the dead container for the full 90-second budget before
+DevLaunch's own `postgres:16`, ready in 1.6 seconds, was tried. Measured on
+`testdrivenio/fastapi-crud-sync`: 92 of its 107 seconds. The wait now ends as soon as the
+container has stopped, and the run takes 12 seconds. A database that is still starting is
+running, and keeps its full budget.
+
 ## 2026-10-01 — Write the generated requirements file for whichever step uses it
 
 In after4, `nsidnev/fastapi-realworld-example-app`'s rule plan was rewritten by the model:
