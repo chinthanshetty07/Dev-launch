@@ -133,6 +133,13 @@ export class CleanupManager {
         // Best effort: a container we cannot remove is reported by count, not thrown.
       }
     }
+    // Then the workspaces those containers mounted, which outlive them by design. Same
+    // scope, same reasoning: at startup nothing is mid-run; at shutdown only our own.
+    if (typeof docker.listWorkspaceVolumes === 'function') {
+      for (const volume of await docker.listWorkspaceVolumes(scope).catch(() => [] as string[])) {
+        await docker.removeVolume(volume).catch(() => undefined);
+      }
+    }
     return removed;
   }
 }

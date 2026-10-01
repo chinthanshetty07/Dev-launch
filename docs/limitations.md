@@ -135,6 +135,20 @@ step once the repository is fixed.
 The failure is still reported, and reported first. Keeping what works is not the same as
 pretending the run succeeded.
 
+## A restart keeps what was installed, and nothing else carries over
+
+Within one session, a restart — a repair, a memory retry, a person pressing restart —
+reuses the packages an earlier attempt installed, when it would run the same install in
+the same image and directory, and that install finished. Services that install one shared
+workspace share it, so the second does not install it again. Measured:
+`ejazahm3d/fullstack-turborepo-starter` went from 222 to 87 seconds, and remix's repair from
+a full reinstall to 4 seconds.
+
+What does not change: a session's *first* install of a repository is still the
+repository's own work — downloading and building its dependencies — and on a large tree
+that alone can take over a minute. Nothing is kept between sessions except the package
+download cache.
+
 ## The container memory limit is ours, and a retry says so
 
 `DEVLAUNCH_CONTAINER_MEMORY_MB` defaults to 1024 — right for one container at a time on a

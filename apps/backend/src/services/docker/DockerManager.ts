@@ -38,6 +38,15 @@ export interface CreateContainerOptions {
    * embedded DNS serves aliases there, and not on the default bridge.
    */
   networkAliases?: string[];
+  /**
+   * A named volume to mount at /workspace instead of an anonymous one.
+   *
+   * An anonymous volume is removed with its container, so every restart started from an
+   * empty workspace and installed everything again. A named one outlives the container,
+   * which lets a restart in the same session keep what was installed. See
+   * `ExecutionManager.workspaceFor`.
+   */
+  workspaceVolume?: string;
 }
 
 export interface ExitResult {
@@ -223,6 +232,31 @@ export class DockerManager {
     await this.docker.getVolume(name).remove();
   }
 
+  /** A session's workspace volume, labelled so teardown and the sweeps can find it. */
+  async createWorkspaceVolume(name: string, sessionId: string): Promise<void> {
+    await this.docker.createVolume({
+      Name: name,
+      Labels: {
+        [config.docker.managedLabel]: 'true',
+        [config.docker.workspaceLabel]: 'true',
+        [config.docker.sessionLabel]: sessionId,
+        [config.docker.instanceLabel]: config.docker.instanceId,
+      },
+    });
+  }
+
+  /**
+   * Workspace volumes, by the label `createWorkspaceVolume` puts on them: one session's,
+   * this process's, or every DevLaunch process's (startup only, as for containers).
+   */
+  async listWorkspaceVolumes(scope: { sessionId: string } | 'instance' | 'all'): Promise<string[]> {
+    const label = [`${config.docker.workspaceLabel}=true`];
+    if (scope === 'instance') label.push(`${config.docker.instanceLabel}=${config.docker.instanceId}`);
+    else if (scope !== 'all') label.push(`${config.docker.sessionLabel}=${scope.sessionId}`);
+    const { Volumes } = await this.docker.listVolumes({ filters: { label } });
+    return (Volumes ?? []).map((v) => v.Name);
+  }
+
   async createContainer(opts: CreateContainerOptions): Promise<Dockerode.Container> {
     const exposed: Record<string, Record<string, never>> = {};
     const bindings: Record<string, Array<{ HostPort: string }>> = {};
@@ -261,9 +295,17 @@ export class DockerManager {
       // writable under ReadonlyRootfs, and what allows `docker cp` to land at all —
       // the API refuses copies into a read-only rootfs, but a volume is a separate
       // mount and accepts them.
-      Volumes: { [config.container.workspacePath]: {} },
+      // A named workspace volume is mounted instead, when the caller keeps one; it is a
+      // separate mount just the same, so both properties above still hold.
+      Volumes: opts.workspaceVolume ? undefined : { [config.container.workspacePath]: {} },
       ExposedPorts: opts.exposePort ? exposed : undefined,
-      HostConfig: { ...opts.hostConfig, PortBindings: opts.exposePort ? bindings : undefined },
+      HostConfig: {
+        ...opts.hostConfig,
+        PortBindings: opts.exposePort ? bindings : undefined,
+        ...(opts.workspaceVolume
+          ? { Binds: [...(opts.hostConfig.Binds ?? []), `${opts.workspaceVolume}:${config.container.workspacePath}`] }
+          : {}),
+      },
       Tty: false, // Keep stdout/stderr framed separately for demuxing.
       OpenStdin: false,
     });

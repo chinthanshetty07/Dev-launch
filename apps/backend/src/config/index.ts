@@ -57,6 +57,13 @@ export const config = {
     /** Marks a volume as a package cache rather than session state. */
     cacheLabel: 'com.devlaunch.cache',
     /**
+     * Marks a volume as a session's workspace: the repository and what its install put
+     * there, kept between the containers of one session so a restart need not install
+     * again. Removed when the session ends; never shared between sessions.
+     */
+    workspaceLabel: 'com.devlaunch.workspace',
+    workspaceVolumePrefix: 'devlaunch-ws-',
+    /**
      * Identifies the process that created a container.
      *
      * Orphan sweeping matched on the managed label alone, which meant any DevLaunch

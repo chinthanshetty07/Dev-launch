@@ -158,6 +158,17 @@ export interface ProjectLaunchOptions {
  * network would have been the obvious design and is the wrong one: the policy is keyed
  * to `devlaunch-net`'s subnet, so a fresh network would come up unfiltered.
  */
+/**
+ * The workspace a service's containers keep between them (`LaunchOptions.workspaceKey`).
+ *
+ * Services that install one shared workspace share one: they install the same tree from
+ * the same root, one at a time, and the second used to install it all over again. Others
+ * each keep their own.
+ */
+function workspaceKeyFor(opts: { sessionId: string; project: { sharedInstall?: boolean } }, service: string): string {
+  return opts.project.sharedInstall ? `${opts.sessionId}:shared` : `${opts.sessionId}:${service}`;
+}
+
 export class ProjectExecutor {
   constructor(private readonly exec: ExecutionManager) {}
 
@@ -378,6 +389,7 @@ export class ProjectExecutor {
           networkAliases: aliasesFor(plan.name),
           hostPort: hostPorts[plan.name],
           packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
+          workspaceKey: workspaceKeyFor(opts, plan.name),
           ...(startMb !== undefined ? { memoryMb: startMb } : {}),
           ...(shared.nodeHeapMb ? { nodeHeapMb: shared.nodeHeapMb } : {}),
         });
@@ -412,6 +424,7 @@ export class ProjectExecutor {
               image: imageForRuntime(current.runtime.language, current.runtime.version),
               logs,
               packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
+              workspaceKey: workspaceKeyFor(opts, plan.name),
               networkAliases: aliasesFor(plan.name),
               hostPort: hostPorts[plan.name],
               // Read off the entry rather than captured, for the same reason `plan` is:

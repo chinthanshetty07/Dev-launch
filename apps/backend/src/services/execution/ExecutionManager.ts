@@ -62,6 +62,24 @@ export interface LaunchOptions {
   memoryMb?: number;
   /** A V8 heap size DevLaunch chose after a heap OOM; see `nodeHeapMbFor`. */
   nodeHeapMb?: number;
+  /**
+   * Which workspace this container belongs to, for keeping installs between containers.
+   *
+   * Containers launched under the same key share one workspace volume, and a launch
+   * whose install would repeat one that already finished there skips it. A session's
+   * single service has one key; a project's services each have their own, or one between
+   * them when they install the same workspace. Absent, the workspace is anonymous and
+   * goes with the container, as it always did. See `workspaceFor`.
+   */
+  workspaceKey?: string;
+}
+
+/** A workspace volume kept between the containers of one session. */
+interface Workspace {
+  volume: string;
+  sessionId: string;
+  /** The install that finished in it, as `installSignature` describes it. */
+  installed?: string;
 }
 
 export interface ReadyOutcome {
@@ -401,6 +419,8 @@ export class ExecutionManager {
    * Read by escalation before it asks for more; see `MemoryBudget`.
    */
   readonly memory: MemoryBudget;
+  private readonly workspaces = new Map<string, Workspace>();
+  private workspaceSeq = 0;
   private capacityMb: number | null = null;
   private capacityRead = false;
 
@@ -465,6 +485,8 @@ export class ExecutionManager {
     this.lastNetworkUsed = networkName;
 
     const workdir = joinWorkspace(config.container.workspacePath, opts.plan.workingDirectory);
+    const workspace = await this.workspaceFor(opts);
+    const signature = this.installSignature(opts);
 
     let container: Dockerode.Container;
     try {
@@ -476,7 +498,7 @@ export class ExecutionManager {
           opts.plan.installDirectory
             ? joinWorkspace(config.container.workspacePath, opts.plan.installDirectory)
             : undefined,
-          opts.nodeHeapMb ? { nodeHeapMb: opts.nodeHeapMb } : {},
+          { ...(opts.nodeHeapMb ? { nodeHeapMb: opts.nodeHeapMb } : {}), installReused: workspace.reused },
         ),
         labels: buildLabels(opts.sessionId),
         hostConfig: buildHostConfig({
@@ -492,6 +514,7 @@ export class ExecutionManager {
         // egress policy applies — so a project that needs name resolution gets the
         // hardened network or neither.
         networkAliases: networkName ? opts.networkAliases : undefined,
+        ...(workspace.volume ? { workspaceVolume: workspace.volume } : {}),
       });
     } catch (err) {
       await cleanup.cleanup();
@@ -506,7 +529,11 @@ export class ExecutionManager {
     try {
       // Repository first, wrapper second: both land inside the /workspace volume, and
       // copying the wrapper last guarantees a repository cannot shadow it.
-      await this.docker.copyDirInto(container, opts.sourceDir, config.container.workspacePath);
+      // A reused workspace already holds the repository; copying it again over a tree a
+      // sibling may be serving from would only wake that sibling's file watchers.
+      if (!workspace.reused) {
+        await this.docker.copyDirInto(container, opts.sourceDir, config.container.workspacePath);
+      }
       await this.docker.installWrapper(container, buildWrapperScript(), config.container.wrapperPath);
       const generated = await this.installGeneratedRequirements(container, opts);
       await this.installStaticServer(container, opts);
@@ -521,6 +548,18 @@ export class ExecutionManager {
       }
       const sentinels = new Set<string>();
       logs.on('sentinel', (marker: string) => sentinels.add(marker));
+      // What this workspace now holds. Only for the volume this container mounted: a later
+      // launch may have moved the key on to a fresh one.
+      if (opts.workspaceKey && workspace.volume) {
+        const key = opts.workspaceKey;
+        const volume = workspace.volume;
+        logs.on('sentinel', (marker: string) => {
+          const ws = this.workspaces.get(key);
+          if (!ws || ws.volume !== volume) return;
+          if (marker === Sentinel.INSTALL_OK && signature !== null) ws.installed = signature;
+          if (marker === Sentinel.INSTALL_FAIL) ws.installed = undefined;
+        });
+      }
 
       // Start first, then attach.
       //
@@ -590,6 +629,56 @@ export class ExecutionManager {
       this.memory.release(container.id);
       throw err;
     }
+  }
+
+  /**
+   * What decides whether an install already done can stand in for this one: the image it
+   * ran in, the command, and the directory it ran in. Null when there is no install.
+   */
+  private installSignature(opts: LaunchOptions): string | null {
+    const { installCommand, installDirectory, workingDirectory } = opts.plan;
+    if (!installCommand) return null;
+    return JSON.stringify([opts.image, installCommand, installDirectory ?? workingDirectory]);
+  }
+
+  /**
+   * The workspace volume for this launch, and whether its install can be skipped.
+   *
+   * Every container used to start from an empty workspace, so every restart installed
+   * everything again: a repair that changed only a port reinstalled the whole tree, and
+   * the second service of a workspace installed what the first had just installed.
+   * Measured on `ejazahm3d/fullstack-turborepo-starter`: three installs of one tree,
+   * 54 + 68 + 75 seconds, of a 222-second run.
+   *
+   * Reused only when an install with the same signature *finished* in that volume — an
+   * install that was killed, failed or never ran leaves nothing to trust, and gets a
+   * fresh volume, the previous one removed. Never across sessions: the key carries the
+   * session, and teardown removes every volume the session made.
+   */
+  private async workspaceFor(opts: LaunchOptions): Promise<{ volume?: string; reused: boolean }> {
+    if (!opts.workspaceKey || typeof this.docker.createWorkspaceVolume !== 'function') return { reused: false };
+    const signature = this.installSignature(opts);
+    const current = this.workspaces.get(opts.workspaceKey);
+    if (current && signature !== null && current.installed === signature) {
+      return { volume: current.volume, reused: true };
+    }
+    const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const volume = `${config.docker.workspaceVolumePrefix}${slug(opts.workspaceKey).slice(0, 48)}-${++this.workspaceSeq}`;
+    await this.docker.createWorkspaceVolume(volume, opts.sessionId);
+    if (current) {
+      // Still mounted by a sibling, it stays until teardown, which removes it then.
+      await this.docker.removeVolume(current.volume).catch(() => undefined);
+    }
+    this.workspaces.set(opts.workspaceKey, { volume, sessionId: opts.sessionId });
+    return { volume, reused: false };
+  }
+
+  /** Remove every workspace volume a session made. Its containers must be gone first. */
+  async releaseWorkspaces(sessionId: string): Promise<void> {
+    for (const [key, ws] of [...this.workspaces]) if (ws.sessionId === sessionId) this.workspaces.delete(key);
+    if (typeof this.docker.listWorkspaceVolumes !== 'function') return;
+    const volumes = await this.docker.listWorkspaceVolumes({ sessionId }).catch(() => [] as string[]);
+    for (const volume of volumes) await this.docker.removeVolume(volume).catch(() => undefined);
   }
 
   /**

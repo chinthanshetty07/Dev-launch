@@ -114,6 +114,24 @@ Defended twice now: the reserved `DL_` prefix is rejected outright, and the wrap
 assigns control variables **last**, so a future caller that skips validation is still
 safe. The exploit was written as a failing test before the fix.
 
+## A workspace kept for one session, and no longer
+
+`/workspace` is a named volume per session, not an anonymous one per container, so a
+restart can keep what an earlier container installed. The limits on that:
+
+- **One session.** The volume's name and labels carry the session; nothing from one
+  session is ever mounted in another, and teardown removes every volume the session
+  made. The startup sweep removes any a dead process left, as it does containers.
+- **Reused only after a finished install of the same thing:** the same image, install
+  command and install directory, and the install must have printed its success marker.
+  A failed install, or one cut off by a stop or a kill, leaves nothing to trust, and
+  the next attempt gets a fresh volume.
+- **Decided by DevLaunch, never a plan.** The wrapper skips the install only on
+  `DL_INSTALL_REUSED=1`, a control variable set last and unconditionally; the `DL_` prefix
+  is refused from every plan.
+- Services that install one shared workspace share its volume, as they already shared
+  the tree: the same repository, the same session.
+
 ## A file DevLaunch writes, and what may be in it
 
 For an unbuildable pyproject project DevLaunch writes one file into the container,

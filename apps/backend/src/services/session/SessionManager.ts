@@ -1023,6 +1023,9 @@ export class SessionManager extends EventEmitter {
       // harmless and is not: the key is never seen twice, so the cache is never warm and
       // every run leaves a volume behind for good.
       packageCacheVolume: cacheVolumeFor(session.repoUrl ?? session.sourceDir ?? session.id),
+      // One workspace across this session's containers: a repair or a memory retry keeps
+      // what an earlier attempt installed, when it would install exactly the same thing.
+      workspaceKey: `${session.id}:app`,
       sourceDir,
       image,
       logs: session.logs,
@@ -2129,6 +2132,8 @@ export class SessionManager extends EventEmitter {
         session.logs.buffer.push('stderr', `cleanup warning: ${err.message}`);
       }
       session.backing = undefined;
+      // Last: a workspace volume can only be removed once no container mounts it.
+      await this.exec.releaseWorkspaces?.(session.id);
     } catch (err) {
       // A thrown failure must not mask the transition that triggered teardown, but it
       // should still be visible.

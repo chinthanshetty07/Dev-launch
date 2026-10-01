@@ -44,7 +44,13 @@ export function buildWrapperScript(): string {
     // single package in isolation. So the install may run somewhere other than the
     // directory the service starts from. A subshell keeps that move local — the build
     // and start steps must still run in DL_WORKDIR.
-    '  if (cd "$DL_INSTALL_DIR" && sh -c "$DL_INSTALL_CMD"); then',
+    // Reused: the workspace volume already holds what this exact install command
+    // produced, finished, in an earlier container of the same session. ExecutionManager
+    // decides that, never a plan — DL_ is a control prefix no plan may set.
+    '  if [ "${DL_INSTALL_REUSED:-0}" = "1" ]; then',
+    "    printf '%s\\n' '[devlaunch] The packages are already installed: an earlier attempt in this session ran the same install command to completion. Not installing again.'",
+    `    printf '%s\\n' "${Sentinel.INSTALL_OK}"`,
+    '  elif (cd "$DL_INSTALL_DIR" && sh -c "$DL_INSTALL_CMD"); then',
     `    printf '%s\\n' "${Sentinel.INSTALL_OK}"`,
     '  else',
     `    printf '%s\\n' "${Sentinel.INSTALL_FAIL}"`,
@@ -76,7 +82,7 @@ export function buildWrapperEnv(
   plan: RunPlan,
   workdir: string,
   installDir?: string,
-  control: { nodeHeapMb?: number } = {},
+  control: { nodeHeapMb?: number; installReused?: boolean } = {},
 ): string[] {
   const env: Record<string, string> = {};
 
@@ -105,6 +111,8 @@ export function buildWrapperEnv(
   env.DL_INSTALL_CMD = plan.installCommand ?? '';
   env.DL_BUILD_CMD = plan.buildCommand ?? '';
   env.DL_START_CMD = plan.startCommand;
+  // Set either way, so nothing else can supply it.
+  env.DL_INSTALL_REUSED = control.installReused === true ? '1' : '0';
 
   // A larger V8 heap, after a heap OOM, set by DevLaunch and never by a plan: the validator
   // refuses NODE_OPTIONS from every plan, because `--require` in it runs code before the

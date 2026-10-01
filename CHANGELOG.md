@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-01 — Keep a session's installed packages between its containers
+
+Every container started from an empty workspace, so every restart installed everything
+again. A repair that changed only a port reinstalled the whole tree, and the second service
+of a shared workspace installed what the first had just installed. Measured on
+`ejazahm3d/fullstack-turborepo-starter`: three installs of one tree took 197 of its 222
+seconds.
+
+- `/workspace` is now a named volume per session (and per service, or shared between
+  services that install one workspace), removed when the session ends and swept at
+  startup like containers.
+- A launch skips its install only when the same install (image, command and directory)
+  already *finished* in that volume. A failed install, or one cut off midway, gets a fresh
+  volume. The wrapper says so in the log, and DevLaunch sets the flag, never a plan.
+- Measured live: ejazahm3d went from 222 to 87 seconds, with `web` reusing `api`'s
+  install. remix/indie-stack went from 254 to 174 seconds: its port repair took 4 seconds
+  instead of a reinstall.
+
+Tested against real Docker (`integration/workspaceReuse.test.ts`): reuse after a finished
+install, a fresh install when the command changes, never after a failed or cut-off
+install, and volumes removed at the end. Unit tests cover the keys, teardown and sweeps.
+Ten mutations, all caught by a named test.
+
 ## 2026-10-01 — Read a NestJS application's port from src/main.ts
 
 The list of entry files the port detector reads had `main.js` but not `main.ts`, where

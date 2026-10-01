@@ -27,15 +27,18 @@ const ready = (name: string): ReadyOutcome => ({
 /** A container for `name` at `memoryMb`: its install fits at or above `fitsAt`, or is OOM-killed. */
 function containers(fitsAt: number | null) {
   const launches: { name: string; memoryMb?: number }[] = [];
+  /** The workspace each launch asked for, in launch order. */
+  const keys: (string | undefined)[] = [];
   const exec = {
     docker: {
       networkExists: async () => false,
       claimedAliases: async () => new Set<string>(),
       hostMemoryBytes: async () => VM_5910,
     },
-    async launch(o: { plan: { name?: string }; logs?: LogManager; memoryMb?: number }) {
+    async launch(o: { plan: { name?: string }; logs?: LogManager; memoryMb?: number; workspaceKey?: string }) {
       const name = o.plan.name ?? 'single';
       launches.push({ name, memoryMb: o.memoryMb });
+      keys.push(o.workspaceKey);
       const logs = o.logs ?? new LogManager();
       const fits = fitsAt !== null && (o.memoryMb ?? 0) >= fitsAt;
       // What a real container does, measured: when yarn is OOM-killed the wrapper survives,
@@ -68,7 +71,7 @@ function containers(fitsAt: number | null) {
       } as unknown as LaunchHandle;
     },
   } as unknown as ExecutionManager;
-  return { exec, launches };
+  return { exec, launches, keys };
 }
 
 const svc = (name: string, role: string, port: number) =>
@@ -81,7 +84,7 @@ const svc = (name: string, role: string, port: number) =>
     name, role,
   }) as never;
 
-function manager(exec: ExecutionManager) {
+function manager(exec: ExecutionManager, sharedInstall = true) {
   return new SessionManager(exec, {
     analyzer: {
       analyze: async () => ({
@@ -95,7 +98,7 @@ function manager(exec: ExecutionManager) {
     planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
     projectPlanner: {
       planProject: async () => ({
-        plan: { services: [svc('api', 'api', 3000), svc('web', 'web', 3001)], planSource: 'rule-based', sharedInstall: true },
+        plan: { services: [svc('api', 'api', 3000), svc('web', 'web', 3001)], planSource: 'rule-based', sharedInstall },
         skipped: [], warnings: [],
       }),
     } as never,
@@ -159,3 +162,37 @@ describe('a shared workspace install that runs out of memory', () => {
   });
 });
 
+
+describe("the workspace a project's services keep", () => {
+  it('is one between services that install the same workspace, so the second does not install it again', async () => {
+    // ejazahm3d/fullstack-turborepo-starter: api installed the tree in 54 s, then web
+    // installed the same tree again in 68 s.
+    const { exec, keys } = containers(1024);
+    const m = manager(exec, true);
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await settle(m, s.id);
+    await m.shutdown();
+    expect(keys).toEqual([`${s.id}:shared`, `${s.id}:shared`]);
+  });
+
+  it('is kept when a service is restarted', async () => {
+    // api is killed for memory at 1024 MB and restarted at 2048: the restart must land in
+    // the same workspace, or it cannot use anything already there.
+    const { exec, keys, launches } = containers(2048);
+    const m = manager(exec, true);
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await settle(m, s.id);
+    await m.shutdown();
+    expect(launches.map((l) => l.name)).toEqual(['api', 'api', 'web']);
+    expect(keys).toEqual([`${s.id}:shared`, `${s.id}:shared`, `${s.id}:shared`]);
+  });
+
+  it('is one per service when they install separately', async () => {
+    const { exec, keys } = containers(1024);
+    const m = manager(exec, false);
+    const s = await m.launch({ sourceDir: '/tmp/repo' });
+    await settle(m, s.id);
+    await m.shutdown();
+    expect([...keys].sort()).toEqual([`${s.id}:api`, `${s.id}:web`]);
+  });
+});
