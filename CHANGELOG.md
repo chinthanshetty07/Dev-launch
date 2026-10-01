@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-01 — Start a repository's next run with the memory it needed last time
+
+`wrrnlim/nextjs-docker-postgres-template` needs about 2 GB to install. Every run started at
+1024 MB, was killed there after 18 seconds, and only then was retried at 2048 MB. The same
+first try was wasted on every run, of every repository that needs more than the starting
+limit.
+
+- After an attempt gets past its install with more than the starting limit, that amount
+  is remembered for the repository (and for each service of a project).
+- The next run starts there, never above the ceiling, and the log says why: "Starting with
+  2048 MB instead of 1024 MB: the last run of this repository needed it."
+- Kept in `~/.devlaunch/memory-hints.json` (`DEVLAUNCH_STATE_DIR` moves it), readable only
+  by its owner, at most 500 repositories. A missing or damaged file just means no hints.
+  Tests never touch it: only the server uses the file.
+
+Nine unit tests and a project test. Eight mutations, all caught by a named test.
+
 ## 2026-10-01 — Say "retrying" while a run is retrying
 
 The red failure panel appeared as soon as a first try failed, and stayed on screen while

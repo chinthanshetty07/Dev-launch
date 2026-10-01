@@ -47,6 +47,7 @@ import { MAX_REPAIR_ATTEMPTS } from '../ai/AIProvider.js';
 import { repairPolicyFor } from '../failures/RepairPolicy.js';
 import { tryDeterministicRepair } from '../planning/DeterministicRepair.js';
 import { memoryLadder, memoryPolicy, nextMemoryMb, nodeHeapMbFor, type MemoryPolicy } from '../execution/MemoryPolicy.js';
+import { InMemoryHints, memoryHintKey, type MemoryHintStore } from '../execution/MemoryHints.js';
 import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
 import { impossibleCommand } from '../planning/Feasibility.js';
 import {
@@ -281,6 +282,12 @@ export interface SessionManagerDeps {
   startupBoundMs?: number;
   /** Overridable so a database that never starts can be tested without waiting 90s. */
   backingReadyMs?: number;
+  /**
+   * Where the memory a repository needed last time is kept (`MemoryHints`). The server
+   * supplies a file in the user's state directory; absent, hints last for this process
+   * only, so a test never reads or writes anybody's file.
+   */
+  memoryHints?: MemoryHintStore;
 }
 
 /**
@@ -303,12 +310,14 @@ export class SessionManager extends EventEmitter {
   /** Backstop per session for one that never reaches READY. Cleared when it finishes. */
   private readonly startupBounds = new Map<string, NodeJS.Timeout>();
   private readonly validator = new RunPlanValidator();
+  private readonly hints: MemoryHintStore;
 
   constructor(
     private readonly exec: ExecutionManager,
     private readonly deps: SessionManagerDeps = {},
   ) {
     super();
+    this.hints = deps.memoryHints ?? new InMemoryHints();
     // One listener per connected client; the default cap of 10 warns spuriously.
     this.setMaxListeners(64);
   }
@@ -678,6 +687,11 @@ export class SessionManager extends EventEmitter {
     this.throwIfStopped(session);
     const executor = new ProjectExecutor(this.exec);
     const policy = await this.memoryPolicy();
+    const remembered: Record<string, number> = {};
+    for (const service of project.services) {
+      const start = await this.rememberedStart(session, service.name, policy);
+      if (start !== undefined) remembered[service.name] = start;
+    }
     session.run = await executor.launch({
       sessionId: session.id,
       project,
@@ -690,6 +704,7 @@ export class SessionManager extends EventEmitter {
       mayRewriteSource: session.ownsSource === true,
       memory: {
         initialMb: policy.initialMb,
+        initialFor: (name) => remembered[name],
         onLaunch: async (service) => {
           await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand);
         },
@@ -729,7 +744,7 @@ export class SessionManager extends EventEmitter {
     const outcome = await executor.waitForReady(session.run!, req.readinessTimeoutMs);
     for (const service of session.run?.services ?? []) {
       const open = [...(session.launchAttempts ?? [])].reverse().find((a) => a.service === service.name && !a.result);
-      this.finishAttempt(open, service.state, service.failure);
+      this.finishAttempt(open, service.state, service.failure, session);
     }
 
     if (outcome.state === ExecutionState.READY) {
@@ -1021,6 +1036,10 @@ export class SessionManager extends EventEmitter {
     // test can distinguish is a guard nobody can maintain.
     this.throwIfStopped(session);
     const policy = await this.memoryPolicy();
+    if (session.memoryMb === undefined) {
+      const remembered = await this.rememberedStart(session, undefined, policy);
+      if (remembered !== undefined) session.memoryMb = remembered;
+    }
     const attempt = await this.beginAttempt(
       session,
       { memoryMb: session.memoryMb, nodeHeapMb: session.nodeHeapMb, memoryRaises: session.memoryRaises },
@@ -1053,7 +1072,7 @@ export class SessionManager extends EventEmitter {
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
     const outcome = await handle.waitForReady(req.readinessTimeoutMs);
-    this.finishAttempt(attempt, outcome.state, outcome.failure);
+    this.finishAttempt(attempt, outcome.state, outcome.failure, session);
 
     if (outcome.state === ExecutionState.READY) {
       session.readyAt = Date.now();
@@ -2041,10 +2060,16 @@ export class SessionManager extends EventEmitter {
     return attempt;
   }
 
-  /** Close a launch record with how it ended. */
-  private finishAttempt(attempt: LaunchAttempt | undefined, state: ExecutionState, failure?: FailureDetail): void {
+  /** Close a launch record with how it ended, and remember memory that worked. */
+  private finishAttempt(
+    attempt: LaunchAttempt | undefined,
+    state: ExecutionState,
+    failure?: FailureDetail,
+    session?: Session,
+  ): void {
     if (!attempt || attempt.result) return;
     attempt.durationMs = Date.now() - attempt.startedAt;
+    if (session) void this.rememberMemory(session, attempt, state, failure);
     if (state === ExecutionState.READY || state === ExecutionState.COMPLETED) {
       attempt.result = 'ok';
       return;
@@ -2052,6 +2077,46 @@ export class SessionManager extends EventEmitter {
     attempt.result = failure?.code ?? FailureCode.UNKNOWN_RUNTIME_ERROR;
     if (failure?.phase) attempt.phase = failure.phase;
     if (failure?.memory?.detectedBy.length) attempt.detectedBy = failure.memory.detectedBy;
+  }
+
+  /**
+   * Where a repository's first container starts, when an earlier run showed the usual
+   * starting limit is not enough: what that run needed, never above the ceiling. Said in
+   * the log, because a run that starts at 2048 MB for a reason nobody can see is a puzzle.
+   */
+  private async rememberedStart(session: Session, service: string | undefined, policy: MemoryPolicy): Promise<number | undefined> {
+    const repo = session.repoUrl ?? session.sourceDir;
+    if (!repo) return undefined;
+    const hint = await this.hints.get(memoryHintKey(repo, service)).catch(() => undefined);
+    if (hint === undefined || hint <= policy.initialMb) return undefined;
+    const start = Math.min(hint, policy.maxMb);
+    if (start <= policy.initialMb) return undefined;
+    session.logs.buffer.push(
+      'stdout',
+      `[install] ${service ? `${service}: ` : ''}Starting with ${start} MB instead of ${policy.initialMb} MB: ` +
+        'the last run of this repository needed it.',
+    );
+    return start;
+  }
+
+  /**
+   * Remember the memory an attempt got past its install with, when that was more than the
+   * starting limit. Past the install means it served, or failed later for a reason that is
+   * not memory; an attempt that died installing proves nothing about what is enough.
+   */
+  private async rememberMemory(session: Session, attempt: LaunchAttempt, state: ExecutionState, failure?: FailureDetail): Promise<void> {
+    const repo = session.repoUrl ?? session.sourceDir;
+    if (!repo) return;
+    const pastInstall =
+      state === ExecutionState.READY ||
+      state === ExecutionState.PARTIALLY_READY ||
+      (failure !== undefined &&
+        failure.code !== FailureCode.OUT_OF_MEMORY &&
+        (failure.phase === 'build' || failure.phase === 'start'));
+    if (!pastInstall) return;
+    const policy = await this.memoryPolicy();
+    if (attempt.memoryMb <= policy.initialMb) return;
+    await this.hints.remember(memoryHintKey(repo, attempt.service), attempt.memoryMb).catch(() => undefined);
   }
 
   /** The log lines an out-of-memory decision owes the reader. */

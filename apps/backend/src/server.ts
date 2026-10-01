@@ -7,6 +7,7 @@ import { recordRunningCommit } from './services/build/BuildStamp.js';
 import { DockerManager } from './services/docker/DockerManager.js';
 import { ExecutionManager } from './services/execution/ExecutionManager.js';
 import { SessionManager } from './services/session/SessionManager.js';
+import { FileHints } from './services/execution/MemoryHints.js';
 import { GitManager } from './services/git/GitManager.js';
 import { RepositoryAnalyzer } from './services/analysis/RepositoryAnalyzer.js';
 import { RuleBasedPlanner } from './services/planning/RuleBasedPlanner.js';
@@ -184,6 +185,8 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     projectPlanner: new ProjectPlanner(analyzer, planner),
     aiPlanner: provider ? new AIPlanner(provider) : undefined,
     aiRepair: provider ? new AIRepair(provider) : undefined,
+    // What each repository needed last time, so its next run starts there.
+    memoryHints: FileHints.fromEnv(),
   });
 
   // Sweep before accepting traffic.

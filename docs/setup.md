@@ -103,6 +103,7 @@ Everything is optional; defaults live in `apps/backend/src/config`.
 | `DEVLAUNCH_MEMORY_RETRY_ENABLED` | true | Retry an out-of-memory kill with more memory |
 | `DEVLAUNCH_MEMORY_RETRY_LIMIT` | 2 | Memory raises after the first attempt (0–5) |
 | `DEVLAUNCH_MEMORY_STEP_MB` | (double) | A fixed increment instead of doubling (≥ 64) |
+| `DEVLAUNCH_STATE_DIR` | `~/.devlaunch` | Where `memory-hints.json` keeps how much memory each repository needed last time |
 | `DEVLAUNCH_MEMORY_RESERVE_MB` | 512 | VM memory never promised to containers |
 | `DEVLAUNCH_CONTAINER_CPUS` | 2 | Per-container CPU limit |
 | `DEVLAUNCH_CONTAINER_PIDS_LIMIT` | 256 | Fork-bomb ceiling |

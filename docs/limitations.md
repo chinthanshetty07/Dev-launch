@@ -176,6 +176,12 @@ holds behind with no container under any of them — a later run was refused mem
 "86 MB is free after the 8 other container(s)" beside an empty Docker. The ledger is per
 process; a restart starts it empty.
 
+A repository that needed more than the starting limit is remembered: the next run of it
+starts at what it needed, never above the ceiling, and the log says so. One number per
+repository and service, in `~/.devlaunch/memory-hints.json` (or `$DEVLAUNCH_STATE_DIR`),
+readable only by its owner, at most 500 entries. Saved only after an attempt got past its
+install with more than the starting limit.
+
 The limit is one per container, and a container runs install, build and start. The phase
 that ran out is recorded; a separate limit per phase would mean resizing a live container
 between phases, which is not done. So a service raised for its install keeps that limit

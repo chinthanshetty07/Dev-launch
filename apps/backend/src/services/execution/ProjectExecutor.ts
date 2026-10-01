@@ -145,6 +145,8 @@ export interface ProjectLaunchOptions {
    */
   memory?: {
     initialMb: number;
+    /** Where one service starts instead, when its repository needed more last time. */
+    initialFor?(service: string): number | undefined;
     onLaunch?(service: ServiceRun): Promise<void>;
     onInstallDied?(service: ServiceRun, died: ContainerLiveness | undefined): Promise<'restarted' | 'exhausted' | 'not-oom'>;
   };
@@ -378,7 +380,7 @@ export class ProjectExecutor {
       // What a shared workspace needed to install is what the next service installing it
       // needs — same tree, same packages — so it starts there rather than rediscovering the
       // limit by being killed at the default. Never more than the VM has free.
-      const startMb = await startingMemory(opts, shared, this.exec);
+      const startMb = await startingMemory(opts, shared, this.exec, plan.name);
       try {
         const handle = await this.exec.launch({
           sessionId: opts.sessionId,
@@ -725,8 +727,9 @@ async function startingMemory(
   opts: ProjectLaunchOptions,
   shared: { memoryMb?: number },
   exec: ExecutionManager,
+  service: string,
 ): Promise<number | undefined> {
-  const initial = opts.memory?.initialMb;
+  const initial = opts.memory?.initialFor?.(service) ?? opts.memory?.initialMb;
   if (shared.memoryMb === undefined) return initial;
   const free = exec.availableMb ? await exec.availableMb() : (exec.memory?.freeMb() ?? null);
   const wanted = free === null ? shared.memoryMb : Math.min(shared.memoryMb, free);

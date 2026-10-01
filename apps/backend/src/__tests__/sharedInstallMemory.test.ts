@@ -4,6 +4,7 @@ import { SessionManager } from '../services/session/SessionManager.js';
 import type { ExecutionManager, LaunchHandle, ReadyOutcome } from '../services/execution/ExecutionManager.js';
 import { LogManager } from '../services/logs/LogManager.js';
 import { dockerFramedInto } from './helpers/dockerFramed.js';
+import { InMemoryHints } from '../services/execution/MemoryHints.js';
 
 /**
  * A shared workspace install killed for memory — `horusyeung/nextjs-nestjs-fullstack-starter`.
@@ -84,8 +85,9 @@ const svc = (name: string, role: string, port: number) =>
     name, role,
   }) as never;
 
-function manager(exec: ExecutionManager, sharedInstall = true) {
+function manager(exec: ExecutionManager, sharedInstall = true, memoryHints?: InMemoryHints) {
   return new SessionManager(exec, {
+    ...(memoryHints ? { memoryHints } : {}),
     analyzer: {
       analyze: async () => ({
         warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
@@ -194,5 +196,31 @@ describe("the workspace a project's services keep", () => {
     await settle(m, s.id);
     await m.shutdown();
     expect([...keys].sort()).toEqual([`${s.id}:api`, `${s.id}:web`]);
+  });
+});
+
+describe('a project that needed more memory last time', () => {
+  it('starts each service where its last run needed', async () => {
+    const hints = new InMemoryHints();
+    const first = containers(2048);
+    const m1 = manager(first.exec, true, hints);
+    const s1 = await m1.launch({ sourceDir: '/tmp/repo' });
+    await settle(m1, s1.id);
+    await m1.shutdown();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(first.launches.map((l) => l.memoryMb)).toEqual([1024, 2048, 2048]);
+
+    const second = containers(2048);
+    const m2 = manager(second.exec, true, hints);
+    const s2 = await m2.launch({ sourceDir: '/tmp/repo' });
+    const out = await settle(m2, s2.id);
+    await m2.shutdown();
+    expect(out.state).toBe(ExecutionState.READY);
+    // No try wasted at 1024 MB.
+    expect(second.launches).toEqual([
+      { name: 'api', memoryMb: 2048 },
+      { name: 'web', memoryMb: 2048 },
+    ]);
+    expect(out.log).toMatch(/\[install\] api: Starting with 2048 MB instead of 1024 MB/);
   });
 });
