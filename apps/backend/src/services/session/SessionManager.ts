@@ -527,6 +527,31 @@ export class SessionManager extends EventEmitter {
     if (!outcome.plan) {
       const reason = outcome.reason ?? 'No deterministic plan could be produced.';
 
+      // The code is not in the repository at all: its directories are links to other
+      // repositories it never says where to find. Nothing can plan an empty directory, and
+      // a model asked to will invent `npm install` in one — which is what happened.
+      const unsourced = session.metadata?.submodulesWithoutSource ?? [];
+      if (unsourced.length > 0) {
+        const shown = unsourced.slice(0, 5).map((p) => `\`${p}/\``).join(', ') + (unsourced.length > 5 ? `, and ${unsourced.length - 5} more` : '');
+        const one = unsourced.length === 1;
+        this.fail(session, {
+          code: FailureCode.UNSUPPORTED_PROJECT,
+          message:
+            `${shown} ${one ? 'is a link' : 'are links'} to ${one ? 'another git repository' : 'other git repositories'}, ` +
+            `not ${one ? 'a folder' : 'folders'} of code, and this repository never says where ` +
+            `${one ? 'it lives' : 'they live'} (there is no .gitmodules entry for ${one ? 'it' : 'them'}). ` +
+            `${one ? 'Its' : 'Their'} code is not here, so there is nothing to install or run — for anybody ` +
+            'who clones this repository, not only DevLaunch.',
+          remedy:
+            `The repository's owner needs to commit ${one ? 'that folder’s' : 'those folders’'} files directly, ` +
+            'or add them as submodules with a URL (`git submodule add <url> <folder>`). There is ' +
+            'nothing DevLaunch can run until then.',
+          confidence: 'high',
+        });
+        await this.teardown(session);
+        return;
+      }
+
       // The one place the fallback planner runs: the deterministic path declined *and*
       // could not say the repository is unrunnable. A library has no server to start, so
       // a model asked to find one invents a command and the run fails minutes later with

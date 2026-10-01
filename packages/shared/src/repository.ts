@@ -131,6 +131,13 @@ export interface RepositoryMetadata {
    * `realworld/assets/theme/styles.css` and was reported as a port nobody opened.
    */
   submodules?: string[];
+  /**
+   * Links to other git repositories that the repository never says where to fetch: git
+   * records them (mode 160000) but there is no `.gitmodules` entry with a URL. Usually a
+   * nested repository committed by accident. Their code exists only on the author's
+   * machine, so the directories are empty for everybody who clones.
+   */
+  submodulesWithoutSource?: string[];
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
 }

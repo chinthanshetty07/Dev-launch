@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-01 — Say when a repository's code is in links nobody can fetch
+
+`RefugioDiaz1/fullstack-docker-react-node-postgres` has `client` and `server` recorded by
+git as links to other repositories (mode 160000), with no `.gitmodules` saying where those
+live. It is usually a nested repository committed by accident. The code exists only on the
+author's machine. DevLaunch read submodules from `.gitmodules` alone, so it saw two empty
+folders, asked a model, and the model's `npm install` failed twice in a folder with nothing
+in it.
+
+- The analyzer reads git's own index (`git ls-files --stage`, which runs no hook or filter)
+  for links, and records the ones no `.gitmodules` entry gives a URL as
+  `submodulesWithoutSource`.
+- When no plan can be made and such links exist, the run stops at once, before any model
+  is asked: "`client/`, `server/` are links to other git repositories, not folders of code,
+  and this repository never says where they live…", with what the owner can do.
+- Live: the repository went from two failed installs to a clear answer in 5 seconds.
+
+Three tests, one of them against a real git repository with a declared submodule and two
+undeclared links. Three mutations, all caught.
+
 ## 2026-10-01 — Quote what failed in an npm install, not npm's sign-off
 
 A failed install was explained by `npm error A complete log of this run can be found in:

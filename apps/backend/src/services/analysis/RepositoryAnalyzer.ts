@@ -1,3 +1,5 @@
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import type {
@@ -201,7 +203,12 @@ export class RepositoryAnalyzer {
 
     // Only for the repository itself: a subdirectory analysed on its own belongs to a
     // repository whose warnings are already being reported.
-    const submodules = subdir === '.' ? await readSubmodulePaths(root) : [];
+    const declaredSubmodules = subdir === '.' ? await readSubmodulePaths(root) : [];
+    // Git's own record, which a `.gitmodules` file may not match: a link with no entry there
+    // has no URL anybody could fetch it from.
+    const gitlinks = subdir === '.' ? await readGitlinks(root) : [];
+    const submodulesWithoutSource = gitlinks.filter((p) => !declaredSubmodules.includes(p));
+    const submodules = [...declaredSubmodules, ...submodulesWithoutSource];
     if (submodules.length) warnings.push(submoduleWarning(submodules));
 
     return {
@@ -217,6 +224,7 @@ export class RepositoryAnalyzer {
       frameworkConfigs: fileNames.filter((n) => FRAMEWORK_CONFIG_PATTERNS.some((p) => p.test(n))),
       ...(fileNames.includes('index.html') ? { staticIndex: true } : {}),
       ...(submodules.length ? { submodules } : {}),
+      ...(submodulesWithoutSource.length ? { submodulesWithoutSource } : {}),
       python,
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,
@@ -1015,6 +1023,33 @@ async function readAngularDevServer(file: string): Promise<{ angularDevServer?: 
     /* An unreadable angular.json says nothing about the builder; the default stands. */
   }
   return {};
+}
+
+/**
+ * Paths git records as links to other repositories (mode 160000), from the index of a
+ * checkout. Empty when there is no `.git`, or git cannot read it. `ls-files` reads the
+ * index and nothing else: no hook, filter or checkout runs.
+ *
+ * `.gitmodules` alone missed `RefugioDiaz1/fullstack-docker-react-node-postgres`, whose
+ * `client` and `server` are links with no `.gitmodules` at all: DevLaunch saw two empty
+ * directories, asked a model, and the model's `npm install` failed in a folder with nothing
+ * in it.
+ */
+export async function readGitlinks(root: string): Promise<string[]> {
+  if (!(await exists(join(root, '.git')))) return [];
+  try {
+    const { stdout } = await promisify(execFile)('git', ['-C', root, 'ls-files', '--stage', '-z'], {
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 15_000,
+    });
+    return stdout
+      .split('\0')
+      .filter((entry) => entry.startsWith('160000 '))
+      .map((entry) => entry.slice(entry.indexOf('\t') + 1))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /** The `path = ...` entries of a root `.gitmodules`, in the order it lists them. */
