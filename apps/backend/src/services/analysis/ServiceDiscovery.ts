@@ -512,9 +512,14 @@ export async function findDeclaredPort(
   return undefined;
 }
 
+// `main.ts` is where every NestJS application starts — `src/main.ts`, with
+// `await app.listen(PORT)` in it. It was missing, so a Nest API that writes its port down
+// (`const PORT = 5002`, `ejazahm3d/fullstack-turborepo-starter`) was planned on 3000, failed,
+// and was only corrected by a repair — a full reinstall later.
 const NODE_ENTRY_FILES = [
   'server.js', 'index.js', 'app.js', 'main.js',
-  'server.ts', 'index.ts', 'app.ts', 'server.mjs', 'index.mjs',
+  'server.ts', 'index.ts', 'app.ts', 'main.ts',
+  'server.mjs', 'index.mjs', 'app.mjs', 'main.mjs',
 ];
 
 /**

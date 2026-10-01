@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-01 — Read a NestJS application's port from src/main.ts
+
+The list of entry files the port detector reads had `main.js` but not `main.ts`, where
+every NestJS application starts. ejazahm3d's api writes `const PORT = 5002`; it was
+planned on 3000, failed, and was corrected by a repair, which meant a full reinstall. It is
+now planned on 5002 the first time. `app.mjs` and `main.mjs` were added beside it.
+
 ## 2026-10-01 — Stop waiting for a database container that has already exited
 
 A compose file's `postgres:15.1-alpine` exits under the sandbox within two seconds, but its

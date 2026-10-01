@@ -751,6 +751,17 @@ describe('the port an entry file writes down', () => {
   it('reads nullish coalescing as well as or', async () => {
     expect(await portOf('const port = process.env.PORT ?? 5001;')).toBe(5001);
   });
+
+  it("reads a NestJS application's src/main.ts (ejazahm3d/fullstack-turborepo-starter)", async () => {
+    // Its api was planned on 3000 while `const PORT = 5002` listened, and only a repair —
+    // a full reinstall — found the real port.
+    const { findDeclaredPort } = await import('../services/analysis/ServiceDiscovery.js');
+    const root = await repo({
+      'package.json': pkg('api', { 'start:dev': 'nest start --watch' }, { '@nestjs/core': '^9' }),
+      'src/main.ts': "async function bootstrap() {\n  const app = await NestFactory.create(AppModule);\n  const PORT = 5002;\n  await app.listen(PORT);\n}\nbootstrap();\n",
+    });
+    expect(await findDeclaredPort(root, { scripts: {}, dependencies: {} })).toBe(5002);
+  });
 });
 
 describe('Node built-ins a repository imports', () => {
