@@ -138,6 +138,13 @@ export interface RepositoryMetadata {
    * machine, so the directories are empty for everybody who clones.
    */
   submodulesWithoutSource?: string[];
+  /**
+   * Relative imports that resolve only if letter case is ignored — fine on macOS and
+   * Windows, broken on Linux, where every DevLaunch container runs.
+   */
+  caseMismatches?: { file: string; line: number; imported: string; actual: string }[];
+  /** Manifests of runtimes DevLaunch has no image for (`ForeignRuntimes`). */
+  foreignRuntimes?: { runtime: string; manifest: string }[];
   /** Non-fatal problems, e.g. an unparseable package.json. */
   warnings: string[];
 }
@@ -414,6 +421,8 @@ export interface ServiceCandidate {
 export interface RequiredEnvVar extends EnvExampleVar {
   /** Absent for a single-service session, which has only one thing to configure. */
   service?: string;
+  /** What it is, and so what to do about it (`classifyEnvVar`). */
+  kind?: import('./env.js').EnvVarKind;
 }
 
 /** A database or cache the repository expects to be running. */

@@ -5,3 +5,5 @@ export * from './runPlan.js';
 export * from './sentinels.js';
 export * from './protocol.js';
 export * from './repository.js';
+export * from './taxonomy.js';
+export * from './env.js';
