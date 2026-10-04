@@ -81,24 +81,31 @@ describe('Full pipeline — analyse, plan, gate, run', () => {
     await sessions.cancel(s.id);
   }, 300_000);
 
-  it('stops for required configuration instead of launching something that will crash', async () => {
-    // python-flask-basic declares SECRET_KEY and DATABASE_URL with no default.
+  it('stops for configuration only a person can give, before any container exists', async () => {
+    // Rewritten, not flipped. This used python-flask-basic, which asked for SECRET_KEY and
+    // DATABASE_URL. Neither is a person's to give any more: SECRET_KEY only signs the app's
+    // own sessions and is generated, and DATABASE_URL names a database DevLaunch starts and
+    // injects — asking for it threw the answer away. node-missing-env needs REQUIRED_TOKEN,
+    // which nothing can invent, so it is what the gate is tested with now.
     sessions = newManager();
-    const s = await sessions.launch({ sourceDir: `${FIXTURES}/python-flask-basic` });
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-missing-env` });
     await until(sessions, s.id, [ExecutionState.AWAITING_INPUT, ExecutionState.FAILED]);
-
-    expect(s.state).toBe(ExecutionState.AWAITING_INPUT);
-    expect(s.detected).toBe('flask');
-    expect(s.pending?.requiredEnv.map((v) => v.key)).toEqual(['SECRET_KEY', 'DATABASE_URL']);
+    expect(s.state, JSON.stringify(s.failure)).toBe(ExecutionState.AWAITING_INPUT);
+    expect(s.pending?.requiredEnv.map((v) => [v.key, v.kind])).toEqual([['REQUIRED_TOKEN', 'REQUIRED_SECRET']]);
     // No container exists yet: the gate is genuinely pre-flight.
     expect(s.handle).toBeUndefined();
+    await sessions.cancel(s.id);
+  }, 600_000);
 
-    await sessions.resolve(s.id, { env: { SECRET_KEY: 'x', DATABASE_URL: 'sqlite://' } });
-    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED], 300_000);
-
-    expect(s.state, JSON.stringify(s.failure)).toBe(ExecutionState.READY);
-    const supplied = s.plan!.environmentVariables.find((v) => v.key === 'SECRET_KEY');
-    expect(supplied?.value).toBe('x');
+  it('runs without stopping when everything it needs can be provided (python-flask-basic)', async () => {
+    // SECRET_KEY generated, DATABASE_URL injected from the Postgres DevLaunch starts.
+    sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/python-flask-basic` });
+    await until(sessions, s.id, [ExecutionState.AWAITING_INPUT, ExecutionState.READY, ExecutionState.FAILED], 300_000);
+    expect(s.state, JSON.stringify({ failure: s.failure, pending: s.pending })).toBe(ExecutionState.READY);
+    const env = new Map(s.plan!.environmentVariables.map((v) => [v.key, v.value]));
+    expect(env.get('SECRET_KEY')).toMatch(/^[0-9a-f]{64}$/);
+    expect(env.get('DATABASE_URL')).toMatch(/^postgresql:\/\/.*@postgres:5432\//);
     await sessions.cancel(s.id);
   }, 600_000);
 
@@ -169,6 +176,22 @@ describe('Full pipeline — analyse, plan, gate, run', () => {
     expect(answer).toEqual({ status: 200, body: '{"status":"ok"}' });
     await sessions.cancel(s.id);
   }, 600_000);
+
+  it('stops waiting when nodemon says the app crashed, instead of polling for the whole budget', async () => {
+    // The container stays up — nodemon waits for a file change — so readiness used to poll
+    // until its budget ran out. Here the budget is five minutes; the first try must end in
+    // well under one, and the type-check repair then brings the server up.
+    sessions = newManager();
+    const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-nodemon-crash`, readinessTimeoutMs: 300_000 });
+    await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED], 600_000);
+    const log = s.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(s.state, `${JSON.stringify(s.failure)}\n${log.slice(-1500)}`).toBe(ExecutionState.READY);
+    const first = s.launchAttempts?.[0];
+    expect(first?.result).toBe('START_COMMAND_FAILED');
+    expect(first?.durationMs).toBeLessThan(60_000);
+    expect(log).toMatch(/\[nodemon\] app crashed/);
+    await sessions.cancel(s.id);
+  }, 700_000);
 
   it('asks which package to run rather than guessing, then runs the chosen one', async () => {
     sessions = newManager();

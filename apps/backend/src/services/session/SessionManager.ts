@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   ExecutionState,
   FailureCode,
@@ -16,6 +16,8 @@ import {
   type RunPlan,
   type ServiceStats,
   type WorkspacePackage,
+  describeFailure,
+  classifyEnvVar,
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
 import { LogManager } from '../logs/LogManager.js';
@@ -48,6 +50,9 @@ import { repairPolicyFor } from '../failures/RepairPolicy.js';
 import { tryDeterministicRepair } from '../planning/DeterministicRepair.js';
 import { memoryLadder, memoryPolicy, nextMemoryMb, nodeHeapMbFor, type MemoryPolicy } from '../execution/MemoryPolicy.js';
 import { InMemoryHints, memoryHintKey, type MemoryHintStore } from '../execution/MemoryHints.js';
+import { recordEvent, sentinelRecorder, type DeploymentEvent } from './DeploymentEvents.js';
+import { runSmokeTest, type SmokeService, type Verification } from '../verification/SmokeTest.js';
+import { InMemoryDeploymentStore, type DeploymentRecord, type DeploymentStore } from './DeploymentStore.js';
 import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
 import { impossibleCommand } from '../planning/Feasibility.js';
 import {
@@ -78,6 +83,14 @@ export interface Session {
   state: ExecutionState;
   createdAt: number;
   logs: LogManager;
+  /** The deployment's timeline (`DeploymentEvents`): bounded, persisted, never holding env values. */
+  events?: DeploymentEvent[];
+  /** When the current state began, for each state's duration. */
+  stateSince?: number;
+  /** How many of `repairs` already appear in `events`. */
+  repairsRecorded?: number;
+  /** The end-to-end check run before READY was declared (`SmokeTest`). */
+  verification?: Verification;
 
   repoUrl?: string;
   /** The branch, tag or commit asked for. Absent means the repository's default branch. */
@@ -283,6 +296,20 @@ export interface SessionManagerDeps {
   /** Overridable so a database that never starts can be tested without waiting 90s. */
   backingReadyMs?: number;
   /**
+   * Where each deployment's record is kept between backend restarts (`DeploymentStore`).
+   * The server supplies files under the user's state directory; absent, records last for
+   * this process only.
+   */
+  deploymentStore?: DeploymentStore;
+  /**
+   * Run the end-to-end smoke test before declaring READY (`SmokeTest`). The server turns it
+   * on; it is off by default only because most unit tests stand in for containers with URLs
+   * nothing serves.
+   */
+  smokeTest?: boolean;
+  /** Deployments allowed at once; otherwise read from the environment (`maxConcurrent`). */
+  maxConcurrent?: number;
+  /**
    * Where the memory a repository needed last time is kept (`MemoryHints`). The server
    * supplies a file in the user's state directory; absent, hints last for this process
    * only, so a test never reads or writes anybody's file.
@@ -311,6 +338,13 @@ export class SessionManager extends EventEmitter {
   private readonly startupBounds = new Map<string, NodeJS.Timeout>();
   private readonly validator = new RunPlanValidator();
   private readonly hints: MemoryHintStore;
+  private readonly store: DeploymentStore;
+  /** One write at a time per deployment, so records never land out of order. */
+  private readonly saving = new Map<string, Promise<void>>();
+  /** Logs whose phase markers already feed a timeline. */
+  private readonly recording = new WeakSet<object>();
+  /** The failure each session's timeline already holds, so it is recorded once. */
+  private readonly failuresRecorded = new WeakMap<Session, FailureDetail>();
 
   constructor(
     private readonly exec: ExecutionManager,
@@ -318,6 +352,7 @@ export class SessionManager extends EventEmitter {
   ) {
     super();
     this.hints = deps.memoryHints ?? new InMemoryHints();
+    this.store = deps.deploymentStore ?? new InMemoryDeploymentStore();
     // One listener per connected client; the default cap of 10 warns spuriously.
     this.setMaxListeners(64);
   }
@@ -341,14 +376,29 @@ export class SessionManager extends EventEmitter {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /**
+   * How many deployments may run at once. Read when asked, never at import: the config
+   * module is evaluated before `.env` is loaded, so a limit set there was silently ignored.
+   * `DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS` and `DEVLAUNCH_MAX_CONCURRENT_SESSIONS` both work.
+   */
+  maxConcurrent(): number {
+    if (this.deps.maxConcurrent !== undefined) return this.deps.maxConcurrent;
+    const raw = process.env.DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS ?? process.env.DEVLAUNCH_MAX_CONCURRENT_SESSIONS;
+    const n = Number(raw);
+    return raw !== undefined && Number.isInteger(n) && n >= 1 && n <= 16 ? n : config.concurrency.maxSessions;
+  }
+
   async launch(req: LaunchRequest): Promise<Session> {
-    if (this.activeCount() >= config.concurrency.maxSessions) {
+    const limit = this.maxConcurrent();
+    if (this.activeCount() >= limit) {
       const blocking = this.active()[0];
       throw new SessionConflict(
-        `A session is already running (${blocking?.repoUrl ?? 'started from a fixture'}, ` +
-          `currently ${blocking?.state.toLowerCase().replace(/_/g, ' ')}). DevLaunch runs ` +
-          `${config.concurrency.maxSessions} at a time, because the Colima VM cannot ` +
-          'safely host more. Stop it and try again.',
+        (limit === 1
+          ? `A session is already running (${blocking?.repoUrl ?? 'started from a fixture'}, ` +
+            `currently ${blocking?.state.toLowerCase().replace(/_/g, ' ')}). `
+          : `${limit} deployments are already running; the newest is ${blocking?.repoUrl ?? 'from a fixture'}. `) +
+          `DevLaunch runs ${limit} at a time (DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS), because the Docker VM ` +
+          'cannot safely host more. Stop one and try again.',
         blocking?.id,
       );
     }
@@ -362,8 +412,12 @@ export class SessionManager extends EventEmitter {
       repoUrl: req.repoUrl,
       ref: req.ref,
       sourceDir: req.sourceDir,
+      events: [],
+      stateSince: Date.now(),
     };
     this.sessions.set(session.id, session);
+    this.recordPhases(session, session.logs, undefined);
+    this.event(session, { event: 'DEPLOYMENT_CREATED', severity: 'info', detail: req.repoUrl ?? 'local directory' });
     this.evictFinished();
     this.armStartupBound(session);
 
@@ -487,10 +541,9 @@ export class SessionManager extends EventEmitter {
         // Each service's configuration lives beside it, so the gate reads every service
         // rather than only the repository root — which is why a backend's API key was
         // never asked for and its container started without one.
-        const missing = requiredConfiguration(
-          project.plan,
-          session.metadata.services ?? [],
-          session.metadata.backing ?? [],
+        const missing = this.fillGeneratable(
+          session,
+          requiredConfiguration(project.plan, session.metadata.services ?? [], session.metadata.backing ?? []),
         );
         if (missing.length > 0) {
           this.awaitInput(session, { requiredEnv: missing });
@@ -612,7 +665,7 @@ export class SessionManager extends EventEmitter {
 
     // Pre-flight gate: ask for configuration before building a container that would
     // only crash for want of it.
-    const missing = requiredConfigurationForSingle(session.metadata);
+    const missing = this.fillGeneratable(session, requiredConfigurationForSingle(session.metadata));
     if (missing.length > 0) {
       this.awaitInput(session, { requiredEnv: missing });
       return;
@@ -731,6 +784,7 @@ export class SessionManager extends EventEmitter {
         initialMb: policy.initialMb,
         initialFor: (name) => remembered[name],
         onLaunch: async (service) => {
+          this.recordPhases(session, service.logs, service.name);
           await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand);
         },
         onInstallDied: (service, died) => this.sharedInstallDied(session, service, died),
@@ -777,7 +831,7 @@ export class SessionManager extends EventEmitter {
       session.url = outcome.url;
       session.failure = undefined;
       for (const service of session.run!.services) service.handle.clearStartupBudget?.();
-      this.setState(session, ExecutionState.READY);
+      await this.declareServing(session);
       this.armLifetime(session);
       return;
     }
@@ -1124,7 +1178,7 @@ export class SessionManager extends EventEmitter {
       // moment it elapses — a ten-minute ceiling on a session the lifetime clock
       // believes it has an hour to run.
       handle.clearStartupBudget?.();
-      this.setState(session, ExecutionState.READY);
+      await this.declareServing(session);
       this.armLifetime(session);
       return;
     }
@@ -1590,6 +1644,24 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * The failure a session ended on, classified, once. In `setState` rather than `fail`
+   * because five paths reach FAILED directly.
+   */
+  private recordFailure(session: Session): void {
+    const failure = session.failure;
+    if (!failure || this.failuresRecorded.get(session) === failure) return;
+    this.failuresRecorded.set(session, failure);
+    const described = describeFailure(failure);
+    this.event(session, {
+      event: 'FAILURE_CLASSIFIED',
+      severity: 'error',
+      ...(failure.phase ? { phase: failure.phase } : {}),
+      ...(failure.exitCode !== undefined ? { exitCode: failure.exitCode } : {}),
+      detail: `${failure.code} (${described.category}, ${described.retryable ? 'retryable' : 'not retryable'}): ${failure.message.slice(0, 300)}`,
+    });
+  }
+
+  /**
    * Bound a session that never becomes ready.
    *
    * The lifetime clock starts at READY and the time-to-ready budget belongs to a
@@ -1820,7 +1892,7 @@ export class SessionManager extends EventEmitter {
       session.readyAt = Date.now();
       session.url = outcome.url;
       for (const sv of session.run.services) sv.handle.clearStartupBudget?.();
-      this.setState(session, ExecutionState.READY, 'restarted');
+      await this.declareServing(session, 'restarted');
       this.armLifetime(session);
       return session;
     }
@@ -2075,6 +2147,15 @@ export class SessionManager extends EventEmitter {
     };
     attempts.push(attempt);
     const step = (target.memoryRaises ?? 0) + 1;
+    this.event(session, {
+      event: 'ATTEMPT_STARTED',
+      severity: 'info',
+      phase: 'install',
+      attempt: step,
+      ...(target.service ? { service: target.service } : {}),
+      ...(installCommand ? { command: installCommand } : {}),
+      detail: `memory limit ${memoryMb} MB${note ? ` (${note})` : ''}`,
+    });
     session.logs.buffer.push(
       'stdout',
       `[install] ${target.service ? `${target.service} · ` : ''}Attempt ${step}/${policy.retryLimit + 1}` +
@@ -2269,6 +2350,248 @@ export class SessionManager extends EventEmitter {
     this.startupBounds.delete(id);
   }
 
+  /**
+   * Generate the secrets an application only signs its own things with, and return what is
+   * still missing — each labelled with what kind of thing it is (`classifyEnvVar`).
+   *
+   * `JWT_SECRET`, `SESSION_SECRET`, Django's `SECRET_KEY`: for a local run any random value
+   * works, and asking a person to invent one was a stop with nothing to learn from it. The
+   * value is 32 random bytes, used only in this deployment's environment, and never logged.
+   * A key to someone else's service is never generated: only its owner can get one.
+   */
+  private fillGeneratable(session: Session, missing: RequiredEnvVar[]): RequiredEnvVar[] {
+    const labelled = missing.map((v) => ({ ...v, kind: classifyEnvVar(v.key, v.hasDefault) }));
+    const generate = labelled.filter((v) => v.kind === 'AUTO_GENERATABLE_VALUE');
+    if (generate.length === 0) return labelled;
+    const values = Object.fromEntries(generate.map((v) => [v.key, randomBytes(32).toString('hex')]));
+    if (session.project) {
+      session.project = applyConfiguration(session.project, session.metadata?.services ?? [], values);
+    } else if (session.plan) {
+      session.plan = {
+        ...session.plan,
+        environmentVariables: [
+          ...session.plan.environmentVariables.filter((e) => !(e.key in values)),
+          ...Object.entries(values).map(([key, value]) => ({ key, value, required: true })),
+        ],
+      };
+    }
+    const names = generate.map((v) => v.key).join(', ');
+    session.logs.buffer.push(
+      'stdout',
+      `Generated a random local value for ${names}: ${generate.length === 1 ? 'it signs' : 'they sign'} this ` +
+        'deployment’s own sessions or tokens, and any value works locally. (Not shown.)',
+    );
+    this.event(session, { event: 'ENV_GENERATED', severity: 'info', phase: 'plan', detail: names });
+    return labelled.filter((v) => v.kind !== 'AUTO_GENERATABLE_VALUE');
+  }
+
+  /** Add one event to a session's timeline. */
+  private event(session: Session, e: Omit<DeploymentEvent, 'at'>): void {
+    const added = recordEvent((session.events ??= []), e);
+    this.emit('event', session, added);
+  }
+
+  /** Feed one log's phase markers (install, build, start) into the timeline, once. */
+  private recordPhases(session: Session, logs: LogManager, service: string | undefined): void {
+    if (this.recording.has(logs)) return;
+    this.recording.add(logs);
+    logs.on('sentinel', sentinelRecorder((session.events ??= []), service, (e) => this.emit('event', session, e)));
+  }
+
+  /**
+   * Repairs are recorded wherever they are decided — six places — and each is followed by
+   * a state change. The timeline picks them up there rather than at each site.
+   */
+  private recordNewRepairs(session: Session): void {
+    const repairs = session.repairs ?? [];
+    for (const r of repairs.slice(session.repairsRecorded ?? 0)) {
+      this.event(session, {
+        event: r.type === 'MEMORY_LIMIT_RAISED' || r.type === 'NODE_HEAP_RAISED' ? 'RESOURCE_RETRY' : 'REPAIR_APPLIED',
+        severity: 'warn',
+        phase: 'repair',
+        ...(r.service ? { service: r.service } : {}),
+        detail: `${r.source} ${r.type} for ${r.failureCode}: ${JSON.stringify(r.before)} → ${JSON.stringify(r.after)}`.slice(0, 400),
+      });
+    }
+    session.repairsRecorded = repairs.length;
+  }
+
+  /**
+   * READY, but only on evidence: everything answered, so check that it works end to end
+   * (`SmokeTest`) and declare READY or, naming the check that failed, PARTIALLY_READY.
+   */
+  private async declareServing(session: Session, reason?: string): Promise<void> {
+    if (!this.deps.smokeTest) {
+      this.setState(session, ExecutionState.READY, reason);
+      return;
+    }
+    const docker = this.exec.docker as { execCapture?: (c: unknown, argv: string[]) => Promise<string> } | undefined;
+    const execIn = (container: unknown) =>
+      docker?.execCapture ? (argv: string[]) => docker.execCapture!(container, argv) : undefined;
+    const services: SmokeService[] = session.run
+      ? session.run.services.map((sv) => ({
+          name: sv.name,
+          role: sv.role,
+          ...(sv.url ? { url: sv.url } : {}),
+          runtime: sv.plan.runtime.language,
+          environment: sv.plan.environmentVariables,
+          ...(execIn(sv.handle.container) ? { exec: execIn(sv.handle.container) } : {}),
+        }))
+      : [{
+          name: 'app',
+          ...(session.url ? { url: session.url } : {}),
+          runtime: session.plan?.runtime.language ?? 'node',
+          environment: session.plan?.environmentVariables ?? [],
+          ...(session.handle && execIn(session.handle.container) ? { exec: execIn(session.handle.container) } : {}),
+        }];
+    const backing = (session.run?.backing ?? session.backing?.runs ?? []).filter((b) => b.ready).map((b) => ({ kind: b.kind, alias: b.alias }));
+
+    this.event(session, { event: 'SMOKE_TEST_STARTED', severity: 'info', phase: 'verify' });
+    const verification = await runSmokeTest({ services, backing });
+    session.verification = verification;
+    for (const c of verification.checks) {
+      this.event(session, {
+        event: c.skipped ? 'SMOKE_CHECK_SKIPPED' : c.passed ? 'SMOKE_CHECK_PASSED' : 'SMOKE_CHECK_FAILED',
+        severity: c.skipped ? 'warn' : c.passed ? 'info' : 'error',
+        phase: 'verify',
+        ...(c.service ? { service: c.service } : {}),
+        detail: `${c.name}: ${c.detail}`.slice(0, 300),
+      });
+    }
+    this.event(session, {
+      event: verification.passed ? 'SMOKE_TEST_PASSED' : 'SMOKE_TEST_FAILED',
+      severity: verification.passed ? 'info' : 'error',
+      phase: 'verify',
+      durationMs: verification.durationMs,
+    });
+    if (verification.passed) {
+      session.logs.buffer.push('stdout', `Smoke test passed: ${verification.checks.filter((c) => c.passed).length} check(s).`);
+      this.setState(session, ExecutionState.READY, reason);
+      return;
+    }
+    const failed = verification.checks.filter((c) => !c.passed && !c.skipped);
+    session.failure = {
+      code: FailureCode.APPLICATION_UNHEALTHY,
+      message:
+        `Everything started, but the end-to-end check failed: ${failed.map((c) => c.name).join('; ')}. ` +
+        'A deployment is not reported ready until it works end to end.',
+      evidence: failed[0]!.detail,
+      remedy:
+        failed[0]!.kind === 'dependency'
+          ? 'The application cannot reach a database DevLaunch started for it. Check the connection settings it reads.'
+          : failed[0]!.kind === 'wiring'
+            ? 'The frontend was given an API address that does not answer. Check the API is serving on the port it was given.'
+            : 'A service answered with a server error or not at all. Its log shows why.',
+      confidence: 'high',
+      phase: 'start',
+    };
+    session.logs.buffer.push('stderr', `Smoke test failed: ${failed.map((c) => c.detail).join(' | ')}`);
+    this.setState(session, ExecutionState.PARTIALLY_READY, reason);
+  }
+
+  /** What survives a restart about this session (`DeploymentStore`). */
+  toRecord(session: Session): DeploymentRecord {
+    const services = session.run?.services ?? [];
+    const backing = session.run?.backing ?? session.backing?.runs ?? [];
+    const containerIds = [
+      ...(session.handle ? [session.handle.container.id] : []),
+      ...services.map((sv) => sv.handle?.container.id).filter((id): id is string => Boolean(id)),
+      ...backing.map((b) => b.container.id),
+    ];
+    return {
+      id: session.id,
+      state: session.state,
+      ...(session.repoUrl ? { repoUrl: session.repoUrl } : {}),
+      ...(session.ref ? { ref: session.ref } : {}),
+      ...(session.commit !== undefined ? { commit: session.commit } : {}),
+      ...(session.sourceDir && !session.repoUrl ? { sourceDir: session.sourceDir } : {}),
+      createdAt: session.createdAt,
+      updatedAt: Date.now(),
+      ...(session.readyAt ? { readyAt: session.readyAt } : {}),
+      ...(session.endedReason ? { endedReason: session.endedReason } : {}),
+      ...(session.detected ? { detected: session.detected } : {}),
+      ...(session.url ? { url: session.url } : {}),
+      services: services.map((sv) => ({
+        name: sv.name,
+        role: sv.role,
+        state: sv.state,
+        ...(sv.url ? { url: sv.url } : {}),
+        ...(sv.hostPort ? { hostPort: sv.hostPort } : {}),
+        containerPort: sv.plan.expectedPort,
+        ...(sv.handle ? { containerId: sv.handle.container.id } : {}),
+      })),
+      backing: backing.map((b) => ({ kind: b.kind, alias: b.alias, ready: b.ready, containerId: b.container.id })),
+      containerIds,
+      ...(session.failure ? { failure: describeFailure(session.failure) } : {}),
+      ...(session.repairs?.length ? { repairs: session.repairs } : {}),
+      ...(session.launchAttempts?.length ? { launchAttempts: session.launchAttempts } : {}),
+      events: session.events ?? [],
+      ...(session.verification ? { verification: session.verification } : {}),
+    };
+  }
+
+  /** Write this session's record; one write at a time per session, never throwing. */
+  private persist(session: Session): void {
+    const previous = this.saving.get(session.id) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.store.save(this.toRecord(session)))
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.saving.get(session.id) === next) this.saving.delete(session.id);
+      });
+    this.saving.set(session.id, next);
+  }
+
+  /** Every write started so far, finished. For shutdown and tests. */
+  async flushRecords(): Promise<void> {
+    await Promise.all([...this.saving.values()]);
+  }
+
+  /**
+   * After a restart: a record still in a running state belonged to a process that is gone,
+   * and its containers were removed by the startup sweep. It is marked as interrupted —
+   * FAILED, with the reason — rather than left claiming to run. Returns how many.
+   */
+  async recoverInterrupted(): Promise<number> {
+    let marked = 0;
+    for (const r of await this.store.list()) {
+      if (this.sessions.has(r.id)) continue;
+      if ((TERMINAL_STATES as readonly string[]).includes(r.state)) continue;
+      const at = Date.now();
+      await this.store.save({
+        ...r,
+        state: ExecutionState.FAILED,
+        interrupted: true,
+        updatedAt: at,
+        endedReason: `interrupted by a DevLaunch restart while ${r.state}; its containers were removed`,
+        events: [...r.events, { at, event: 'INTERRUPTED_BY_RESTART', severity: 'error', detail: `was ${r.state}` }],
+      });
+      marked++;
+    }
+    return marked;
+  }
+
+  /** Saved records, newest first: this process's sessions and those from before a restart. */
+  async records(): Promise<DeploymentRecord[]> {
+    await this.flushRecords();
+    return this.store.list();
+  }
+
+  /** Drop a finished deployment: its record, and the session if this process still holds it. */
+  async forget(id: string): Promise<void> {
+    const live = this.sessions.get(id);
+    if (live && !TERMINAL_STATES.includes(live.state)) return;
+    this.sessions.delete(id);
+    await this.flushRecords();
+    await this.store.remove(id);
+  }
+
+  async record(id: string): Promise<DeploymentRecord | undefined> {
+    const live = this.sessions.get(id);
+    if (live) return this.toRecord(live);
+    return this.store.get(id);
+  }
+
   private setState(session: Session, state: ExecutionState, reason?: string): void {
     // Once somebody has ended this session, only ending it may move it.
     //
@@ -2285,9 +2608,21 @@ export class SessionManager extends EventEmitter {
     // finished but whether somebody asked it to.
     if (session.stopped && !ENDING_STATES.includes(state)) return;
 
+    const previous = session.state;
+    const now = Date.now();
     session.state = state;
     if (reason !== undefined) session.endedReason = reason;
+    this.recordNewRepairs(session);
+    if (state === ExecutionState.FAILED) this.recordFailure(session);
+    this.event(session, {
+      event: `STATE_${state}`,
+      severity: state === ExecutionState.FAILED ? 'error' : state === ExecutionState.PARTIALLY_READY ? 'warn' : 'info',
+      ...(session.stateSince !== undefined && previous !== state ? { durationMs: now - session.stateSince, previous } : {}),
+      ...(reason ? { detail: reason } : {}),
+    });
+    session.stateSince = now;
     this.emit('state', session, reason);
+    this.persist(session);
     if (TERMINAL_STATES.includes(state)) {
       this.clearStartupBound(session.id);
       this.evictFinished();

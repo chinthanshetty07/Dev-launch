@@ -1,5 +1,6 @@
+// First, before any module that reads a setting: see loadEnv.ts.
+import './loadEnv.js';
 import { createServer } from 'node:http';
-import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createApp } from './api/app.js';
@@ -8,6 +9,7 @@ import { DockerManager } from './services/docker/DockerManager.js';
 import { ExecutionManager } from './services/execution/ExecutionManager.js';
 import { SessionManager } from './services/session/SessionManager.js';
 import { FileHints } from './services/execution/MemoryHints.js';
+import { FileDeploymentStore } from './services/session/DeploymentStore.js';
 import { GitManager } from './services/git/GitManager.js';
 import { RepositoryAnalyzer } from './services/analysis/RepositoryAnalyzer.js';
 import { RuleBasedPlanner } from './services/planning/RuleBasedPlanner.js';
@@ -24,25 +26,6 @@ const EGRESS_RECHECK_MS = 5 * 60 * 1000;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/**
- * Minimal .env loader.
- *
- * Node 20 has no built-in loader and dotenv would be a dependency for six lines. Values
- * already present in the environment win, so an explicit export always beats the file.
- */
-function loadDotEnv(): void {
-  const file = resolve(HERE, '../../../.env');
-  if (!existsSync(file)) return;
-  for (const line of readFileSync(file, 'utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq <= 0) continue;
-    const key = trimmed.slice(0, eq).trim();
-    if (process.env[key] !== undefined) continue;
-    process.env[key] = trimmed.slice(eq + 1).trim();
-  }
-}
 
 /**
  * The address the HTTP API and the log socket listen on.
@@ -67,6 +50,10 @@ function loadDotEnv(): void {
  * variable but silently ignores the same line in `.env`. For a security default that
  * asymmetry is a trap, so this reads the environment when it is asked, exactly as
  * `GroqProvider.isConfigured()` does.
+ *
+ * (Since 2026-10-04 `.env` is loaded before any module is evaluated — `loadEnv.ts` is
+ * this file's first import — so the trap is closed at its source. Reading at call time
+ * stays: it is still the simplest thing that is obviously right.)
  */
 export function bindHost(env: NodeJS.ProcessEnv = process.env): string {
   const requested = env.DEVLAUNCH_HOST?.trim();
@@ -159,7 +146,6 @@ export interface ServerOptions {
 }
 
 export async function startServer(port = 0, opts: ServerOptions = {}): Promise<StartedServer> {
-  loadDotEnv();
   installRejectionHandler();
 
   const docker = new DockerManager();
@@ -187,6 +173,10 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     aiRepair: provider ? new AIRepair(provider) : undefined,
     // What each repository needed last time, so its next run starts there.
     memoryHints: FileHints.fromEnv(),
+    // Each deployment's record, so a restart does not erase what ran and why.
+    deploymentStore: FileDeploymentStore.fromEnv(),
+    // READY only on evidence: the end-to-end check runs before it is declared.
+    smokeTest: true,
   });
 
   // Sweep before accepting traffic.
@@ -199,6 +189,9 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
   // containers nothing will claim, and this process is not yet running anything.
   const swept = await CleanupManager.sweepAllOrphans(docker).catch(() => 0);
   if (swept > 0) console.log(`Removed ${swept} container(s) orphaned by a previous run.`);
+  // Their deployments' records still claim to be running: say what happened to them.
+  const interrupted = await sessions.recoverInterrupted().catch(() => 0);
+  if (interrupted > 0) console.log(`Marked ${interrupted} deployment(s) interrupted by the last restart.`);
 
   // Volumes too, which nothing reaped until 99 of them had accumulated. Same moment and
   // the same reasoning as the container sweep: at startup nothing here is mid-run.
@@ -285,6 +278,7 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     close: async () => {
       sockets.close();
       await sessions.shutdown();
+      await sessions.flushRecords();
       // A crashed or killed backend can still leave containers behind.
       await CleanupManager.sweepOrphans(docker).catch(() => 0);
       await new Promise<void>((r) => http.close(() => r()));

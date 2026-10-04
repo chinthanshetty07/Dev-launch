@@ -8,6 +8,7 @@ import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 import { TERMINAL_STATES, type BackingView, type ServiceView } from '@devlaunch/shared';
 import { buildStamp } from '../services/build/BuildStamp.js';
 import { normaliseRef, normaliseRepoUrl, splitRepoInput } from '../services/git/GitManager.js';
+import { registerDeploymentRoutes } from './deployments.js';
 
 export interface AppOptions {
   sessions: SessionManager;
@@ -97,6 +98,8 @@ function present(session: Session, sessions?: Pick<SessionManager, 'installSumma
     /** The routes the application declares, so an API's URL is not a blank 404. */
     routes: session.metadata?.httpRoutes,
     readiness: session.readiness,
+    /** The end-to-end check READY waited for: every check, passed or not, with what it saw. */
+    verification: session.verification,
     endedReason: session.endedReason,
     createdAt: session.createdAt,
     readyAt: session.readyAt,
@@ -372,6 +375,8 @@ export function createApp(opts: AppOptions): Express {
     await opts.sessions.cancel(session.id);
     res.json({ id: session.id, state: session.state });
   });
+
+  registerDeploymentRoutes(app, { sessions: opts.sessions, fixturesDir: opts.fixturesDir });
 
   // Single-page app fallback: anything not an API route serves index.html, so a page
   // refresh does not 404.

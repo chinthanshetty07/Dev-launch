@@ -89,8 +89,15 @@ function suppliedKeys(
  * of them quietly meaning something narrower.
  */
 export function requiredConfigurationForSingle(meta: RepositoryMetadata): RequiredEnvVar[] {
+  // A database DevLaunch starts is injected under every name the application reads it by,
+  // and the injected value wins. Asking for it as well asked a person for a value that was
+  // then thrown away — the project path already knew; this path did not.
+  const provisioned = new Set<string>();
+  for (const need of meta.backing ?? []) {
+    for (const key of need.urlEnvKeys ?? (need.urlEnvKey ? [need.urlEnvKey] : [])) provisioned.add(key);
+  }
   return (meta.envExample ?? [])
-    .filter((v) => !v.hasDefault && !ALWAYS_SUPPLIED.includes(v.key))
+    .filter((v) => !v.hasDefault && !ALWAYS_SUPPLIED.includes(v.key) && !provisioned.has(v.key))
     .map((v) => ({ key: v.key, hasDefault: false }));
 }
 

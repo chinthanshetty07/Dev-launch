@@ -29,7 +29,7 @@ function newManager(): SessionManager {
 /**
  * Answer the configuration gate, if the project stops at one.
  *
- * The fixture's backend declares APP_SECRET with no value and refuses to start without
+ * The fixture's backend declares PAYMENT_API_KEY with no value and refuses to start without
  * it, so every test that expects a running project has to supply it — which is the gate
  * doing its job rather than an inconvenience.
  */
@@ -40,7 +40,7 @@ async function resolveGate(sessions: SessionManager, id: string): Promise<void> 
     ExecutionState.FAILED,
   ]);
   if (sessions.get(id)?.state !== ExecutionState.AWAITING_INPUT) return;
-  await sessions.resolve(id, { env: { APP_SECRET: 'supplied-by-the-test' } });
+  await sessions.resolve(id, { env: { PAYMENT_API_KEY: 'supplied-by-the-test' } });
 }
 
 async function until(
@@ -287,8 +287,12 @@ describe('a repository made of several services', () => {
     expect(await until(sessions, s.id, [ExecutionState.AWAITING_INPUT, ExecutionState.FAILED])).toBe(
       ExecutionState.AWAITING_INPUT,
     );
+    // Rewritten, not flipped: the fixture's variable was APP_SECRET, which DevLaunch now
+    // generates (it only signs the app's own things). The case this test exists for — a
+    // secret beside one service, asked for and delivered to that process — needs a key
+    // only its owner has, so the fixture declares PAYMENT_API_KEY instead.
     expect(s.pending?.requiredEnv).toEqual([
-      { key: 'APP_SECRET', hasDefault: false, service: 'backend' },
+      { key: 'PAYMENT_API_KEY', hasDefault: false, service: 'backend', kind: 'REQUIRED_SECRET' },
     ]);
 
     // And nothing DevLaunch supplies itself: the database URL, the sibling addresses and
@@ -298,7 +302,7 @@ describe('a repository made of several services', () => {
     expect(asked).not.toContain('CORS_ORIGIN');
     expect(asked).not.toContain('PORT');
 
-    await sessions.resolve(s.id, { env: { APP_SECRET: 'from-the-gate' } });
+    await sessions.resolve(s.id, { env: { PAYMENT_API_KEY: 'from-the-gate' } });
     expect(await until(sessions, s.id, [ExecutionState.READY, ExecutionState.FAILED])).toBe(
       ExecutionState.READY,
     );
