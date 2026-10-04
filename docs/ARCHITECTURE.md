@@ -1,5 +1,15 @@
 # Architecture
 
+> **At a glance (2026-10-04).** One backend process (Express, TypeScript) drives Docker.
+> `SessionManager` runs each deployment through clone → analyse → plan → validate →
+> provision → start → readiness → **end-to-end check** → READY, with bounded repair in
+> between. Every deployment has a timeline of events and a record saved in
+> `~/.devlaunch/deployments/`, which survives a restart. The dashboard (React) follows a
+> deployment over `/api/sessions` and a WebSocket; scripts and other clients use
+> `/api/deployments`. Everything a repository runs is inside a hardened container
+> (`SECURITY.md`). Flow: `DEPLOYMENT_FLOW.md`; repairs: `REPAIR_ENGINE.md`; what runs:
+> `SUPPORTED_STACKS.md`; the audit this summary comes from: `DEVLAUNCH_AUDIT.md`.
+
 DevLaunch answers one question: *how should an unfamiliar software project be run, and
 did it actually work?*
 

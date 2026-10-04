@@ -69,6 +69,7 @@ reproduces the one behaviour at issue, quoted from the real tool in its source.
 | `node-workspace-one-app` | `dan5py/turborepo-shadcn-ui`: a pnpm workspace whose one runnable package imports a sibling through `workspace:*` |
 | `node-ts-type-error` | A TypeScript server with a type error that does not matter at run time, under ts-node. Reported as not compiling, quoting the error line, then retried once with `TS_NODE_TRANSPILE_ONLY=true`, after which it serves |
 | `python-fastapi-https` | A FastAPI app that refuses plain HTTP, whose README runs uvicorn with `--ssl-certfile`/`--ssl-keyfile`. Served over HTTPS with a throwaway certificate the test makes, so no key is committed |
+| `node-nodemon-crash` | A TypeScript server with a type error, under nodemon: the container stays up after the crash. DevLaunch must stop waiting on `[nodemon] app crashed` and then repair it |
 | `static-site` | `mdn/beginner-html-site-styled`: an `index.html` with no manifest, which passed only when a model planned it. It has no `favicon.ico`, and the browser's request for one gets 204 from DevLaunch's static server, not a 404 in the console |
 | `static-site-favicon` | A static page that ships its own `favicon.ico`, which must be served unchanged — the 204 is only for a site without one |
 | `python-poetry-ranges` | `nsidnev/fastapi-realworld-example-app`: a Poetry project that is not a buildable package, whose code needs the major version its manifest pins (`flask = "^2.3"`), and refuses Flask 3 — as nsidnev's needed pydantic 1. Needs PyPI |

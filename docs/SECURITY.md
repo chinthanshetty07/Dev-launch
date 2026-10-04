@@ -1,5 +1,15 @@
 # Security
 
+> **At a glance.** Every repository runs in a container that is non-root, has a read-only
+> root file system, no Linux capabilities, `no-new-privileges`, memory/CPU/process limits,
+> no Docker socket, and sits on a network that cannot reach your LAN, cloud metadata or the
+> VM itself. DevLaunch's own secrets never enter a container. Plans — from rules or a model —
+> pass a command allowlist and a denylist of environment variables that load code
+> (`NODE_OPTIONS`, `LD_*`, `PYTHON*`, `TS_NODE_COMPILER`…). A repository's own Dockerfile
+> and compose file are never executed, only read. Only public `https://github.com` URLs are
+> accepted, with size and time limits. Deployment records are readable only by you. Details
+> and the tests that prove each control follow.
+
 DevLaunch runs code written by strangers. This document states the threat model, what is
 actually enforced, and — equally important — what is not.
 

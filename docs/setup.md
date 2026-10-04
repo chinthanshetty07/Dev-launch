@@ -103,11 +103,12 @@ Everything is optional; defaults live in `apps/backend/src/config`.
 | `DEVLAUNCH_MEMORY_RETRY_ENABLED` | true | Retry an out-of-memory kill with more memory |
 | `DEVLAUNCH_MEMORY_RETRY_LIMIT` | 2 | Memory raises after the first attempt (0–5) |
 | `DEVLAUNCH_MEMORY_STEP_MB` | (double) | A fixed increment instead of doubling (≥ 64) |
-| `DEVLAUNCH_STATE_DIR` | `~/.devlaunch` | Where `memory-hints.json` keeps how much memory each repository needed last time |
+| `DEVLAUNCH_STATE_DIR` | `~/.devlaunch` | Where deployment records (`deployments/`) and `memory-hints.json` are kept |
+| `DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS` | 1 | Deployments at once (also read as `DEVLAUNCH_MAX_CONCURRENT_SESSIONS`). Raise only with a larger Docker VM |
+| `DEVLAUNCH_ENV_FILE` | `.env` at the repository root | Another file to load settings from (the doctor and tests use it) |
 | `DEVLAUNCH_MEMORY_RESERVE_MB` | 512 | VM memory never promised to containers |
 | `DEVLAUNCH_CONTAINER_CPUS` | 2 | Per-container CPU limit |
 | `DEVLAUNCH_CONTAINER_PIDS_LIMIT` | 256 | Fork-bomb ceiling |
-| `DEVLAUNCH_MAX_CONCURRENT_SESSIONS` | 1 | Raise only with a larger VM |
 | `DEVLAUNCH_NETWORK` | `devlaunch-net` | Network carrying the egress policy |
 | `DEVLAUNCH_REPO_MAX_BYTES` | 500 MB | Clone size cap |
 | `DEVLAUNCH_REPO_MAX_FILES` | 20000 | Clone file-count cap |

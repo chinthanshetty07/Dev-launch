@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-10-04 — Production audit: evidence-based READY, records, a deployment API, a doctor
+
+A full audit against a production brief, written up as `docs/DEVLAUNCH_AUDIT.md` and used
+as the checklist: every finding has a severity, why it happened, what it broke, the fix and
+the test. Done in this pass:
+
+- **READY only on evidence (A1, critical).** After readiness, an end-to-end check: every
+  service answers without a server error; every API address a frontend was given answers;
+  every service reaches every database DevLaunch started for it, from inside its own
+  container. A failed check is `PARTIALLY_READY` + `APPLICATION_UNHEALTHY`, naming it.
+  Verified on real Node and Python containers against MongoDB and Postgres.
+- **A crash a watcher hides ends the wait (A2).** `[nodemon] app crashed`, `Unable to compile
+  TypeScript`, `EADDRINUSE`: no more polling for the whole readiness budget (a 5-minute
+  budget: first try now ends in seconds).
+- **Case-only import mismatches are named before the run (A3).**
+- **Every failure is classified (B1):** category, retryable, recoverable and a next step,
+  from one typed table that every failure code must appear in.
+- **Deployment records survive a restart (C1).** `~/.devlaunch/deployments/<id>.json`,
+  owner-only; interrupted deployments are marked as such at startup.
+- **A timeline per deployment (D1):** clone, plan, install/build/start per container, repairs,
+  memory retries, the smoke checks and the final state, with durations; never env values.
+- **`/api/deployments` (E1):** create, list, detail (identity, URLs, durations, failure,
+  repairs, checks), events, logs, services, health (re-probed), cancel, retry, delete — one
+  error shape everywhere.
+- **The dashboard shows which code is running** (branch, commit, deployment id), the
+  end-to-end checks, and what each requested variable is (C2).
+- **`./devlaunch` and `./devlaunch doctor` (F1);** README rewritten for a fresh machine and the
+  named docs written (F2); verified by following only the README in a clean copy.
+- **Settings in `.env` were silently ignored (F4, high).** `.env` loaded after the config
+  module read its settings; now loaded by the server's first import.
+- **Concurrency limit read when used**, so `.env` honours it (F3); two deployments at once
+  verified on real Docker to share nothing.
+- **Configuration needs are classified (G1).** Self-signing secrets (`JWT_SECRET`,
+  `SECRET_KEY`…) are generated; outside-service keys are asked for, labelled, never invented;
+  a database address DevLaunch provides is no longer asked for (a single-app bug).
+- **`TS_NODE_COMPILER` / `TS_NODE_TRANSPILER` denied (H1),** like `NODE_OPTIONS`.
+- **Unsupported runtimes declined precisely (I1, part):** Java, Go, Rust, PHP, Ruby, .NET,
+  Elixir, Deno — named, never handed to a model.
+
+Declined, with reasons in the audit: executing a repository's own Dockerfile or compose file
+(outside the sandbox and the network policy), private repositories, host execution. Not
+done yet: other runtimes' images, migrations beyond Django, RabbitMQ/Kafka/Elasticsearch,
+browser-driven smoke tests.
+
+Tests: 43 mutations, all caught; real-Docker tests for every behaviour that touches
+containers; fixture `node-fullstack`'s secret renamed to `PAYMENT_API_KEY` (APP_SECRET is now
+generated); new fixtures `node-nodemon-crash`.
+
 ## 2026-10-01 — Say when a repository's code is in links nobody can fetch
 
 `RefugioDiaz1/fullstack-docker-react-node-postgres` has `client` and `server` recorded by
