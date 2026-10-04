@@ -22,6 +22,7 @@ import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { FailureClassifier } from '../failures/FailureClassifier.js';
 import { MemoryBudget, containerCapacityMb } from './MemoryPolicy.js';
 import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
+import { definitiveStartFailure } from '../failures/DefinitiveStart.js';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { readCapped } from '../analysis/readCapped.js';
 import { pyprojectRequirements } from '../analysis/ServiceDiscovery.js';
@@ -882,7 +883,12 @@ export class ExecutionManager {
       // Polling a container that has already died just burns the whole budget — but
       // only abort when we *know* it is gone. An inspect failure means unknown, and
       // aborting on unknown would cut readiness short for a healthy application.
-      abortIf: async () => (await this.containerState(container))?.running === false,
+      // And once the application has said it gave up, even though a watcher keeps the
+      // container alive (`DefinitiveStart`).
+      abortIf: async () =>
+        (logs !== undefined && sentinels.has(Sentinel.START_BEGIN) &&
+          definitiveStartFailure(phaseLog(logs, 'start').map((e) => e.text)) !== undefined) ||
+        (await this.containerState(container))?.running === false,
     });
 
     if (readiness.ready) {

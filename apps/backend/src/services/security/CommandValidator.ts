@@ -169,6 +169,9 @@ const CODE_INJECTING_ENV_KEYS: ReadonlySet<string> = new Set([
   'PATH', 'IFS',
   // Node
   'NODE_OPTIONS', 'NODE_PATH', 'NODE_REPL_EXTERNAL_MODULE',
+  // ts-node loads these by name before the application's first line, as NODE_OPTIONS
+  // `--require` does. TS_NODE_TRANSPILE_ONLY, which a repair sets, loads nothing.
+  'TS_NODE_COMPILER', 'TS_NODE_TRANSPILER',
   // Dynamic linker (Linux and macOS)
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT',
   'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',

@@ -1,3 +1,4 @@
+import { foreignRuntimeReason } from '../analysis/ForeignRuntimes.js';
 import type {
   EnvVar,
   PackageJsonSummary,
@@ -387,6 +388,12 @@ export class RuleBasedPlanner {
           planSource: 'rule-based',
         }),
       };
+    }
+
+    // Nothing DevLaunch runs is here, and something it does not run is.
+    const foreign = !meta.packageJson && !meta.python ? meta.foreignRuntimes ?? [] : [];
+    if (foreign.length > 0) {
+      return { plan: null, detected: null, unrunnable: true, ...foreignRuntimeReason(foreign), warnings };
     }
 
     return {

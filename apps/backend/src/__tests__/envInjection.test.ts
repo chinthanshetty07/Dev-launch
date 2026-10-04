@@ -62,3 +62,13 @@ describe('environment variable injection', () => {
     expect(env).toContain('PORT=9999');
   });
 });
+
+describe('ts-node variables that load code by name', () => {
+  it('are refused from every plan, as NODE_OPTIONS is', async () => {
+    const { validateEnvVarKey } = await import('../services/security/CommandValidator.js');
+    expect(() => validateEnvVarKey('TS_NODE_COMPILER')).toThrow();
+    expect(() => validateEnvVarKey('TS_NODE_TRANSPILER')).toThrow();
+    // The repair's own switch loads nothing, and stays allowed.
+    expect(validateEnvVarKey('TS_NODE_TRANSPILE_ONLY')).toBe('TS_NODE_TRANSPILE_ONLY');
+  });
+});

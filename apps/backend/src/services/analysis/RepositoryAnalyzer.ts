@@ -1,6 +1,8 @@
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { caseMismatchWarning, findCaseMismatches } from './CaseImports.js';
+import { foreignRuntimes } from './ForeignRuntimes.js';
 import { dirname, join, relative } from 'node:path';
 import type {
   BackingService,
@@ -210,6 +212,10 @@ export class RepositoryAnalyzer {
     const submodulesWithoutSource = gitlinks.filter((p) => !declaredSubmodules.includes(p));
     const submodules = [...declaredSubmodules, ...submodulesWithoutSource];
     if (submodules.length) warnings.push(submoduleWarning(submodules));
+    // Once, for the whole repository: an import that only resolves on a case-insensitive
+    // file system breaks here whichever service contains it.
+    const caseMismatches = subdir === '.' ? await findCaseMismatches(root) : [];
+    if (caseMismatches.length) warnings.push(caseMismatchWarning(caseMismatches));
 
     return {
       root: base,
@@ -225,6 +231,8 @@ export class RepositoryAnalyzer {
       ...(fileNames.includes('index.html') ? { staticIndex: true } : {}),
       ...(submodules.length ? { submodules } : {}),
       ...(submodulesWithoutSource.length ? { submodulesWithoutSource } : {}),
+      ...(caseMismatches.length ? { caseMismatches } : {}),
+      ...(foreignRuntimes(fileNames).length ? { foreignRuntimes: foreignRuntimes(fileNames) } : {}),
       python,
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       readmeExcerpt: readme,
