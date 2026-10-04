@@ -11,6 +11,7 @@
     "typecheck": "pnpm -r typecheck",
     "build": "pnpm --filter @devlaunch/frontend build",
     "dev": "pnpm --filter @devlaunch/frontend dev",
-    "serve": "pnpm --filter @devlaunch/backend start"
+    "serve": "pnpm --filter @devlaunch/backend start",
+    "doctor": "node scripts/doctor.mjs"
   }
 }

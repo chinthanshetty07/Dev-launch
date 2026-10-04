@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# DevLaunch's one command. Run ./devlaunch help for the list.
+set -euo pipefail
+cd "$(dirname "$0")"
+API="${DEVLAUNCH_API:-http://127.0.0.1:3939}"
+
+usage() {
+  cat <<'USAGE'
+Usage: ./devlaunch <command>
+
+  install              Install dependencies, build the runner images, set up the protected network
+  doctor               Check this machine is ready, and say how to fix what is not
+  start                Build the dashboard and start DevLaunch on http://127.0.0.1:3939
+  deploy <url> [ref]   Deploy a GitHub repository and follow it until it is ready or fails
+  status [id]          List deployments, or show one
+  logs <id>            Print a running deployment's logs
+  stop <id>            Stop a deployment and remove its containers
+  test [--all]         Typecheck and run the tests (--all adds the Docker tests, ~10 min)
+  clean [--caches]     Remove DevLaunch's leftover containers and workspaces (--caches: download caches too)
+USAGE
+}
+
+need_api() {
+  curl -sf "$API/api/health" >/dev/null || { echo "DevLaunch is not running. Start it with: ./devlaunch start" >&2; exit 1; }
+}
+
+json() { node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);$1})"; }
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  install)
+    corepack enable >/dev/null 2>&1 || true
+    pnpm install
+    bash scripts/build-runner-images.sh
+    bash scripts/setup-network-policy.sh || echo "! Network policy not installed; run scripts/setup-network-policy.sh once Docker is up."
+    node scripts/doctor.mjs || true
+    ;;
+  doctor)
+    node scripts/doctor.mjs
+    ;;
+  start)
+    pnpm build
+    exec pnpm serve
+    ;;
+  deploy)
+    [ $# -ge 1 ] || { echo "Usage: ./devlaunch deploy https://github.com/owner/repo [ref]" >&2; exit 2; }
+    need_api
+    body=$(node -e 'const [u,r]=process.argv.slice(1);process.stdout.write(JSON.stringify(r?{repoUrl:u,ref:r}:{repoUrl:u}))' "$1" "${2:-}")
+    created=$(curl -s -X POST "$API/api/deployments" -H 'content-type: application/json' -d "$body")
+    id=$(printf '%s' "$created" | json 'if(!j.id){console.error(j.error?.message??JSON.stringify(j));process.exit(1)};console.log(j.id)')
+    echo "Deployment $id"
+    last=""
+    while :; do
+      d=$(curl -s "$API/api/deployments/$id")
+      state=$(printf '%s' "$d" | json 'console.log(j.state)')
+      [ "$state" != "$last" ] && echo "  $(date +%H:%M:%S) $state" && last="$state"
+      case "$state" in
+        READY|PARTIALLY_READY|FAILED|CANCELLED|COMPLETED|AWAITING_INPUT)
+          printf '%s' "$d" | json '
+            if (j.primaryUrl) console.log("URL:", j.primaryUrl);
+            for (const [n,u] of Object.entries(j.serviceUrls??{})) console.log("  "+n+":", u);
+            if (j.verification) console.log("End-to-end check:", j.verification.passed ? "passed" : "FAILED", "("+j.verification.checks.length+" check"+(j.verification.checks.length===1?"":"s")+")");
+            if (j.failure) console.log("Problem:", j.failure.code+" ("+j.failure.category+")", "-", j.failure.message, "\nNext step:", j.failure.suggestedAction);
+            if (j.pendingInput) console.log("Needs:", j.pendingInput.requiredEnv.map(v=>v.key+" ("+(v.kind??"setting")+")").join(", "), "- supply them in the dashboard");'
+          [ "$state" = READY ] && exit 0 || exit 1 ;;
+      esac
+      sleep 2
+    done
+    ;;
+  status)
+    need_api
+    if [ $# -ge 1 ]; then curl -s "$API/api/deployments/$1" | json 'console.log(JSON.stringify(j,null,2))'
+    else curl -s "$API/api/deployments" | json 'for (const d of j.deployments) console.log(d.id.slice(0,8), d.state.padEnd(16), (d.commit??"").slice(0,7).padEnd(8), d.repository??"(local)", d.primaryUrl??"")'
+    fi
+    ;;
+  logs)
+    [ $# -ge 1 ] || { echo "Usage: ./devlaunch logs <id>" >&2; exit 2; }
+    need_api
+    curl -s "$API/api/deployments/$1/logs?limit=10000" | json 'if(j.error){console.error(j.error.message);process.exit(1)};for (const e of j.entries) console.log(e.text)'
+    ;;
+  stop)
+    [ $# -ge 1 ] || { echo "Usage: ./devlaunch stop <id>" >&2; exit 2; }
+    need_api
+    curl -s -X POST "$API/api/deployments/$1/cancel" | json 'console.log(j.error ? j.error.message : (j.id+" "+j.state))'
+    ;;
+  test)
+    pnpm typecheck
+    if [ "${1:-}" = "--all" ]; then
+      pnpm test
+    else
+      pnpm --filter @devlaunch/shared test
+      pnpm --filter @devlaunch/frontend test
+      (cd apps/backend && ./node_modules/.bin/vitest run --exclude '**/integration/**')
+    fi
+    ;;
+  clean)
+    if curl -sf "$API/api/health" >/dev/null 2>&1; then
+      echo "DevLaunch is running; stop it first so nothing it is using is removed." >&2; exit 1
+    fi
+    ids=$(docker ps -aq --filter label=com.devlaunch.managed=true)
+    [ -n "$ids" ] && docker rm -f $(echo $ids) >/dev/null && echo "Removed $(echo $ids | wc -w | tr -d ' ') container(s)." || echo "No containers to remove."
+    vols=$(docker volume ls -q --filter label=com.devlaunch.workspace=true)
+    [ -n "$vols" ] && docker volume rm $(echo $vols) >/dev/null && echo "Removed $(echo $vols | wc -w | tr -d ' ') workspace volume(s)." || echo "No workspace volumes to remove."
+    if [ "${1:-}" = "--caches" ]; then
+      caches=$(docker volume ls -q --filter label=com.devlaunch.cache=true)
+      [ -n "$caches" ] && docker volume rm $(echo $caches) >/dev/null && echo "Removed $(echo $caches | wc -w | tr -d ' ') download cache(s)." || echo "No caches to remove."
+    fi
+    ;;
+  help|-h|--help) usage ;;
+  *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;
+esac

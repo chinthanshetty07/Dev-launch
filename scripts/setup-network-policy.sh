@@ -70,4 +70,8 @@ echo "    installed (input):"
 iptables -L DEVLAUNCH-IN -n | sed 's/^/      /'
 SCRIPT
 
-echo "==> Done. Set DEVLAUNCH_NETWORK=${NETWORK_NAME} for the backend to use it."
+if [ "${NETWORK_NAME}" = "devlaunch-net" ]; then
+  echo "==> Done. The backend uses ${NETWORK_NAME} by default."
+else
+  echo "==> Done. Set DEVLAUNCH_NETWORK=${NETWORK_NAME} in .env for the backend to use it."
+fi
