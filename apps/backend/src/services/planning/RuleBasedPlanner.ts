@@ -853,13 +853,28 @@ export function portFor(
   return meta.declaredPort ?? fallback;
 }
 
+/** A route that says only "this process is up". */
+const LIVENESS = /\/(?:health|healthz|healthcheck|health-check|livez|liveness|ping)$/i;
+
+/**
+ * A route that answers for the process *and everything it depends on*.
+ *
+ * Kubernetes' `/readyz` convention: `techiescamp/kubernetes-ai-projects` answers it by
+ * calling the cluster's API, so outside a cluster it is 503 forever, and as the
+ * shortest route it was chosen as the health check — a service that had started fine
+ * would have waited out the whole readiness budget.
+ */
+const READINESS = /\/(?:readyz|ready|readiness)$/i;
+
 export function healthPathFor(meta: RepositoryMetadata): string {
   const routes = meta.httpRoutes ?? [];
   if (routes.length === 0) return '/';
   const gets = routes.filter((r) => r.method === 'GET');
   if (gets.some((r) => r.path === '/')) return '/';
   const concrete = gets.filter((r) => !/[:{}<>*]/.test(r.path)).sort((a, b) => a.path.length - b.path.length);
-  return concrete[0]?.path ?? '/';
+  const live = concrete.find((r) => LIVENESS.test(r.path));
+  if (live) return live.path;
+  return (concrete.find((r) => !READINESS.test(r.path)) ?? concrete[0])?.path ?? '/';
 }
 
 /**

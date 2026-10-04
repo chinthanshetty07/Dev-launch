@@ -84,8 +84,24 @@ export function parseEnvExample(content: string): EnvExampleVar[] {
     const value = line.slice(eq + 1).trim();
     const optional = notes.some((note) => OPTIONAL_COMMENT.test(note));
     // A placeholder is a request with the answer's shape written in, not an answer.
-    out.push({ key, hasDefault: (value.length > 0 && !isPlaceholder(value)) || optional });
+    const real = value.length > 0 && !isPlaceholder(value);
+    const shipped = real ? exampleValue(value) : '';
+    out.push({
+      key,
+      hasDefault: real || optional,
+      ...(shipped ? { value: shipped } : {}),
+    });
     notes = [];
   }
   return out;
+}
+
+/**
+ * The value dotenv would read: quotes removed, and for an unquoted value, a trailing
+ * ` # comment` dropped.
+ */
+export function exampleValue(raw: string): string {
+  const quoted = /^(["'])(.*)\1$/.exec(raw);
+  if (quoted) return quoted[2]!;
+  return raw.replace(/\s+#.*$/, '').trim();
 }

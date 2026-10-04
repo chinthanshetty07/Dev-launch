@@ -323,6 +323,13 @@ export interface PythonEntry {
 export interface EnvExampleVar {
   key: string;
   hasDefault: boolean;
+  /**
+   * The value the file ships, when it is a real one rather than a placeholder.
+   *
+   * What a person gets by following the README's `cp .env.example .env`, and what an
+   * application reading `os.environ["AWS_REGION"]` dies without.
+   */
+  value?: string;
 }
 
 export interface WorkspaceSummary {

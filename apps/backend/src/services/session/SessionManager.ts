@@ -33,8 +33,11 @@ import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
 import type { ProjectPlanner } from '../planning/ProjectPlanner.js';
 import {
   applyConfiguration,
+  projectWithExampleDefaults,
+  provisionedKeys,
   requiredConfiguration,
   requiredConfigurationForSingle,
+  withExampleDefaults,
 } from '../planning/RequiredConfiguration.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { lastErrorLine, phaseLog } from '../execution/ExecutionManager.js';
@@ -54,7 +57,7 @@ import { recordEvent, sentinelRecorder, type DeploymentEvent } from './Deploymen
 import { runSmokeTest, type SmokeService, type Verification } from '../verification/SmokeTest.js';
 import { InMemoryDeploymentStore, type DeploymentRecord, type DeploymentStore } from './DeploymentStore.js';
 import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
-import { impossibleCommand } from '../planning/Feasibility.js';
+import { impossibleCommand, missingEntryFile } from '../planning/Feasibility.js';
 import {
   applySourceRewrites,
   databaseUrlRewrite,
@@ -519,7 +522,11 @@ export class SessionManager extends EventEmitter {
       for (const w of project.warnings) session.logs.buffer.push('stderr', `warning: ${w}`);
 
       if (project.plan) {
-        session.project = project.plan;
+        session.project = projectWithExampleDefaults(
+          project.plan,
+          session.metadata.services ?? [],
+          session.metadata.backing ?? [],
+        );
         session.detected = `project:${project.plan.services.map((sv) => sv.role).join('+')}`;
         // Carried, not only logged. The single-service path has always set this and the
         // dashboard has always rendered it, so a project was the one shape whose
@@ -663,6 +670,15 @@ export class SessionManager extends EventEmitter {
     session.planMetadata =
       runsIn === '.' ? undefined : await analyzer.analyze(session.sourceDir ?? dir, runsIn);
 
+    if (session.plan) {
+      const read = session.planMetadata ?? session.metadata;
+      session.plan = withExampleDefaults(
+        session.plan,
+        read.envExample ?? [],
+        provisionedKeys([...(session.metadata.backing ?? []), ...(session.planMetadata?.backing ?? [])]),
+      );
+    }
+
     // Pre-flight gate: ask for configuration before building a container that would
     // only crash for want of it.
     const missing = this.fillGeneratable(session, requiredConfigurationForSingle(session.metadata));
@@ -756,7 +772,7 @@ export class SessionManager extends EventEmitter {
         image: imageForRuntime(plan.runtime.language, plan.runtime.version),
       });
       const found = session.metadata?.services?.find((c) => c.dir === plan.workingDirectory);
-      if (found && this.refuseImpossiblePlan(session, plan, found.scripts)) return;
+      if (await this.refuseImpossiblePlan(session, plan, found?.scripts, sourceDir)) return;
     }
 
     this.setState(session, ExecutionState.STARTING);
@@ -1086,7 +1102,7 @@ export class SessionManager extends EventEmitter {
     // One gate for every plan, whatever produced it.
     this.validator.validate({ plan, image });
     const manifest = (session.planMetadata ?? session.metadata)?.packageJson?.scripts;
-    if (this.refuseImpossiblePlan(session, plan, manifest && Object.keys(manifest))) return;
+    if (await this.refuseImpossiblePlan(session, plan, manifest && Object.keys(manifest), sourceDir)) return;
 
     // A single service needs its database as much as a project does. Until this ran
     // here, a lone API detected as needing Postgres was started with no server and no
@@ -1301,12 +1317,14 @@ export class SessionManager extends EventEmitter {
    * unusable plan is not asked again, and a *rule* producing one is a bug here rather
    * than in the repository, so it should be loud rather than retried.
    */
-  private refuseImpossiblePlan(
+  private async refuseImpossiblePlan(
     session: Session,
     plan: RunPlan,
     declaredScripts: readonly string[] | undefined,
-  ): boolean {
-    const problem = impossibleCommand(plan, declaredScripts);
+    sourceDir: string,
+  ): Promise<boolean> {
+    const problem =
+      impossibleCommand(plan, declaredScripts) ?? (await missingEntryFile(plan, sourceDir));
     if (!problem) return false;
 
     const fromModel = plan.planSource === 'ai-fallback';
@@ -1316,11 +1334,11 @@ export class SessionManager extends EventEmitter {
       confidence: 'high',
       remedy: fromModel
         ? 'The fallback planner proposed a command this repository cannot run. Nothing ' +
-          'was started. Add the script it named, or run the project by hand to find the ' +
-          'command that works.'
+          'was started. It named a script or a file the repository does not have; run ' +
+          'the project by hand to find the command that works.'
         : 'This is a DevLaunch bug rather than a problem with the repository: a ' +
-          'deterministic plan is built from the manifest and should never name a script ' +
-          'the manifest does not have.',
+          'deterministic plan is built from the repository and should never name a ' +
+          'script or a file it does not have.',
     });
     return true;
   }

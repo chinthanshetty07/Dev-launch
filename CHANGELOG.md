@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-04 — An application kept one folder down; settings from `.env.example`
+
+`techiescamp/kubernetes-ai-projects` keeps its application in `ai-agent/agent-interface`
+(Next.js) and `ai-agent/agent-backend` (FastAPI). DevLaunch found nothing, asked the model,
+ran `node index.js` in a repository with no index.js, and called it a missing dependency.
+Now READY in about two minutes, with the page reaching the backend through its own proxy.
+
+- **One folder deeper.** When nothing runs at the root or one level down, the services
+  inside a single top-level folder are found. Never inside examples, docs or tests, and
+  never from two such folders at once (that is a collection of projects, not one app).
+- **A model plan that runs a missing file is refused** before a container exists.
+- **"The start command runs `index.js`, and there is no such file"** instead of "a module
+  the application imports is missing", told apart by Node's `requireStack: []`.
+- **Values `.env.example` ships reach the application**, as `cp .env.example .env` would:
+  the lowest layer, never over a database address, a sibling's URL, the port, or anything
+  the plan sets; never a `localhost` value; never a variable the validator refuses.
+- **A liveness route is the health check** (`/healthz`, `/health`, `/ping`…), and a
+  Kubernetes-style `/readyz` is avoided: here it calls the cluster, so it is 503 forever.
+- **psycopg 3** (`psycopg[binary]`) is recognised as needing Postgres.
+
 ## 2026-10-04 — Production audit: evidence-based READY, records, a deployment API, a doctor
 
 A full audit against a production brief, written up as `docs/DEVLAUNCH_AUDIT.md` and used

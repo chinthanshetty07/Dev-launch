@@ -1,12 +1,15 @@
 import type {
   BackingService,
+  EnvExampleVar,
   ProjectPlan,
   RepositoryMetadata,
   RequiredEnvVar,
+  RunPlan,
   ServiceCandidate,
   ServiceRunPlan,
 } from '@devlaunch/shared';
 import { wirableKeys } from '../execution/CrossServiceWiring.js';
+import { validateEnvVarKey, validateEnvVarValue } from '../security/CommandValidator.js';
 
 /**
  * What a person still has to supply before a project can run.
@@ -92,10 +95,7 @@ export function requiredConfigurationForSingle(meta: RepositoryMetadata): Requir
   // A database DevLaunch starts is injected under every name the application reads it by,
   // and the injected value wins. Asking for it as well asked a person for a value that was
   // then thrown away — the project path already knew; this path did not.
-  const provisioned = new Set<string>();
-  for (const need of meta.backing ?? []) {
-    for (const key of need.urlEnvKeys ?? (need.urlEnvKey ? [need.urlEnvKey] : [])) provisioned.add(key);
-  }
+  const provisioned = provisionedKeys(meta.backing ?? []);
   return (meta.envExample ?? [])
     .filter((v) => !v.hasDefault && !ALWAYS_SUPPLIED.includes(v.key) && !provisioned.has(v.key))
     .map((v) => ({ key: v.key, hasDefault: false }));
@@ -136,4 +136,75 @@ export function applyConfiguration(
       };
     }),
   };
+}
+
+/**
+ * A value that names this machine. In a container that is the container itself, so the
+ * example's `http://localhost:8000` is wrong there in a way the application's own
+ * default is not more wrong than; leaving it out keeps what happened before.
+ */
+const LOOPBACK = /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])\b/i;
+
+/**
+ * Give a plan the values its `.env.example` ships — what `cp .env.example .env` does.
+ *
+ * A declared value used to count only as "nothing to ask for", on the theory that the
+ * application has the same default in code. Often it does not:
+ * `techiescamp/kubernetes-ai-projects` reads `os.environ["AWS_REGION"]` at import, its
+ * example says `AWS_REGION=us-east-1`, and nothing ever set it, so the backend could
+ * only crash with a `KeyError`.
+ *
+ * The lowest layer, always. Nothing DevLaunch supplies itself is touched — a database
+ * address, a sibling's URL, the port — and neither is anything the plan already carries.
+ * A value pointing at `localhost` is left out (see `LOOPBACK`), and so is any variable the
+ * plan validator would refuse: `NODE_OPTIONS=--max-old-space-size=4096` is common in
+ * examples, and refusing a whole plan over a line in a file nobody runs would be worse
+ * than not copying it.
+ */
+export function withExampleDefaults<P extends RunPlan>(
+  plan: P,
+  declared: readonly EnvExampleVar[],
+  supplied: ReadonlySet<string>,
+): P {
+  const present = new Set(plan.environmentVariables.map((v) => v.key));
+  const added: RunPlan['environmentVariables'] = [];
+  for (const v of declared) {
+    if (v.value === undefined || present.has(v.key) || supplied.has(v.key)) continue;
+    if (ALWAYS_SUPPLIED.includes(v.key) || LOOPBACK.test(v.value)) continue;
+    try {
+      validateEnvVarKey(v.key);
+      validateEnvVarValue(v.key, v.value);
+    } catch {
+      continue;
+    }
+    present.add(v.key);
+    added.push({ key: v.key, value: v.value, required: false });
+  }
+  if (added.length === 0) return plan;
+  return { ...plan, environmentVariables: [...plan.environmentVariables, ...added] };
+}
+
+/** `withExampleDefaults` for every service of a project, each from its own example file. */
+export function projectWithExampleDefaults(
+  project: ProjectPlan,
+  candidates: readonly ServiceCandidate[],
+  backing: readonly BackingService[],
+): ProjectPlan {
+  return {
+    ...project,
+    services: project.services.map((service) => {
+      const candidate = candidates.find((c) => c.dir === service.workingDirectory);
+      if (!candidate?.envExample?.length) return service;
+      return withExampleDefaults(service, candidate.envExample, suppliedKeys(service, candidate, backing));
+    }),
+  };
+}
+
+/** Every name a provisioned database is injected under. */
+export function provisionedKeys(backing: readonly BackingService[]): Set<string> {
+  const keys = new Set<string>();
+  for (const need of backing) {
+    for (const key of need.urlEnvKeys ?? (need.urlEnvKey ? [need.urlEnvKey] : [])) keys.add(key);
+  }
+  return keys;
 }

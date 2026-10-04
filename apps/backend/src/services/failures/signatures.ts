@@ -16,6 +16,14 @@ export interface Signature {
    * only in severity, and one of them is fatal.
    */
   exclude?: RegExp;
+  /**
+   * A line that must also appear somewhere in the log for this signature to apply.
+   *
+   * For a failure only told apart by a *second* line: Node names a missing entry file
+   * and a missing `require` in the same words, and only `requireStack: []` underneath
+   * says nothing required it.
+   */
+  alsoNeeds?: RegExp;
   /** Typed facts the verdict carries, for a repair rule to act on without reading prose. */
   detail?: Pick<FailureDetail, 'runtimeDirection'>;
   /** What the user can do about it. */
@@ -424,6 +432,26 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       'matters here even where it does not on macOS.',
     describe: (e) =>
       `The repository imports one of its own files by a path that is not there: ${e.trim().slice(0, 160)}`,
+  },
+  {
+    // Before `module-not-found`, which matches the same line. Node resolves a
+    // command-line entry to an absolute path and reports that nothing required it; the
+    // file the start command runs is simply not there. Calling that a missing dependency
+    // (`techiescamp/kubernetes-ai-projects`, `node index.js` in a repository with no
+    // index.js) sent the reader after an install problem that did not exist.
+    id: 'entry-file-not-found',
+    code: FailureCode.START_COMMAND_FAILED,
+    phases: ['start'],
+    patterns: [/Cannot find module\s+['"]\/[^'"]+['"]/],
+    alsoNeeds: /^\s*requireStack: \[\]/,
+    remedy:
+      'The start command names the wrong file. Check which file the project is really ' +
+      'started from (its package.json "main" or "start" script, or its README).',
+    describe: (e) => {
+      const path = /['"]([^'"]+)['"]/.exec(e)?.[1] ?? '';
+      const shown = path.replace(/^\/workspace\//, '');
+      return `The start command runs \`${shown}\`, and there is no such file.`;
+    },
   },
   {
     id: 'module-not-found',

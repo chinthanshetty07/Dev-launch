@@ -42,6 +42,7 @@ export class FailureClassifier {
 
     for (const sig of SIGNATURES) {
       if (!appliesTo(sig, input.phase)) continue;
+      if (sig.alsoNeeds && !lines.some((l) => sig.alsoNeeds!.test(l))) continue;
       const evidence = this.findEvidence(sig, lines);
       if (evidence === null) continue;
 

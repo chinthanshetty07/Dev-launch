@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises';
+import { isAbsolute, join, normalize, sep } from 'node:path';
 import type { RunPlan } from '@devlaunch/shared';
 
 /**
@@ -76,3 +78,45 @@ const BUILT_IN_VERBS = new Set([
   // refuses a plan that would have worked.
   'start', 'test', 'build',
 ]);
+
+/** Runners whose first argument is a file of the repository's own. */
+const FILE_RUNNERS = new Set(['node', 'nodemon', 'ts-node', 'tsx', 'python', 'python3']);
+
+/** Where a build or an install hook writes output that is not in the clone yet. */
+const GENERATED_DIRS = ['dist', 'build', 'out', '.next', '.output'];
+
+/**
+ * Whether the start command runs a file this repository does not have.
+ *
+ * `techiescamp/kubernetes-ai-projects` keeps its application two folders down, with
+ * nothing at the root; the model, given nothing to go on, answered `node index.js`, and
+ * DevLaunch installed nothing, started a container and reported `Cannot find module
+ * '/workspace/index.js'` as a missing *dependency*. The file was never there. Asking
+ * the clone costs one `stat`.
+ *
+ * A model's plan only. A rule names an entry file because it found one, and a plan a
+ * caller hands in directly is theirs to vouch for; a model is the one author here that
+ * writes file names it has not seen.
+ *
+ * Quiet whenever the file could legitimately appear later: a plan with a build step,
+ * or a path inside a directory builds write to. Quiet, too, about anything that is not
+ * plainly a relative file path — a flag, a module (`python -m`), an absolute path.
+ */
+export async function missingEntryFile(plan: RunPlan, sourceDir: string): Promise<string | null> {
+  if (plan.planSource !== 'ai-fallback' || plan.buildCommand) return null;
+  const words = plan.startCommand.trim().split(/\s+/);
+  if (!FILE_RUNNERS.has(words[0] ?? '')) return null;
+  // Only `<runner> <file> [args]`. With a flag first, which word is the entry is a
+  // question about that runner's flags (`node --require x.js app.js`), not worth a guess.
+  const file = words[1];
+  if (!file || file.startsWith('-') || isAbsolute(file) || !/\.(?:[cm]?js|ts|py)$/.test(file)) return null;
+
+  const relativePath = normalize(join(plan.workingDirectory, file));
+  if (relativePath.startsWith('..')) return null;
+  if (GENERATED_DIRS.some((d) => relativePath.split(sep).includes(d))) return null;
+
+  const found = await stat(join(sourceDir, relativePath)).then((s) => s.isFile(), () => false);
+  if (found) return null;
+  const where = plan.workingDirectory === '.' ? 'the repository' : `\`${plan.workingDirectory}/\``;
+  return `The start command runs \`${file}\`, and ${where} has no such file.`;
+}

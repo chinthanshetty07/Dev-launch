@@ -58,7 +58,8 @@ const BACKING_RULES: readonly BackingRule[] = [
   },
   {
     kind: 'postgres',
-    deps: ['pg', 'postgres', 'sequelize', 'typeorm', 'prisma', '@prisma/client', 'knex', 'psycopg2', 'psycopg2-binary', 'asyncpg'],
+    // `psycopg` is psycopg 3, which installs under its own name (`psycopg[binary]`).
+    deps: ['pg', 'postgres', 'sequelize', 'typeorm', 'prisma', '@prisma/client', 'knex', 'psycopg2', 'psycopg2-binary', 'psycopg', 'asyncpg'],
     envKeys: ['DATABASE_URL', 'POSTGRES_URL', 'POSTGRES_URI', 'PG_URL'],
   },
   {
@@ -143,6 +144,7 @@ export async function discoverServices(
   declaredDirs: readonly string[] = [],
 ): Promise<DiscoveryResult> {
   const dirs = await candidateDirs(root, declaredDirs);
+  dirs.push(...(await wrappedDirs(root, dirs)));
   const orchestrator = await isWorkspaceRoot(root);
   const services: ServiceCandidate[] = [];
   const backing = new Map<BackingService['kind'], BackingService>();
@@ -220,6 +222,50 @@ async function candidateDirs(root: string, declared: readonly string[] = []): Pr
   // A declared directory can also be found by convention, and two compose services
   // can be built from one directory; either way it is probed once.
   return [...new Set(out)];
+}
+
+/** Folders that hold copies, samples or tooling, never the application itself. */
+const NOT_THE_APP = new Set([
+  'example', 'examples', 'sample', 'samples', 'demo', 'demos', 'doc', 'docs',
+  'test', 'tests', '__tests__', 'e2e', 'fixtures', 'benchmarks', 'scripts',
+  'templates', 'starters', 'archive', 'deprecated', 'legacy', 'old',
+]);
+
+/**
+ * The folders inside the one top-level folder that holds the application.
+ *
+ * `techiescamp/kubernetes-ai-projects` has nothing to run at its root or one level down:
+ * its application is `ai-agent/agent-interface` (Next.js) and `ai-agent/agent-backend`
+ * (FastAPI). Nothing looked that deep, so the model was asked, and it invented
+ * `node index.js`.
+ *
+ * Narrow on purpose, because a repository that already has a service in reach is read
+ * correctly today and must stay that way. So: only when the root has no manifest and no
+ * top-level folder is a service; never inside folders of samples or tests; and only
+ * when exactly one folder holds services. Two such folders is a collection of separate
+ * projects, and running both as one would be inventing an application nobody wrote.
+ */
+async function wrappedDirs(root: string, reached: readonly string[]): Promise<string[]> {
+  if ((await readCapped(join(root, 'package.json'))) !== null) return [];
+  if (await readPythonDeps(root)) return [];
+  for (const dir of reached) if (await inspectDir(root, dir)) return [];
+
+  const holding: string[][] = [];
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || IGNORED.has(entry.name) || entry.name.startsWith('.')) continue;
+    if (NOT_THE_APP.has(entry.name.toLowerCase())) continue;
+    const children = await readdir(join(root, entry.name), { withFileTypes: true }).catch(() => []);
+    const found: string[] = [];
+    for (const child of children) {
+      if (!child.isDirectory() || IGNORED.has(child.name) || child.name.startsWith('.')) continue;
+      if (NOT_THE_APP.has(child.name.toLowerCase())) continue;
+      const dir = `${entry.name}/${child.name}`;
+      if (!reached.includes(dir) && (await inspectDir(root, dir))) found.push(dir);
+    }
+    if (found.length > 0) holding.push(found);
+  }
+  return holding.length === 1 ? holding[0]! : [];
 }
 
 async function inspectDir(

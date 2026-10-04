@@ -72,11 +72,13 @@ describe('parseEnvExample', () => {
     const vars = parseEnvExample(
       '# comment\nSECRET_KEY=\nDATABASE_URL=\nFLASK_ENV=development\n\nexport PORT=5000\n',
     );
+    // A default now carries its value too: it is handed to the application, the way
+    // `cp .env.example .env` would, rather than only excused from being asked for.
     expect(vars).toEqual([
       { key: 'SECRET_KEY', hasDefault: false },
       { key: 'DATABASE_URL', hasDefault: false },
-      { key: 'FLASK_ENV', hasDefault: true },
-      { key: 'PORT', hasDefault: true },
+      { key: 'FLASK_ENV', hasDefault: true, value: 'development' },
+      { key: 'PORT', hasDefault: true, value: '5000' },
     ]);
   });
 

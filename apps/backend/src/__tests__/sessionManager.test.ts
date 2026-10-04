@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ExecutionState,
   FailureCode,
@@ -15,6 +18,22 @@ import type {
   ReadyOutcome,
 } from '../services/execution/ExecutionManager.js';
 import { LogManager } from '../services/logs/LogManager.js';
+
+/**
+ * A clone holding the files a model's plan names.
+ *
+ * A model plan's entry file is checked against the clone before anything starts (see
+ * `missingEntryFile`), and `/tmp/repo` holds nothing — so a test whose model plan runs
+ * `node server.js` has to have a server.js, or it is refused before reaching what the
+ * test is about.
+ */
+function cloneWith(...files: string[]): string {
+  // Named `repo`, as `/tmp/repo` was: the database DevLaunch provisions is named after it.
+  const dir = join(mkdtempSync(join(tmpdir(), 'devlaunch-sm-')), 'repo');
+  mkdirSync(dir);
+  for (const f of files) writeFileSync(join(dir, f), '');
+  return dir;
+}
 
 const plan = (): RunPlan =>
   RunPlanSchema.parse({
@@ -757,7 +776,7 @@ describe('a single service that needs a database', () => {
       analyzer: analyzed as never,
       planner: invented as never,
     });
-    await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    await mgr.launch({ sourceDir: cloneWith('server.js'), image: 'devlaunch/python:3.12' });
     await settle();
 
     expect(launchedWith.filter((v) => v.key === 'DATABASE_URL')).toEqual([
@@ -806,7 +825,10 @@ describe('a single service that needs a database', () => {
         }),
       } as never,
     });
-    const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
+    const session = await mgr.launch({
+      sourceDir: cloneWith('server.js', 'retry-0.js', 'retry-1.js', 'retry-2.js', 'retry-3.js'),
+      image: 'devlaunch/python:3.12',
+    });
     await until(() => session.state === ExecutionState.FAILED);
 
     expect(session.repairAttempts?.length, 'the repair loop ran').toBeGreaterThan(0);
@@ -2699,6 +2721,61 @@ describe('a plan naming a script the manifest does not have', () => {
     const ruled = await forSource('rule-based');
     expect(ruled.failure?.code).toBe(FailureCode.UNSUPPORTED_PROJECT);
     expect(ruled.failure?.remedy).toMatch(/DevLaunch bug/);
+  });
+
+  it('starts nothing when a model plan runs a file the clone does not have', async () => {
+    // `techiescamp/kubernetes-ai-projects`: `node index.js`, no index.js anywhere, reported
+    // a minute later as a missing dependency.
+    const { exec, launches } = spyExec();
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => metadata({}) } as never,
+      planner: {
+        planRepository: async () => ({
+          plan: RunPlanSchema.parse({ ...plan(), startCommand: 'node index.js', planSource: 'ai-fallback' }),
+          detected: null,
+          warnings: [],
+        }),
+      } as never,
+    });
+    const s = await mgr.launch({ sourceDir: cloneWith('README.md'), image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 4000);
+
+    expect(launches).toEqual([]);
+    expect(s.failure?.code).toBe(FailureCode.INVALID_AI_PLAN);
+    expect(s.failure?.message).toBe('The start command runs `index.js`, and the repository has no such file.');
+    await mgr.shutdown();
+  });
+
+  it('hands the application the values its example file ships', async () => {
+    // `os.environ["AWS_REGION"]` at import, `AWS_REGION=us-east-1` in .env.example, and
+    // nothing set it: a backend that could only crash.
+    let launchedWith: RunPlan['environmentVariables'] = [];
+    const { exec } = spyExec();
+    const launch = exec.launch.bind(exec);
+    exec.launch = (async (o: { plan: RunPlan }) => {
+      launchedWith = o.plan.environmentVariables;
+      return launch(o as never);
+    }) as never;
+    const mgr = new SessionManager(exec, {
+      analyzer: {
+        analyze: async () => ({
+          ...metadata({ dev: 'vite' }),
+          envExample: [{ key: 'AWS_REGION', hasDefault: true, value: 'us-east-1' }],
+        }),
+      } as never,
+      planner: {
+        planRepository: async () => ({
+          plan: RunPlanSchema.parse({ ...plan(), startCommand: 'npm run dev' }),
+          detected: 'vite',
+          warnings: [],
+        }),
+      } as never,
+    });
+    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.READY, 4000);
+
+    expect(launchedWith).toContainEqual({ key: 'AWS_REGION', value: 'us-east-1', required: false });
+    await mgr.shutdown();
   });
 
   it('lets through a plan whose script is really there', async () => {
