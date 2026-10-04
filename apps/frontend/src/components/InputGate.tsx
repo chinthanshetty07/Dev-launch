@@ -81,8 +81,11 @@ export function InputGate({
                   service that reads it, so the same key can mean different things in
                   two of them and a bare list of names would not say which is which. */}
               {v.service && <span className="ml-2 text-[11px] opacity-60">{v.service}</span>}
+              {v.kind && <span className="block text-[11px] opacity-70">{KIND_LABEL[v.kind]}</span>}
             </span>
             <input
+              type={v.kind === 'REQUIRED_SECRET' || v.kind === 'EXTERNAL_SERVICE_REQUIRED' ? 'password' : 'text'}
+              autoComplete="off"
               value={values[v.key] ?? ''}
               onChange={(e) => setValues((p) => ({ ...p, [v.key]: e.target.value }))}
               className="w-80 rounded-md border border-edge bg-ink px-2 py-1 outline-none focus:border-link"
@@ -100,3 +103,12 @@ export function InputGate({
     </section>
   );
 }
+
+/** What each kind of variable is, in a few plain words. */
+const KIND_LABEL: Record<string, string> = {
+  EXTERNAL_SERVICE_REQUIRED: 'a key from an outside service — only you can get it',
+  REQUIRED_SECRET: 'a secret, such as a password or token',
+  REQUIRED_CONFIGURATION: 'a setting with no default',
+  OPTIONAL_CONFIGURATION: 'optional',
+  AUTO_GENERATABLE_VALUE: 'generated for you',
+};

@@ -13,6 +13,9 @@ import { shortRepo } from './LaunchView';
 export function RunHeader({
   state,
   repoUrl,
+  refName,
+  commit,
+  deploymentId,
   startedAt,
   readyAt,
   busy,
@@ -21,6 +24,10 @@ export function RunHeader({
 }: {
   state: ExecutionState | 'IDLE';
   repoUrl?: string;
+  /** Which branch or tag, and which commit, this is — so nobody tests yesterday's code. */
+  refName?: string;
+  commit?: string | null;
+  deploymentId?: string;
   startedAt?: number;
   /** Frozen point for a session that reached READY, so the clock stops meaning something else. */
   readyAt?: number;
@@ -64,6 +71,13 @@ export function RunHeader({
           >
             {shortRepo(repoUrl)}
           </a>
+        )}
+        {(commit || deploymentId) && (
+          <span className="text-[12px] text-muted" data-testid="deployment-identity">
+            {refName ?? 'default branch'}
+            {commit && <> @ <span className="font-mono">{commit.slice(0, 7)}</span></>}
+            {deploymentId && <> · deploy <span className="font-mono">{deploymentId.slice(0, 8)}</span></>}
+          </span>
         )}
 
         <span className={`flex items-center gap-2 text-[13px] ${TONE[toneOf(state)]}`}>

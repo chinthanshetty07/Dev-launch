@@ -35,10 +35,22 @@ export interface PendingInput {
   choices?: WorkspacePackage[];
 }
 
+/** The end-to-end check READY waited for (backend `SmokeTest`). */
+export interface VerificationView {
+  passed: boolean;
+  durationMs: number;
+  checks: { name: string; kind: 'http' | 'wiring' | 'dependency'; service?: string; target: string; passed: boolean; skipped?: boolean; detail: string }[];
+}
+
 export interface SessionView {
   id: string;
   state: ExecutionState;
   repoUrl?: string;
+  /** The branch, tag or commit asked for; absent means the default branch. */
+  ref?: string;
+  /** The commit actually running. */
+  commit?: string | null;
+  verification?: VerificationView;
   detected?: string | null;
   plan?: RunPlan;
   planWarnings?: string[];

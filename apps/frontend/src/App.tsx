@@ -12,6 +12,7 @@ import { PlanPanel } from './components/PlanPanel';
 import { InputGate } from './components/InputGate';
 import { FailurePanel } from './components/FailurePanel';
 import { RetryPanel, stillRunning } from './components/RetryPanel';
+import { VerificationPanel } from './components/VerificationPanel';
 import { LogTerminal } from './components/LogTerminal';
 import { Collapsible } from './components/Collapsible';
 import { RewritePanel } from './components/RewritePanel';
@@ -211,6 +212,9 @@ export default function App() {
       <RunHeader
         state={state}
         repoUrl={session?.repoUrl}
+        refName={session?.ref}
+        commit={session?.commit}
+        deploymentId={session?.id}
         startedAt={session?.createdAt}
         readyAt={session?.readyAt}
         busy={busy}
@@ -248,6 +252,7 @@ export default function App() {
         {/* Directly under the URL it qualifies. A green result above a page that does
             not work is worse than a failure, because a failure sends somebody looking. */}
         <BrowserWiringPanel problems={session?.browserProblems} />
+        <VerificationPanel verification={session?.verification} />
         {state === 'COMPLETED' && <CompletedHero reason={session?.endedReason} />}
         {state === 'FAILED' && <FailurePanel failure={session?.failure} repairs={session?.repairs} />}
         {/* Still running: the failure is why it is trying again, not how it ended. */}
