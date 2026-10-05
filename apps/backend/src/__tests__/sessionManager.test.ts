@@ -10,7 +10,7 @@ import {
   type RunPlan,
 } from '@devlaunch/shared';
 import { config } from '../config/index.js';
-import { SessionManager, SessionConflict } from '../services/session/SessionManager.js';
+import { SessionManager, SessionConflict, progressedPast } from '../services/session/SessionManager.js';
 import type {
   ContainerLiveness,
   ExecutionManager,
@@ -402,6 +402,40 @@ describe('READY liveness', () => {
 });
 
 describe('repair and the reported diagnosis', () => {
+  it('reports the new failure when the repair installed the package the first one lacked', async () => {
+    // `Saaalil/ShipRocket-Audio-VAD`: gradio is in an optional extra, the repair installed
+    // it, and the app then failed on its own `spaces/` folder shadowing a package. The
+    // run was reported as "No module named 'gradio'" — about a package by then installed.
+    const failed = (evidence: string): ReadyOutcome => ({
+      state: ExecutionState.FAILED,
+      hostPort: null,
+      readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+      failure: { code: FailureCode.START_COMMAND_FAILED, message: evidence, evidence, phase: 'start' },
+    });
+    const outcomes = [
+      failed("ModuleNotFoundError: No module named 'gradio'"),
+      failed("AttributeError: module 'spaces' has no attribute 'GPU'"),
+    ];
+    let attempt = 0;
+    const exec = fakeExec(() => outcomes[Math.min(attempt++, outcomes.length - 1)]!);
+    const mgr = new SessionManager(exec, {
+      analyzer: { analyze: async () => ({ envExample: [], warnings: [] }) } as never,
+      planner: {
+        planRepository: async () => ({ plan: { ...plan(), environmentVariables: [] }, detected: 'gradio', warnings: [] }),
+      } as never,
+      aiRepair: {
+        repair: async () => ({ plan: { ...plan(), installCommand: 'npm install gradio' }, attempt: 1, note: 'install it' }),
+      } as never,
+    });
+
+    const s = await mgr.launch({ sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED, 3000);
+
+    expect(s.repairAttempts?.length, 'the repair ran').toBeGreaterThan(0);
+    expect(s.failure?.evidence).toBe("AttributeError: module 'spaces' has no attribute 'GPU'");
+    await mgr.shutdown();
+  });
+
   it('reports the original diagnosis when repair does not help', async () => {
     // Measured against the real pipeline: two live repairs of a fixture that hardcodes
     // 127.0.0.1 landed on a different start command each run, so the failure the user
@@ -2771,7 +2805,9 @@ describe('a plan naming a script the manifest does not have', () => {
         }),
       } as never,
     });
-    const s = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    const clone = cloneWith();
+    writeFileSync(join(clone, 'main.py'), 'REGION = os.environ["AWS_REGION"]\n');
+    const s = await mgr.launch({ sourceDir: clone, image: 'devlaunch/node:20' });
     await until(() => s.state === ExecutionState.READY, 4000);
 
     expect(launchedWith).toContainEqual({ key: 'AWS_REGION', value: 'us-east-1', required: false });
@@ -2795,5 +2831,27 @@ describe('a plan naming a script the manifest does not have', () => {
 
     expect(launches).toEqual(['npm run dev']);
     await mgr.shutdown();
+  });
+});
+
+describe('whether a later attempt got past the first failure', () => {
+  const f = (evidence: string | undefined, phase: 'install' | 'build' | 'start' = 'start') => ({
+    code: FailureCode.START_COMMAND_FAILED, message: 'x', phase, ...(evidence ? { evidence } : {}),
+  });
+
+  it('counts a missing package that is missing no longer', () => {
+    expect(progressedPast(f("ModuleNotFoundError: No module named 'gradio'"), f('AttributeError: no GPU'))).toBe(true);
+    expect(progressedPast(f("Error: Cannot find module 'express'"), f('TypeError: x is not a function'))).toBe(true);
+  });
+
+  it('does not count the same package still missing, or any other pair in one phase', () => {
+    expect(progressedPast(f("No module named 'gradio'"), f("No module named 'gradio.themes'"))).toBe(false);
+    expect(progressedPast(f('Bind 0.0.0.0 instead'), f('the model broke it'))).toBe(false);
+    // A relative import is the repository's own file, not a package anything installs.
+    expect(progressedPast(f("Cannot find module './routes'"), f('TypeError: x'))).toBe(false);
+    // Nothing to compare against is not proof.
+    expect(progressedPast(f("No module named 'gradio'"), f(undefined))).toBe(false);
+    expect(progressedPast(f("No module named 'gradio'", 'build'), f('TypeError: x', 'build'))).toBe(true);
+    expect(progressedPast(f("No module named 'gradio'", 'start'), f('TypeError: x', 'build'))).toBe(false);
   });
 });

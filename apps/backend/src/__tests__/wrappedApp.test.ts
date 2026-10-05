@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { FailureCode, RunPlanSchema, type FailureDetail, type RunPlan } from '@devlaunch/shared';
-import { discoverServices } from '../services/analysis/ServiceDiscovery.js';
+import { discoverServices, requiredEnvReads } from '../services/analysis/ServiceDiscovery.js';
 import { parseEnvExample } from '../services/analysis/parseEnvExample.js';
 import { missingEntryFile } from '../services/planning/Feasibility.js';
 import { healthPathFor } from '../services/planning/RuleBasedPlanner.js';
@@ -202,7 +202,30 @@ describe('the values an example file ships', () => {
     ]);
   });
 
+  it('reach only a variable the code cannot start without', async () => {
+    // Every example value copied broke `remix-run/indie-stack` (3 failures in 5 runs,
+    // against 4 passes in 4 without): its code reads them softly and has its own defaults.
+    const root = await repo({
+      'app/infra/bedrock.py': 'AWS_REGION = os.environ["AWS_REGION"]\nLEVEL = os.environ.get("LOG_LEVEL", "INFO")\n',
+      'server.js': 'const s = process.env.SESSION_SECRET;\n',
+    });
+    const required = await requiredEnvReads(root);
+    expect([...required]).toEqual(['AWS_REGION']);
+    const out = withExampleDefaults(
+      plan(),
+      [
+        { key: 'AWS_REGION', hasDefault: true, value: 'us-east-1' },
+        { key: 'LOG_LEVEL', hasDefault: true, value: 'DEBUG' },
+        { key: 'SESSION_SECRET', hasDefault: true, value: 'super-duper-s3cret' },
+      ],
+      new Set(),
+      required,
+    );
+    expect(out.environmentVariables.map((v) => v.key)).toEqual(['AWS_REGION']);
+  });
+
   it('reach the plan as its lowest layer', () => {
+    const everything = new Set(['AWS_REGION', 'MODEL', 'DATABASE_URL', 'PORT', 'API_URL', 'NODE_OPTIONS', 'LOG_LEVEL', 'DATABASE_URL_SQLITE', 'MONGO_URI_TESTS', 'APP_DB_URL']);
     const out = withExampleDefaults(
       plan({ environmentVariables: [{ key: 'MODEL', value: 'mine', required: false }] }),
       [
@@ -213,9 +236,19 @@ describe('the values an example file ships', () => {
         { key: 'API_URL', hasDefault: true, value: 'http://localhost:8000' }, // this container, in a container
         { key: 'NODE_OPTIONS', hasDefault: true, value: '--max-old-space-size=4096' }, // the validator's to refuse
         { key: 'LOG_LEVEL', hasDefault: true }, // documented optional, no value
+        // A database address, provisioned or not, is never an example's to set:
+        // `remix-run/indie-stack` failed with its SQLite file URL copied in.
+        { key: 'DATABASE_URL_SQLITE', hasDefault: true, value: 'file:./data.db?connection_limit=1' },
+        { key: 'MONGO_URI_TESTS', hasDefault: true, value: 'x' },
+        { key: 'APP_DB_URL', hasDefault: true, value: 'x' },
       ],
       new Set(['DATABASE_URL']),
+      everything,
     );
+    expect(
+      withExampleDefaults(plan(), [{ key: 'DATABASE_URL', hasDefault: true, value: 'file:./data.db' }], new Set(), everything).environmentVariables,
+      'not provisioned, and still not copied',
+    ).toEqual([]);
     expect(out.environmentVariables).toEqual([
       { key: 'MODEL', value: 'mine', required: false },
       { key: 'AWS_REGION', value: 'us-east-1', required: false },
@@ -240,7 +273,7 @@ describe('the values an example file ships', () => {
     ] as ServiceCandidate[];
     const out = projectWithExampleDefaults(project, candidates, [
       { kind: 'postgres', evidence: 'psycopg', urlEnvKeys: ['DATABASE_URL'], neededBy: ['agent-backend'] },
-    ]);
+    ], new Map([['ai-agent/agent-backend', new Set(['AWS_REGION', 'DATABASE_URL'])]]));
     expect(out.services[0]!.environmentVariables.map((v) => v.key)).toEqual(['AWS_REGION']);
   });
 });

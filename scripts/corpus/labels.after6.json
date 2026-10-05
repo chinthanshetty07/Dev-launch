@@ -1,0 +1,42 @@
+{
+  "ahfarmer/calculator": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "webpack 4 under OpenSSL 3 (Node >= 17). The strict yarn install first refused a stale lockfile and was relaxed by rule; the failure reported is the one that stopped the run — WRONG_RUNTIME_VERSION, runtime too new — not the lockfile that was got past."
+  },
+  "gothinkster/angular-realworld-example-app": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Bundles a stylesheet from the `realworld/` git submodule, which intake does not fetch by design. The plan now warns about it before the run; the failure itself still quotes esbuild."
+  },
+  "fastify/demo": {
+    "label": "REPO_FAILURE",
+    "reason": "Its dev script is `tsx --env-file=.env` and the repository ships only .env.example; its README tells a person to copy it. Now reported as MISSING_ENV naming .env, and MySQL is correctly reported ready."
+  },
+  "ljlm0402/typescript-express-starter": {
+    "label": "REPO_FAILURE",
+    "reason": "A project-generator CLI, not an application. COMPLETED is the correct answer."
+  },
+  "miguelgrinberg/microblog": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Pins a multidict with no Python 3.12 wheel; DevLaunch ships one Python."
+  },
+  "nsidnev/fastapi-realworld-example-app": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "asyncpg ^0.26 has no Python 3.12 wheel and does not build; DevLaunch ships one Python. Reached by the rule plan (see reports/nsidnev-genreq)."
+  },
+  "sadrozzy/Bun-React-Template": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Its dev script is `bunx --bun vite`. Now declined in 3 seconds with the script named, and no model call."
+  },
+  "patelharsh9797/bun-hono-app": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Written for the Bun runtime. Now declined in 3 seconds with the script named, and no model call."
+  },
+  "nrwl/nx-examples": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "Its install now fits: the memory policy climbed 1024 → 2048 → 4096 MB and yarn --immutable finished. Nx then fails with `WorkspaceContext is not a constructor`; outside DevLaunch the workspace needs a .NET toolchain for its @nx/dotnet plugin on Node 20 and 22 alike. after5: the model's plan named a script that does not exist (INVALID_AI_PLAN) — model variance on a repository that needs .NET for its Nx workspace context."
+  },
+  "max-pfeiffer/uvicorn-poetry-fastapi-project-template": {
+    "label": "UNSUPPORTED_BY_CONTRACT",
+    "reason": "A cookiecutter template, not an application: its app directory is `{{cookiecutter.project_slug}}` and its pyproject.toml holds template placeholders (tomllib: Invalid statement at line 5). after4's PASS was a model plan (`pip install uvicorn fastapi`) that happened to work; this run's model plan did not. Candidate: recognise template repositories and decline them by rule."
+  }
+}

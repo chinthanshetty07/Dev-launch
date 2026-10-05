@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-05 — Example values only where the code needs them; the newer error after a repair
+
+- **`.env.example` values are copied only for variables the code cannot start without**
+  (Python's `os.environ["KEY"]`, which raises when it is missing), and never a database
+  address. Copying every value broke `remix-run/indie-stack`: 3 failures in 5 runs with
+  them, 4 passes in 4 without. The corpus showed it, not a test.
+- **A repair that installs the missing package reports what failed next.**
+  `Saaalil/ShipRocket-Audio-VAD` was reported as "No module named 'gradio'" after the
+  repair had installed gradio; the run had gone on to fail on the repository's own
+  `spaces/` folder hiding the `spaces` package.
+
 ## 2026-10-04 — An application kept one folder down; settings from `.env.example`
 
 `techiescamp/kubernetes-ai-projects` keeps its application in `ai-agent/agent-interface`

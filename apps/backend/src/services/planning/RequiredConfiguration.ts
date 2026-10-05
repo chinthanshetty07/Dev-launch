@@ -146,7 +146,20 @@ export function applyConfiguration(
 const LOOPBACK = /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])\b/i;
 
 /**
- * Give a plan the values its `.env.example` ships — what `cp .env.example .env` does.
+ * A database address, by name or by value. Never copied from an example.
+ *
+ * Databases are already DevLaunch's to decide: one it starts is injected under every
+ * name the application reads, and one it does not start is left to the application's
+ * own default. An example's address overruled the second. `remix-run/indie-stack` passed
+ * on every corpus run until its `DATABASE_URL="file:./data.db?connection_limit=1"` was
+ * copied in; then it failed twice running, and passed again with only that line left
+ * out (measured, not reasoned: three runs).
+ */
+const DATABASE_KEY = /(?:^|_)(?:DATABASE|DB|MONGO|MONGODB|POSTGRES|PG|MYSQL|MARIADB|REDIS|SQLITE)_?(?:URL|URI|DSN)(?:_[A-Z0-9]+)*$/i;
+const DATABASE_VALUE = /^(?:postgres(?:ql)?(?:\+\w+)?|mysql(?:\+\w+)?|mariadb|mongodb(?:\+srv)?|rediss?|sqlite(?:\+\w+)?|file):/i;
+
+/**
+ * Give a plan the values its `.env.example` ships that its code cannot start without.
  *
  * A declared value used to count only as "nothing to ask for", on the theory that the
  * application has the same default in code. Often it does not:
@@ -156,7 +169,8 @@ const LOOPBACK = /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])\b/i;
  *
  * The lowest layer, always. Nothing DevLaunch supplies itself is touched — a database
  * address, a sibling's URL, the port — and neither is anything the plan already carries.
- * A value pointing at `localhost` is left out (see `LOOPBACK`), and so is any variable the
+ * A value pointing at `localhost` is left out (see `LOOPBACK`), so is any database address
+ * (see `DATABASE_KEY`), and so is any variable the
  * plan validator would refuse: `NODE_OPTIONS=--max-old-space-size=4096` is common in
  * examples, and refusing a whole plan over a line in a file nobody runs would be worse
  * than not copying it.
@@ -165,12 +179,16 @@ export function withExampleDefaults<P extends RunPlan>(
   plan: P,
   declared: readonly EnvExampleVar[],
   supplied: ReadonlySet<string>,
+  required: ReadonlySet<string>,
 ): P {
   const present = new Set(plan.environmentVariables.map((v) => v.key));
   const added: RunPlan['environmentVariables'] = [];
   for (const v of declared) {
+    // Only what the code cannot start without; see `requiredEnvReads`.
+    if (!required.has(v.key)) continue;
     if (v.value === undefined || present.has(v.key) || supplied.has(v.key)) continue;
     if (ALWAYS_SUPPLIED.includes(v.key) || LOOPBACK.test(v.value)) continue;
+    if (DATABASE_KEY.test(v.key) || DATABASE_VALUE.test(v.value)) continue;
     try {
       validateEnvVarKey(v.key);
       validateEnvVarValue(v.key, v.value);
@@ -189,13 +207,19 @@ export function projectWithExampleDefaults(
   project: ProjectPlan,
   candidates: readonly ServiceCandidate[],
   backing: readonly BackingService[],
+  required: ReadonlyMap<string, ReadonlySet<string>>,
 ): ProjectPlan {
   return {
     ...project,
     services: project.services.map((service) => {
       const candidate = candidates.find((c) => c.dir === service.workingDirectory);
       if (!candidate?.envExample?.length) return service;
-      return withExampleDefaults(service, candidate.envExample, suppliedKeys(service, candidate, backing));
+      return withExampleDefaults(
+        service,
+        candidate.envExample,
+        suppliedKeys(service, candidate, backing),
+        required.get(service.workingDirectory) ?? new Set(),
+      );
     }),
   };
 }

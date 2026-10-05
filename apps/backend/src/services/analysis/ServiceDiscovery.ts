@@ -504,6 +504,27 @@ async function serviceEnvKeys(base: string): Promise<string[]> {
   return [...keys];
 }
 
+/**
+ * Variables the code reads in a way that crashes when they are not set.
+ *
+ * Python's `os.environ["AWS_REGION"]` raises `KeyError`; `os.environ.get(...)`,
+ * `os.getenv(...)` and Node's `process.env.X` all quietly give nothing and let the
+ * application fall back to its own default. Only the first kind is worth filling from an
+ * example file — measured: filling every example value broke `remix-run/indie-stack`
+ * (3 failures in 5 runs, against 4 passes in 4 without), and filling only these is what
+ * `techiescamp/kubernetes-ai-projects` needed.
+ */
+export async function requiredEnvReads(base: string): Promise<Set<string>> {
+  const keys = new Set<string>();
+  for (const file of await collectSourceFiles(base, MAX_SOURCE_FILES)) {
+    if (!file.endsWith('.py')) continue;
+    const raw = await readCapped(file);
+    if (raw === null) continue;
+    for (const m of raw.matchAll(/os\.environ\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]/g)) keys.add(m[1]!);
+  }
+  return keys;
+}
+
 /** Match a backing service to the variable a repository actually reads it from. */
 export function backingFromEnvKeys(keys: string[]): Omit<BackingService, 'neededBy'>[] {
   const out: Omit<BackingService, 'neededBy'>[] = [];

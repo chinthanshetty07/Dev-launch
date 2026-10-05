@@ -31,6 +31,8 @@ import type { GitManager } from '../git/GitManager.js';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
 import type { ProjectPlanner } from '../planning/ProjectPlanner.js';
+import { join } from 'node:path';
+import { requiredEnvReads } from '../analysis/ServiceDiscovery.js';
 import {
   applyConfiguration,
   projectWithExampleDefaults,
@@ -522,10 +524,17 @@ export class SessionManager extends EventEmitter {
       for (const w of project.warnings) session.logs.buffer.push('stderr', `warning: ${w}`);
 
       if (project.plan) {
+        const required = new Map<string, Set<string>>();
+        for (const sv of project.plan.services) {
+          const candidate = session.metadata.services?.find((c) => c.dir === sv.workingDirectory);
+          if (!candidate?.envExample?.some((v) => v.value !== undefined)) continue;
+          required.set(sv.workingDirectory, await requiredEnvReads(join(dir, sv.workingDirectory ?? '.')));
+        }
         session.project = projectWithExampleDefaults(
           project.plan,
           session.metadata.services ?? [],
           session.metadata.backing ?? [],
+          required,
         );
         session.detected = `project:${project.plan.services.map((sv) => sv.role).join('+')}`;
         // Carried, not only logged. The single-service path has always set this and the
@@ -670,12 +679,14 @@ export class SessionManager extends EventEmitter {
     session.planMetadata =
       runsIn === '.' ? undefined : await analyzer.analyze(session.sourceDir ?? dir, runsIn);
 
-    if (session.plan) {
-      const read = session.planMetadata ?? session.metadata;
+    // Reading source costs a walk of the tree, so only when there is a value to give.
+    const read = session.planMetadata ?? session.metadata;
+    if (session.plan && (read.envExample ?? []).some((v) => v.value !== undefined)) {
       session.plan = withExampleDefaults(
         session.plan,
         read.envExample ?? [],
         provisionedKeys([...(session.metadata.backing ?? []), ...(session.planMetadata?.backing ?? [])]),
+        await requiredEnvReads(join(session.sourceDir ?? dir, session.plan.workingDirectory ?? '.')),
       );
     }
 
@@ -2805,12 +2816,31 @@ function memoryRepairRecord(
 const PHASE_ORDER: Record<string, number> = { install: 1, build: 2, start: 3 };
 
 /**
- * Whether `latest` failed in a strictly later phase than `first` — proof that whatever
- * stopped `first` was got past. Same phase, or a phase either one does not know, is not.
+ * Whether `latest` got past whatever stopped `first`.
+ *
+ * Two kinds of proof. A strictly later phase. Or, in the same phase, a missing package
+ * that is missing no longer: `Saaalil/ShipRocket-Audio-VAD` failed on `No module named
+ * 'gradio'` (it is in an optional extra), the repair installed it, and the import went
+ * through to a different error of the repository's own — and the run was reported as
+ * "gradio is missing", about a package that was by then installed. Same phase and any
+ * other pair of failures is not proof, so the first diagnosis stands.
  */
 export function progressedPast(first: FailureDetail | undefined, latest: FailureDetail | undefined): boolean {
   if (!first || !latest) return false;
   const a = PHASE_ORDER[first.phase ?? ''];
   const b = PHASE_ORDER[latest.phase ?? ''];
-  return a !== undefined && b !== undefined && b > a;
+  if (a !== undefined && b !== undefined && b > a) return true;
+
+  const missing = missingPackage(first.evidence);
+  if (!missing || a === undefined || a !== b || !latest.evidence) return false;
+  return missingPackage(latest.evidence) !== missing;
+}
+
+/** The package a "not installed" error names: Python's, or Node's for a bare specifier. */
+function missingPackage(evidence: string | undefined): string | null {
+  if (!evidence) return null;
+  const python = /No module named ['"]([\w.]+)['"]/.exec(evidence);
+  if (python) return python[1]!.split('.')[0]!;
+  const node = /Cannot find module ['"]([^./'"][^'"]*)['"]/.exec(evidence);
+  return node ? node[1]! : null;
 }

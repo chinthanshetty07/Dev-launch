@@ -51,8 +51,9 @@ Variables the repository needs and nothing can supply. Each is labelled: an outs
 service's key, another secret, or a plain setting. Secrets an application only signs its own
 sessions with (`JWT_SECRET`, `SECRET_KEY`…) are generated instead of asked for; database
 addresses DevLaunch provisions are injected instead of asked for. Nothing is ever invented
-for an outside service. Values the repository's `.env.example` ships are passed in, as
-`cp .env.example .env` would — below everything DevLaunch sets, and never a `localhost` one.
+for an outside service. A value the repository's `.env.example` ships is passed in when the
+code cannot start without it (`os.environ["KEY"]`) — below everything DevLaunch sets, and
+never a database address or a `localhost` one.
 
 ## 6. Start — `STARTING`, then `WAITING_FOR_READY`
 
