@@ -104,6 +104,7 @@ Dockerfile and compose file are read, never executed. See [docs/SECURITY.md](doc
 | [SECURITY.md](docs/SECURITY.md) | Threat model and every control |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common problems and their fixes |
 | [TESTING.md](docs/TESTING.md) | Test suites, fixtures, real-repository runs |
+| [HOSTING_PLAN.md](docs/HOSTING_PLAN.md) | What it would take to host it for other people |
 | [limitations.md](docs/limitations.md) | Deliberate boundaries, stated plainly |
 | [setup.md](docs/setup.md) | Every setting |
 | [CHANGELOG.md](CHANGELOG.md) | What changed, and the evidence for it |
