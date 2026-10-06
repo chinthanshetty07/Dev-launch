@@ -56,3 +56,22 @@ describe('<ServicePanel> commands', () => {
     expect(html).not.toMatch(/null/);
   });
 });
+
+describe('<ServicePanel> restart', () => {
+  // Audit A-07: restart was offered from the moment services existed, while the server
+  // refused it (rightly) until the run was up.
+  const count = (html: string) => (html.match(/disabled=""/g) ?? []).length;
+  it('is not offered while the run is still starting', () => {
+    const html = renderToStaticMarkup(
+      <ServicePanel services={[withPlan({})]} onRestart={() => undefined} busy={false} canRestart={false} />,
+    );
+    expect(count(html)).toBe(2); // restart all, and the row's restart
+    expect(html).toContain('Available once the run is up');
+  });
+  it('is offered once it is up', () => {
+    const html = renderToStaticMarkup(
+      <ServicePanel services={[withPlan({})]} onRestart={() => undefined} busy={false} canRestart />,
+    );
+    expect(count(html)).toBe(0);
+  });
+});

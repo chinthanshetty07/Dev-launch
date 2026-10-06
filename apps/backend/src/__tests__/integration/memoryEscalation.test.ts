@@ -58,4 +58,35 @@ describe('an install that needs more than the initial memory limit', () => {
     const left = (await docker.listManaged('all')).filter((c) => c.Labels?.[config.docker.sessionLabel] === s.id);
     expect(left).toEqual([]);
   }, 600_000);
+
+  it('says so, with the numbers, when it needs more than DevLaunch may give — and retries nothing', async () => {
+    // The ceiling held at the initial limit: the case of an install that needs more than
+    // the VM can spare. The run must not loop, must not pretend, and must say what to do.
+    const saved = process.env.DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB;
+    process.env.DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB = '1024';
+    const exec = new ExecutionManager(docker);
+    const analyzer = new RepositoryAnalyzer();
+    const planner = new RuleBasedPlanner(analyzer);
+    const sessions = new SessionManager(exec, { analyzer, planner, projectPlanner: new ProjectPlanner(analyzer, planner) });
+    try {
+      const s = await sessions.launch({ sourceDir: `${FIXTURES}/node-install-oom` });
+      for (let i = 0; i < 600 && ![ExecutionState.READY, ExecutionState.FAILED].includes(s.state as never); i++) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(s.state).toBe(ExecutionState.FAILED);
+      expect(s.failure?.code).toBe(FailureCode.OUT_OF_MEMORY);
+      expect(s.failure?.message).toMatch(/1024 MB container memory limit, which is already the maximum available memory/);
+      expect(s.failure?.remedy).toMatch(/colima start --cpu 4 --memory 8/);
+      // One attempt: nothing larger to try, so nothing was retried.
+      expect(s.launchAttempts?.map((a) => [a.memoryMb, a.result])).toEqual([[1024, FailureCode.OUT_OF_MEMORY]]);
+      // Released by the failure itself, not by a later shutdown.
+      const left = (await docker.listManaged('all')).filter((c) => c.Labels?.[config.docker.sessionLabel] === s.id);
+      expect(left).toEqual([]);
+      expect(exec.memory.heldMb()).toBe(0);
+    } finally {
+      if (saved === undefined) delete process.env.DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB;
+      else process.env.DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB = saved;
+      await sessions.shutdown();
+    }
+  }, 600_000);
 });

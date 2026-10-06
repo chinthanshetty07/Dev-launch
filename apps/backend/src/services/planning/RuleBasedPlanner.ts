@@ -367,7 +367,12 @@ export class RuleBasedPlanner {
     // `<script src="/src/main.tsx">` no browser can run, so serving it would be a READY
     // page that cannot work. Beside Python files that planned to nothing it is served:
     // that is a site with a helper script, not an application.
-    if (meta.staticIndex && !meta.packageJson) {
+    //
+    // Nor beside a server in a language DevLaunch does not run. `GoogleCloudPlatform/
+    // cloud-run-hello` has go.mod, a Dockerfile and an index.html that is a Go template
+    // (`{{if .Color}}…`): served as it stands it was READY, checks passed, showing raw
+    // template text while the application never ran. Its own Dockerfile runs it instead.
+    if (meta.staticIndex && !meta.packageJson && !(meta.foreignRuntimes?.length)) {
       return {
         detected: 'static',
         warnings,

@@ -82,6 +82,14 @@ export class DockerManager {
   }
 
   /** Pull only when absent — pulls are slow and the image set is allowlisted. */
+  /** Pull an image from its registry, even when a copy exists here. */
+  async pullImage(image: string): Promise<void> {
+    const stream = await this.docker.pull(image);
+    await new Promise<void>((resolve, reject) => {
+      this.docker.modem.followProgress(stream, (err) => (err ? reject(err) : resolve()));
+    });
+  }
+
   async ensureImage(image: string): Promise<void> {
     if (await this.imageExists(image)) return;
 
@@ -249,6 +257,24 @@ export class DockerManager {
    * Workspace volumes, by the label `createWorkspaceVolume` puts on them: one session's,
    * this process's, or every DevLaunch process's (startup only, as for containers).
    */
+  /** Images DevLaunch built from repositories' Dockerfiles, with their labels. */
+  async listBuiltImages(): Promise<{ id: string; labels: Record<string, string> }[]> {
+    const images = await this.docker.listImages({ filters: { label: [`${config.docker.managedLabel}=true`] } });
+    return images
+      .filter((i) => (i.RepoTags ?? []).some((t) => t.startsWith('devlaunch-built/')))
+      .map((i) => ({ id: i.Id, labels: i.Labels ?? {} }));
+  }
+
+  async removeImage(id: string): Promise<void> {
+    await this.docker.getImage(id).remove({ force: true });
+  }
+
+  /** Every workspace volume, with its labels, so a sweep can tell whose it is. */
+  async listWorkspaceVolumeLabels(): Promise<{ name: string; labels: Record<string, string> }[]> {
+    const { Volumes } = await this.docker.listVolumes({ filters: { label: [`${config.docker.workspaceLabel}=true`] } });
+    return (Volumes ?? []).map((v) => ({ name: v.Name, labels: v.Labels ?? {} }));
+  }
+
   async listWorkspaceVolumes(scope: { sessionId: string } | 'instance' | 'all'): Promise<string[]> {
     const label = [`${config.docker.workspaceLabel}=true`];
     if (scope === 'instance') label.push(`${config.docker.instanceLabel}=${config.docker.instanceId}`);
@@ -307,6 +333,52 @@ export class DockerManager {
           : {}),
       },
       Tty: false, // Keep stdout/stderr framed separately for demuxing.
+      OpenStdin: false,
+    });
+  }
+
+  /**
+   * Create a container from a repository's own image (built from its Dockerfile, or named
+   * by its compose file), under the balanced profile. Its own entrypoint and command run,
+   * as its own user; storage it declares gets volumes of its own.
+   */
+  async createImageContainer(opts: {
+    image: string;
+    command?: string[];
+    entrypoint?: string[];
+    env: string[];
+    labels: Record<string, string>;
+    aliases: string[];
+    ports: number[];
+    /** Host port for the first container port; Docker chooses when absent. */
+    hostPort?: number;
+    dataPaths: string[];
+    hostConfig: Dockerode.HostConfig;
+  }): Promise<Dockerode.Container> {
+    const exposed: Record<string, Record<string, never>> = {};
+    const bindings: Record<string, Array<{ HostPort: string }>> = {};
+    opts.ports.forEach((port, i) => {
+      exposed[`${port}/tcp`] = {};
+      // Published exactly as DevLaunch's own containers are (see `createContainer`).
+      bindings[`${port}/tcp`] = [{ HostPort: i === 0 && opts.hostPort ? String(opts.hostPort) : '' }];
+    });
+    const volumes: Record<string, Record<string, never>> = {};
+    for (const path of opts.dataPaths) volumes[path] = {};
+    const networkName = opts.hostConfig.NetworkMode;
+    return this.docker.createContainer({
+      Image: opts.image,
+      ...(opts.command ? { Cmd: opts.command } : {}),
+      ...(opts.entrypoint ? { Entrypoint: opts.entrypoint } : {}),
+      Env: opts.env,
+      Labels: opts.labels,
+      Volumes: opts.dataPaths.length ? volumes : undefined,
+      ExposedPorts: opts.ports.length ? exposed : undefined,
+      NetworkingConfig:
+        networkName && opts.aliases.length
+          ? { EndpointsConfig: { [networkName]: { Aliases: opts.aliases } } }
+          : undefined,
+      HostConfig: { ...opts.hostConfig, PortBindings: opts.ports.length ? bindings : undefined },
+      Tty: false,
       OpenStdin: false,
     });
   }
@@ -649,6 +721,11 @@ export class DockerManager {
       label.push(`${config.docker.instanceLabel}=${config.docker.instanceId}`);
     }
     return this.docker.listContainers({ all: true, filters: { label } });
+  }
+
+  /** The underlying client, for the build sandbox, which needs Docker's build API. */
+  client(): Dockerode {
+    return this.docker;
   }
 
   getContainer(id: string): Dockerode.Container {

@@ -9,7 +9,7 @@ import {
 } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
 import { DockerManager, type ExitResult } from '../docker/DockerManager.js';
-import { buildHostConfig, buildLabels } from '../docker/ContainerSecurity.js';
+import { buildHostConfig, buildLabels, buildRepoImageHostConfig } from '../docker/ContainerSecurity.js';
 import { buildWrapperEnv, buildWrapperScript } from '../docker/wrapper.js';
 import { STATIC_SERVER_SCRIPT } from '../docker/staticServer.js';
 import { CleanupManager } from '../cleanup/CleanupManager.js';
@@ -614,6 +614,102 @@ export class ExecutionManager {
         hostPort: () => this.ports.hostPortFor(container, opts.plan.expectedPort),
         waitForReady: (timeoutMs) =>
           this.waitForReady(container, opts.plan, sentinels, timeoutMs, logs, limitMb),
+        liveness: () => this.liveness(container),
+        clearStartupBudget: () => startupBudget.abort(),
+        stop: () => this.docker.stop(container),
+        cleanup: async () => {
+          try {
+            return await cleanup.cleanup();
+          } finally {
+            this.memory.release(container.id);
+          }
+        },
+      };
+    } catch (err) {
+      await cleanup.cleanup();
+      this.memory.release(container.id);
+      throw err;
+    }
+  }
+
+  /**
+   * Run a repository's own image: built from its Dockerfile, or a stock image its compose
+   * file names. The balanced profile (`buildRepoImageHostConfig`), the image's own
+   * entrypoint and user, no wrapper — and a handle like any other, so readiness, the
+   * liveness watch, stop and cleanup treat it as they treat every container.
+   */
+  async launchImage(opts: {
+    sessionId: string;
+    plan: RunPlan;
+    image: string;
+    logs?: LogManager;
+    networkAliases: string[];
+    hostPort?: number;
+    memoryMb?: number;
+    timeoutMs?: number;
+  }): Promise<LaunchHandle> {
+    if (!this.capacityRead) await this.vmMemoryBytes();
+    const plan = this.validator.validate({ plan: opts.plan });
+    const spec = plan.docker!;
+    const cleanup = new CleanupManager(this.docker);
+    await this.docker.ensureImage(opts.image);
+    const networkName = (await this.docker.networkExists(config.docker.networkName))
+      ? config.docker.networkName
+      : undefined;
+    // A repository's own image only ever runs under the egress rules; without their
+    // network it would run on Docker's default one (verifier D-12).
+    if (!networkName) {
+      throw new Error(`The ${config.docker.networkName} network does not exist (run ./devlaunch install), so a repository's own image cannot be kept off the local network.`);
+    }
+    const limitMb = opts.memoryMb ?? config.container.memoryMb;
+    const env = plan.environmentVariables
+      .filter((v) => v.value !== null && v.value !== undefined)
+      .map((v) => `${v.key}=${v.value}`);
+
+    const ports = plan.expectedPort !== null
+      ? [plan.expectedPort, ...spec.ports.filter((p) => p !== plan.expectedPort)]
+      : spec.ports;
+    const container = await this.docker.createImageContainer({
+      image: opts.image,
+      ...(spec.command ? { command: spec.command } : {}),
+      ...(spec.entrypoint ? { entrypoint: spec.entrypoint } : {}),
+      env,
+      labels: buildLabels(opts.sessionId),
+      aliases: networkName ? opts.networkAliases : [],
+      ports,
+      ...(opts.hostPort ? { hostPort: opts.hostPort } : {}),
+      dataPaths: spec.dataPaths,
+      hostConfig: buildRepoImageHostConfig({ memoryMb: limitMb, networkName }),
+    });
+    cleanup.trackContainer(container);
+    this.memory.hold(container.id, limitMb, () => this.usageMb(container));
+
+    try {
+      const logs = opts.logs ?? new LogManager();
+      // No wrapper prints phase markers: the image's command is the start.
+      const sentinels = new Set<string>([Sentinel.START_BEGIN]);
+      await this.docker.start(container);
+      const stream = await this.docker.followLogs(container);
+      const streaming = logs.attach(container, stream);
+      const startupBudget = new AbortController();
+      const exit = this.docker
+        .waitForExit(container, opts.timeoutMs ?? config.timeouts.timeToReadyMs, startupBudget.signal)
+        .then(async (r) => {
+          await streaming.catch(() => undefined);
+          return r;
+        });
+      exit.catch(() => undefined);
+
+      return {
+        sessionId: opts.sessionId,
+        container,
+        logs,
+        sentinels,
+        phaseReached: () => 'start',
+        exit,
+        waitForLog: (predicate, timeoutMs) => waitForLog(logs, predicate, timeoutMs),
+        hostPort: () => (plan.expectedPort === null ? Promise.resolve(null) : this.ports.hostPortFor(container, plan.expectedPort)),
+        waitForReady: (timeoutMs) => this.waitForReady(container, plan, sentinels, timeoutMs, logs, limitMb),
         liveness: () => this.liveness(container),
         clearStartupBudget: () => startupBudget.abort(),
         stop: () => this.docker.stop(container),

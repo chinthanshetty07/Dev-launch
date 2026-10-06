@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-10-06 — Production-readiness mission: a second audit, the Docker fallback, proof
+
+Run under the kick-ass pipeline (`.claude/tasks/2026-10-06-production-readiness-mission/`:
+requirements, plan, an independent audit, and the verifier's report).
+
+**A repository's own Docker setup, as the fallback.** When no rule plans a repository and it
+ships a Dockerfile or compose file, DevLaunch builds and runs that — at the balanced safety
+level the user chose. Why it was declined before (audit H2) and what changed: a build's
+`RUN` steps ran on Docker's default network, outside the egress rules. Measured: there a
+build step reached the home router, cloud metadata and the VM; with the classic builder on
+`devlaunch-net` all three time out and registries stay reachable. BuildKit was tried and
+refused — `buildx` makes its builder privileged, and a rootless one cannot start in this VM
+without relaxing an AppArmor restriction. Compose is translated, never run, and privileged
+mode, added capabilities, host mounts/namespaces and the Docker socket are refused by name.
+Fixtures `docker-go-api`, `docker-compose-stack`, `docker-refused`, `docker-breakout`,
+`docker-base-image-port`; `integration/repoDocker.test.ts`. First real run also caught a
+TCP readiness check fooled by Docker's port forwarder (now: a connection must stay open).
+
+**Second adversarial audit — 23 findings, all addressed** (table in
+`docs/DEVLAUNCH_AUDIT.md` §6). The high ones: secrets sent to the model in repair prompts;
+symlinks in a clone followed on this machine; project workers READY with no check; no crash
+detection for projects after READY; a stop during a project launch releasing nothing; package
+caches shared between unrelated repositories with the same package name. Also: DNS
+rebinding could drive the API (now a Host/Origin guard); secrets shown by the API and the
+Plan panel; a second DevLaunch or the test suite deleting the dashboard's running containers;
+restart accepted mid-start and twice at once; databases sharing one name and password.
+
+**Found while measuring, not by the audit.** The baseline Docker suite failed twice: a model
+*repair* naming a missing file replaced the repository's diagnosis and leaked its database.
+Three test helpers returned quietly on timeout, and made strict they exposed three tests
+passing by luck. Level-5 gaps: an invalid `package.json` was sent to the model (now
+`INVALID_MANIFEST`, said before anything starts); an unknown dependency host is told apart
+from a network outage.
+
+**Found by the real-repository matrix.** `GoogleCloudPlatform/cloud-run-hello` (Go) was
+READY in six seconds with its checks passed — served as a static site, its `index.html`
+being a Go template (`{{if .Color}}…`); the application never ran. A page beside a server in
+a language DevLaunch does not run is no longer a static site, so its Dockerfile runs it.
+A worker that died during its install was told "after it had become ready … it started
+correctly"; it is now told the stage it reached. A Dockerfile with no `EXPOSE` of its own on
+a base image that declares one (`php:apache`, `nginx`) is served on the image's port.
+
+**Found by the independent verifier, then fixed.** The Docker daemon itself makes some of a
+build's fetches — `ADD <url>` and image pulls — outside the egress rules: `ADD` from a URL
+is now refused, registries must be public, and compose images are pulled fresh so a local
+private image is never used. A stop now stops a build in progress and its memory is counted;
+crashed runs' built images are swept; more compose keys are refused by name; a compose
+command keeps its quotes; `entrypoint` is honoured; the corpus reports the Docker path as
+such. Not closable with Docker's classic builder, and documented: no process limit and
+default capabilities during a build step.
+
+**Dependencies:** 13 advisories (3 critical, 3 high) → 1 moderate, by Vitest 4, Vite 6 and
+overrides; the remaining `uuid` advisory is in functions DevLaunch does not call.
+
+**Evidence:** see `docs/RELEASE_REPORT.md` for every count and the commands that produced it.
+
+**Not done:** BuildKit-only Dockerfile syntax does not build; compose healthchecks, profiles
+and custom networks are not honoured; A-21 and A-22 are fixed without a test.
+
 ## 2026-10-06 — A new repository replaces the running one
 
 Using DevLaunch locally is: look at one repository, then paste the next. The second was

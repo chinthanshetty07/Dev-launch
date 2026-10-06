@@ -1,5 +1,7 @@
 // First, before any module that reads a setting: see loadEnv.ts.
 import './loadEnv.js';
+import { config } from './config/index.js';
+import { InstanceRegistry } from './services/cleanup/InstanceRegistry.js';
 import { createServer } from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -135,6 +137,8 @@ export interface StartedServer {
 export interface ServerOptions {
   /** Overrides the bind address. Exists so a test can pin it without the environment. */
   host?: string;
+  /** Where live DevLaunch processes are recorded; see `InstanceRegistry`. */
+  instanceRegistry?: InstanceRegistry;
   /**
    * Force the AI fallback off even when a key is configured.
    *
@@ -187,10 +191,15 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
   // the label is only ever applied by DevLaunch.
   // Startup is the one safe moment for a global sweep: a crashed process leaves
   // containers nothing will claim, and this process is not yet running anything.
-  const swept = await CleanupManager.sweepAllOrphans(docker).catch(() => 0);
+  // Only what processes that are no longer running left behind: another live DevLaunch
+  // (a second server, the test suite) keeps what it is running (audit A-12).
+  const registry = opts.instanceRegistry ?? InstanceRegistry.fromEnv();
+  const live = await registry.live().catch(() => new Set<string>());
+  await registry.register(config.docker.instanceId).catch(() => undefined);
+  const swept = await CleanupManager.sweepAllOrphans(docker, live).catch(() => 0);
   if (swept > 0) console.log(`Removed ${swept} container(s) orphaned by a previous run.`);
   // Their deployments' records still claim to be running: say what happened to them.
-  const interrupted = await sessions.recoverInterrupted().catch(() => 0);
+  const interrupted = await sessions.recoverInterrupted(live).catch(() => 0);
   if (interrupted > 0) console.log(`Marked ${interrupted} deployment(s) interrupted by the last restart.`);
 
   // Volumes too, which nothing reaped until 99 of them had accumulated. Same moment and
@@ -281,6 +290,7 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
       await sessions.flushRecords();
       // A crashed or killed backend can still leave containers behind.
       await CleanupManager.sweepOrphans(docker).catch(() => 0);
+      await registry.unregister(config.docker.instanceId).catch(() => undefined);
       await new Promise<void>((r) => http.close(() => r()));
     },
   };

@@ -47,6 +47,10 @@ deployment's timeline (`REPAIR_APPLIED`, `RESOURCE_RETRY`) and in its saved reco
 
 ## What is never repaired
 
+- **A repository's own image** (the Docker fallback): its command is the repository's. A
+  memory raise is the only repair applied to it.
+- **An invalid `package.json`**: reported before anything runs, with the parser's position.
+
 - **The repository's code.** DevLaunch does not edit source to make a build pass. The one
   exception is opt-in (`DEVLAUNCH_REWRITE_SOURCE=1`), only in DevLaunch's own clone, and only
   for two literal addresses: a dev-server proxy and a hardcoded database URL pointing at

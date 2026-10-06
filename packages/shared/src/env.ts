@@ -35,6 +35,16 @@ const EXTERNAL_PREFIXES = [
 
 const SECRET_WORDS = /(?:SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|ACCESS_KEY|CREDENTIALS?)(?:_|$)|_KEY$/;
 
+/**
+ * Whether a variable's value is a secret, by what its name says: a key, a token, a
+ * password, or a secret DevLaunch generates. Which service it belongs to is not enough —
+ * `AWS_REGION` is an outside service's setting and nobody's secret.
+ */
+export function isSecretKey(key: string): boolean {
+  const k = key.toUpperCase();
+  return SELF_SIGNING.has(k) || SECRET_WORDS.test(k);
+}
+
 export function classifyEnvVar(key: string, hasDefault = false): EnvVarKind {
   const k = key.toUpperCase();
   if (hasDefault) return 'OPTIONAL_CONFIGURATION';

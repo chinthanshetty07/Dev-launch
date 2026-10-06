@@ -81,11 +81,27 @@ describe('the deployment API', () => {
     expect(events[0]).toBe('DEPLOYMENT_CREATED');
     expect(events.at(-1)).toBe('STATE_READY');
     expect((await call('GET', `/api/deployments/${id}/logs`)).body.entries.some((e: { text: string }) => e.text === 'server listening')).toBe(true);
-    expect((await call('GET', `/api/deployments/${id}/health`)).body).toMatchObject({ id, state: 'READY', live: true });
+    // From the very first line (A-18: `since` defaulted to 0 and dropped line 0).
+    expect((await call('GET', `/api/deployments/${id}/logs`)).body.entries[0].seq).toBe(0);
+    const health = (await call('GET', `/api/deployments/${id}/health`)).body;
+    expect(health).toMatchObject({ id, state: 'READY', live: true });
+    // A single service is asked too (A-18: it answered `services: []`, checking nothing).
+    expect(health.services).toEqual([expect.objectContaining({ name: 'app', url: 'http://localhost:1/' })]);
     expect((await call('GET', '/api/deployments')).body.deployments.some((x: { id: string }) => x.id === id)).toBe(true);
 
     const cancelled = await call('POST', `/api/deployments/${id}/cancel`);
     expect(cancelled.body.state).toBe('CANCELLED');
+  });
+
+  it('refuses to "retry" a running single-service deployment, which it cannot do (A-07)', async () => {
+    // It answered 202 and did nothing: restart exists only for projects of several services.
+    outcome = { state: ExecutionState.READY, hostPort: '1', url: 'http://localhost:1/', readiness: { ready: true, attempts: 1, elapsedMs: 1 } as ReadyOutcome['readiness'] };
+    const { body } = await call('POST', '/api/deployments', { fixture: 'node-http-basic' });
+    await settle(body.id);
+    const retried = await call('POST', `/api/deployments/${body.id}/retry`);
+    expect(retried.status).toBe(409);
+    expect(retried.body.error.message).toMatch(/only available for projects/);
+    await call('POST', `/api/deployments/${body.id}/cancel`);
   });
 
   it('carries a classified failure', async () => {

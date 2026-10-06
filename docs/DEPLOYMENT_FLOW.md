@@ -40,10 +40,15 @@ runtimes DevLaunch has no image for. (`RepositoryAnalyzer`, `ServiceDiscovery`)
 
 ## 4. Plan — `PLANNING`, `VALIDATING`
 
-Deterministic rules first (`RuleBasedPlanner`, `ProjectPlanner`); a model only when no rule
-matched and the repository is not known to be unrunnable (`AIPlanner`, optional). Every
-plan — rule or model — passes the same validator: command allowlist, code-injecting
-environment variables refused, paths inside the repository, approved images only.
+Deterministic rules first (`RuleBasedPlanner`, `ProjectPlanner`). When no rule plans it: a
+`package.json` no package manager can read is reported (`INVALID_MANIFEST`) without asking
+anyone; then the repository's own Dockerfile or compose file, when it has one
+(`RepoDockerSetup` → `BuildSandbox` → `RepoDockerRunner`, balanced profile, see
+`SECURITY.md`); then a model, when the repository is not known to be unrunnable
+(`AIPlanner`, optional). Every plan passes the same validator: command allowlist,
+code-injecting environment variables refused, paths inside the repository, approved images
+only — and a plan that runs an image only from DevLaunch's own reader of the repository's
+Docker setup.
 
 ## 5. Configuration — `AWAITING_INPUT` (blocked by user configuration)
 
@@ -95,7 +100,13 @@ retry is recorded with its reason, attempt number, what changed and how it ended
 
 ## 9. Running, stopping, cleaning up
 
-A READY deployment is watched; a container that exits ends it as `APPLICATION_EXITED`.
+A READY (or partly running) deployment is watched, every service of a project included: a
+service that dies leaves the project partly running with that service named and its URL
+withdrawn; when the last one stops, the run ends. A worker counts as running only once it
+has started and is still up a few seconds later (`DEVLAUNCH_WORKER_GRACE_MS`). Deploying a
+new repository stops the running one first (the dashboard and `./devlaunch deploy` ask to
+replace); a stop that lands while a project is still starting releases what it has started
+at once.
 `POST /api/deployments/:id/cancel` (or the dashboard's Stop) stops everything it started —
 containers, databases, its workspace volumes — including anything that finished starting
 after the stop. Idle and lifetime clocks reclaim forgotten deployments. At startup,

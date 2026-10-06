@@ -43,7 +43,7 @@ export interface SmokeService {
   name: string;
   role?: string;
   url?: string;
-  runtime: 'node' | 'python';
+  runtime: 'node' | 'python' | 'container';
   environment: { key: string; value: string | null }[];
   /** Runs a command inside this service's container and returns what it printed. */
   exec?: (argv: string[]) => Promise<string>;
@@ -93,8 +93,13 @@ function connectCommand(runtime: 'node' | 'python', host: string, port: number):
 
 async function reachesFromInside(service: SmokeService, host: string, port: number): Promise<{ ok: boolean; skipped?: boolean; detail: string }> {
   if (!service.exec) return { ok: false, skipped: true, detail: 'no way to run a command inside this container' };
+  // A repository's own image carries whatever tools it carries; there is no runtime to
+  // count on for the probe, so it is skipped and said so rather than failed.
+  if (service.runtime === 'container') {
+    return { ok: false, skipped: true, detail: `${service.name} runs the repository's own image, which may have no tool to make the check with` };
+  }
   try {
-    const out = (await service.exec(connectCommand(service.runtime, host, port))).trim();
+    const out = (await service.exec(connectCommand(service.runtime as 'node' | 'python', host, port))).trim();
     return out.startsWith('OK')
       ? { ok: true, detail: `${service.name} reached ${host}:${port}` }
       : { ok: false, detail: `${service.name} could not reach ${host}:${port}: ${out.slice(0, 160) || 'no output'}` };
@@ -152,6 +157,20 @@ export async function runSmokeTest(input: { services: SmokeService[]; backing: S
       const r = await reachesFromInside(s, b.alias, port);
       checks.push({ name: `${s.name} → ${b.kind}`, kind: 'dependency', service: s.name, target: `${b.alias}:${port}`, passed: r.ok, ...(r.skipped ? { skipped: true } : {}), detail: r.detail });
     }
+  }
+
+  // Nothing checked is not a pass. `every` over an empty list is true, so a project of a
+  // web service with no URL and some workers was "verified" by construction (audit A-23);
+  // a list of only skipped checks proved just as little.
+  if (!checks.some((c) => !c.skipped)) {
+    checks.push({
+      name: 'a service with an address to check',
+      kind: 'http',
+      service: input.services[0]?.name ?? '',
+      target: '',
+      passed: false,
+      detail: 'No service had an address to ask, so nothing about the application was checked.',
+    });
   }
 
   return {

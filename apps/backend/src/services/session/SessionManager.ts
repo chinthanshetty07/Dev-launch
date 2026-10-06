@@ -44,7 +44,10 @@ import {
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { lastErrorLine, phaseLog } from '../execution/ExecutionManager.js';
 import { BackingProvisioner, type ProvisionResult } from '../execution/BackingProvisioner.js';
-import { ProjectExecutor, type ProjectRun, type ServiceRun } from '../execution/ProjectExecutor.js';
+import { readDockerSetup, type DockerSetup } from '../docker/RepoDockerSetup.js';
+import { DockerSetupFailure, RepoDockerRunner, dockerProjectPlan } from '../docker/RepoDockerRunner.js';
+import { BuildSandbox } from '../docker/BuildSandbox.js';
+import { LaunchStopped, ProjectExecutor, type ProjectRun, type ServiceRun } from '../execution/ProjectExecutor.js';
 import type { BrowserWiringProblem } from '../execution/CrossServiceWiring.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
@@ -163,6 +166,8 @@ export interface Session {
    * spend a model call on a run nobody is waiting for.
    */
   stopped?: boolean;
+  /** The repository's own Docker setup, when the run uses it. See `RepoDockerRunner`. */
+  dockerSetup?: DockerSetup;
 
   /** Plans already tried by the repair loop, so an attempt cannot repeat one. */
   repairAttempts?: RunPlan[];
@@ -291,6 +296,8 @@ class SessionStopped extends Error {
 }
 
 export interface SessionManagerDeps {
+  /** Where a repository's own Dockerfile is built; made from the Docker client when absent. */
+  buildSandbox?: BuildSandbox;
   git?: GitManager;
   analyzer?: RepositoryAnalyzer;
   planner?: RuleBasedPlanner;
@@ -468,6 +475,19 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(id);
     if (!session || session.state !== ExecutionState.AWAITING_INPUT) return session;
 
+    // Only a package this run offered. Any path was taken, and the analyzer read whatever
+    // it named — `../../..` included — before the plan was refused (audit A-13).
+    if (input.workspaceDir !== undefined) {
+      const offered = session.pending?.choices?.map((c) => c.dir) ?? [];
+      if (!offered.includes(input.workspaceDir)) {
+        session.logs.buffer.push(
+          'stderr',
+          `Ignoring the package "${String(input.workspaceDir).slice(0, 80)}": it is not one of those this run offered.`,
+        );
+        return session;
+      }
+    }
+
     this.clearTimers(id);
     void this.continueAfterInput(session, input);
     return session;
@@ -485,6 +505,9 @@ export class SessionManager extends EventEmitter {
       const dir = req.repoUrl
         ? await this.cloneRepository(session, req.repoUrl, req.ref)
         : req.sourceDir;
+      // A clone cannot be interrupted; a stop during it is honoured the moment it ends,
+      // and the clone it made is removed with everything else (audit A-19).
+      this.throwIfStopped(session);
 
       if (!dir) {
         this.fail(session, {
@@ -503,16 +526,11 @@ export class SessionManager extends EventEmitter {
       // into `testdrivenio/fastapi-crud-sync` left its database running, alone, for 28
       // minutes. Whatever finished starting since is removed now; a second teardown takes
       // only what exists.
-      if (err instanceof SessionStopped) {
+      if (err instanceof SessionStopped || err instanceof LaunchStopped) {
         await this.teardown(session);
         return;
       }
-      this.fail(session, {
-        code: err instanceof Error && 'code' in err
-          ? ((err as { code: FailureCode }).code)
-          : FailureCode.UNKNOWN_RUNTIME_ERROR,
-        message: err instanceof Error ? err.message : String(err),
-      });
+      this.fail(session, failureOf(err));
       await this.teardown(session);
     }
   }
@@ -523,6 +541,13 @@ export class SessionManager extends EventEmitter {
     const clone = await this.deps.git.clone(repoUrl, undefined, ref);
     session.commit = clone.commit;
     session.cleanupRepo = clone.cleanup;
+    for (const link of clone.removedLinks ?? []) {
+      session.logs.buffer.push(
+        'stderr',
+        `Removed the link ${link}: it points outside the repository, and nothing DevLaunch ` +
+          'reads or copies may come from outside it.',
+      );
+    }
     // Cloned, so this directory is ours to edit if the rewrite flag says so.
     session.ownsSource = true;
     session.logs.buffer.push(
@@ -577,6 +602,7 @@ export class SessionManager extends EventEmitter {
           ...project.warnings,
           ...project.skipped.map((skip) => `Skipping ${skip.name}: ${skip.reason}`),
         ];
+        await this.noteUncoveredCompose(session, dir, project.plan.services.map((sv) => sv.workingDirectory));
         session.logs.buffer.push(
           'stdout',
           `Detected ${project.plan.services.length} services: ` +
@@ -628,6 +654,22 @@ export class SessionManager extends EventEmitter {
     if (!outcome.plan) {
       const reason = outcome.reason ?? 'No deterministic plan could be produced.';
 
+      // A manifest no package manager can read cannot be installed by any plan, and a
+      // model asked anyway planned `npm start` against it (seen on a fixture: the run
+      // failed a minute later as "Start command exited with code 1").
+      const broken = session.metadata?.invalidManifest;
+      if (broken) {
+        this.fail(session, {
+          code: FailureCode.INVALID_MANIFEST,
+          message: `${broken.file} is not valid JSON, so no package manager can read it: ${broken.error}`,
+          evidence: broken.error.slice(0, 300),
+          remedy: `Fix ${broken.file} at the position given (a trailing comma or a comment is the usual cause); nothing can be installed from it as it is.`,
+          confidence: 'high',
+        });
+        await this.teardown(session);
+        return;
+      }
+
       // The code is not in the repository at all: its directories are links to other
       // repositories it never says where to find. Nothing can plan an empty directory, and
       // a model asked to will invent `npm install` in one — which is what happened.
@@ -653,10 +695,47 @@ export class SessionManager extends EventEmitter {
         return;
       }
 
+      // The repository's own Docker setup, before any model: the user's choice was to use
+      // it as the fallback for what DevLaunch cannot run its own way — a stack it has no
+      // image for, or a layout no rule reads — and it is the author's statement of how
+      // the project runs, where a model's plan is a guess.
+      const docker = await readDockerSetup(dir).catch(() => null);
+      if (docker?.kind === 'refused') {
+        this.fail(session, {
+          code: FailureCode.UNSUPPORTED_PROJECT,
+          message:
+            `${reason} Its own ${docker.file} cannot be run here: ${docker.reasons.slice(0, 4).join('; ')}` +
+            `${docker.reasons.length > 4 ? `; and ${docker.reasons.length - 4} more` : ''}.`,
+          remedy:
+            'DevLaunch runs a repository\'s Docker setup with no extra privileges, no access to this ' +
+            'machine\'s files or network, and no Docker socket. A setup that needs any of those has ' +
+            'to be run by hand, by someone who has read it.',
+          confidence: 'high',
+        });
+        await this.teardown(session);
+        return;
+      }
+      if (docker?.kind === 'setup') {
+        session.logs.buffer.push(
+          'stdout',
+          `${reason} Running it from its own ${docker.setup.file} instead: ` +
+            docker.setup.services.map((sv) => `${sv.name} (${sv.build ? 'built' : sv.image})`).join(', ') + '.',
+        );
+        for (const w of docker.setup.warnings) session.logs.buffer.push('stderr', `warning: ${w}`);
+        session.dockerSetup = docker.setup;
+        session.project = dockerProjectPlan(docker.setup);
+        session.detected = `docker:${docker.setup.source}`;
+        session.planWarnings = [...docker.setup.warnings];
+        await this.startDockerProject(session, dir, req);
+        return;
+      }
+
       // The one place the fallback planner runs: the deterministic path declined *and*
       // could not say the repository is unrunnable. A library has no server to start, so
       // a model asked to find one invents a command and the run fails minutes later with
       // a diagnosis about the invention rather than about the repository.
+      // Not a model call for a run somebody already stopped (audit A-19).
+      this.throwIfStopped(session);
       if (this.deps.aiPlanner && !outcome.unrunnable) {
         session.logs.buffer.push(
           'stdout',
@@ -702,6 +781,7 @@ export class SessionManager extends EventEmitter {
     } else {
       session.plan = outcome.plan;
       session.logs.buffer.push('stdout', `Detected ${outcome.detected} (plan source: rule-based)`);
+      if (outcome.plan.planSource === 'rule-based') await this.noteUncoveredCompose(session, dir, [outcome.plan.workingDirectory]);
     }
 
     // The plan may run somewhere other than the root — a workspace package, or the one
@@ -781,14 +861,12 @@ export class SessionManager extends EventEmitter {
       await this.startAndVerify(session, session.sourceDir, {});
     } catch (err) {
       // As in `run`: remove what finished starting after the stop's own teardown.
-      if (err instanceof SessionStopped) {
+      if (err instanceof SessionStopped || err instanceof LaunchStopped) {
         await this.teardown(session);
         return;
       }
-      this.fail(session, {
-        code: FailureCode.UNKNOWN_RUNTIME_ERROR,
-        message: err instanceof Error ? err.message : String(err),
-      });
+      // A refused variable (`MY-KEY`) keeps its own code: it is not an unknown error.
+      this.fail(session, failureOf(err));
       await this.teardown(session);
     }
   }
@@ -834,8 +912,14 @@ export class SessionManager extends EventEmitter {
       project,
       sourceDir,
       logs: session.logs,
+      // Held by the session from the start, so a stop mid-launch releases what exists.
+      onRun: (run) => {
+        session.run = run;
+      },
+      stopped: () => session.stopped === true,
       backing: session.metadata?.backing,
       repoName: session.metadata?.packageJson?.name ?? repoNameFromUrl(session.repoUrl),
+      cacheKey: session.repoUrl ?? sourceDir,
       discovery: discoveryByService(session, project),
       // Only a clone is ours to edit. See `Session.ownsSource`.
       mayRewriteSource: session.ownsSource === true,
@@ -857,6 +941,79 @@ export class SessionManager extends EventEmitter {
 
     this.setState(session, ExecutionState.WAITING_FOR_READY);
     await this.verifyProject(session, executor, sourceDir, req);
+  }
+
+  /**
+   * Say which parts of the repository's compose file this run does not start.
+   *
+   * DevLaunch runs a repository its own way when it can, and the compose fallback is only
+   * for when it cannot — the user's choice. But "can" may be "can, partly":
+   * `dockersamples/example-voting-app` was READY running only `vote`, while `result` (no
+   * start script; its Dockerfile starts it) and `worker` (.NET) never ran, and nothing on
+   * screen said so.
+   */
+  private async noteUncoveredCompose(session: Session, dir: string, covered: string[]): Promise<void> {
+    const docker = await readDockerSetup(dir).catch(() => null);
+    if (docker?.kind !== 'setup' || docker.setup.source !== 'compose') return;
+    const norm = (p: string) => p.replace(/^\.\/?/, '').replace(/\/+$/, '') || '.';
+    const ran = new Set(covered.map(norm));
+    const missing = docker.setup.services
+      .filter((sv) => sv.role !== 'database')
+      .filter((sv) => !(sv.build && ran.has(norm(sv.build.context))))
+      .map((sv) => sv.name);
+    if (missing.length === 0) return;
+    const warning =
+      `${docker.setup.file} also declares ${missing.join(', ')}, which this run does not start: ` +
+      'DevLaunch runs what it can plan its own way, and has no plan for ' +
+      `${missing.length === 1 ? 'it' : 'them'}. The parts that need ${missing.length === 1 ? 'it' : 'them'} will not work.`;
+    session.planWarnings = [...(session.planWarnings ?? []), warning];
+    session.logs.buffer.push('stderr', `warning: ${warning}`);
+  }
+
+  /**
+   * Build and run a repository's own Docker setup, then verify it like any project.
+   * See `RepoDockerRunner`.
+   */
+  private async startDockerProject(session: Session, sourceDir: string, req: LaunchRequest): Promise<void> {
+    const setup = session.dockerSetup!;
+    const project = session.project!;
+    this.setState(session, ExecutionState.VALIDATING);
+    for (const plan of project.services) this.validator.validate({ plan });
+
+    this.setState(session, ExecutionState.STARTING);
+    this.throwIfStopped(session);
+    const runner = new RepoDockerRunner(this.exec, this.buildSandbox());
+    try {
+      session.run = await runner.launch({
+        sessionId: session.id,
+        setup,
+        project,
+        sourceDir,
+        logs: session.logs,
+        onRun: (run) => {
+          session.run = run;
+        },
+        stopped: () => session.stopped === true,
+      });
+    } catch (err) {
+      if (err instanceof DockerSetupFailure) {
+        this.fail(session, err.failure);
+        await this.teardown(session);
+        return;
+      }
+      throw err;
+    }
+    for (const service of session.run.services) this.recordPhases(session, service.logs, service.name);
+    this.throwIfStopped(session);
+    this.setState(session, ExecutionState.WAITING_FOR_READY);
+    await this.verifyProject(session, new ProjectExecutor(this.exec), sourceDir, req);
+  }
+
+  /** The image builder, made once: see `BuildSandbox`. */
+  private sandbox?: BuildSandbox;
+  private buildSandbox(): BuildSandbox {
+    this.sandbox ??= this.deps.buildSandbox ?? new BuildSandbox(this.exec.docker.client());
+    return this.sandbox;
   }
 
   /**
@@ -1059,6 +1216,7 @@ export class SessionManager extends EventEmitter {
       try {
         await service.restart();
       } catch (err) {
+        if (err instanceof LaunchStopped) throw err;
         this.finishAttempt(attempt, ExecutionState.FAILED, { code: FailureCode.CONTAINER_CREATE_FAILED, message: String(err) });
         session.logs.buffer.push(
           'stderr',
@@ -1069,6 +1227,16 @@ export class SessionManager extends EventEmitter {
       this.setState(session, ExecutionState.WAITING_FOR_READY);
       await this.verifyProject(session, executor, sourceDir, req);
       return true;
+    }
+
+    // A repository's own image runs its own command; the memory limit above is the only
+    // part of it that is DevLaunch's to change.
+    if (service.plan.docker) {
+      session.logs.buffer.push(
+        'stdout',
+        `Not rewriting ${service.name}: it runs the repository's own image, whose command is the repository's.`,
+      );
+      return false;
     }
 
     const logs = service.logs.buffer.all().map((l) => l.text).join('\n');
@@ -1117,10 +1285,14 @@ export class SessionManager extends EventEmitter {
     service.plan = { ...service.plan, ...deterministic.plan, name: service.name, role: service.role };
 
     // Every container a service gets is an attempt, whatever caused it.
-    await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand, 'after a plan repair');
+    const attempt = await this.beginAttempt(session, { service: service.name, ...service }, service.plan.installCommand, 'after a plan repair');
     try {
       await service.restart();
     } catch (err) {
+      if (err instanceof LaunchStopped) throw err;
+      // Its outcome recorded, as the memory path beside it does: an attempt left open
+      // read as "running" for a session that had ended (audit A-21).
+      this.finishAttempt(attempt, ExecutionState.FAILED, { code: FailureCode.CONTAINER_CREATE_FAILED, message: String(err) });
       session.logs.buffer.push(
         'stderr',
         `Could not restart ${service.name}: ${err instanceof Error ? err.message : String(err)}`,
@@ -1370,6 +1542,25 @@ export class SessionManager extends EventEmitter {
       impossibleCommand(plan, declaredScripts) ?? (await missingEntryFile(plan, sourceDir));
     if (!problem) return false;
 
+    // A repair that proposes something impossible is a repair that failed, not a new
+    // diagnosis. The first diagnosis describes the repository; this one describes what
+    // the model invented, and replacing the first with it is exactly what the session
+    // keeps the first one to avoid. The run has things to release by now — a database
+    // provisioned on the first attempt, the workspace — so it is torn down here.
+    const original = session.failure;
+    const attempts = session.repairAttempts?.length ?? 0;
+    if (attempts > 0 && original) {
+      session.logs.buffer.push(
+        'stderr',
+        `Repair ${attempts} proposed a plan that cannot run here: ${problem} ` +
+          `Reporting the original diagnosis (${original.code}).`,
+      );
+      session.failure = { ...original, repairAttemptsAfter: attempts };
+      this.setState(session, ExecutionState.FAILED);
+      await this.teardown(session);
+      return true;
+    }
+
     const fromModel = plan.planSource === 'ai-fallback';
     this.fail(session, {
       code: fromModel ? FailureCode.INVALID_AI_PLAN : FailureCode.UNSUPPORTED_PROJECT,
@@ -1383,6 +1574,9 @@ export class SessionManager extends EventEmitter {
           'deterministic plan is built from the repository and should never name a ' +
           'script or a file it does not have.',
     });
+    // Every other refusal releases what the session holds; this one never did, so a
+    // refused run kept its clone on disk.
+    await this.teardown(session);
     return true;
   }
 
@@ -1780,13 +1974,18 @@ export class SessionManager extends EventEmitter {
    * The hard cap bounds the session; the idle timer bounds neglect. Together they stop
    * a forgotten container running indefinitely without cutting short one in active use.
    */
+  /** When each session started serving: the hard cap counts from here, once. */
+  private servingSince = new Map<string, number>();
+
   private armLifetime(session: Session): void {
+    // The idle clock restarts on every use; the hard cap must not. It did — `touch()`
+    // re-arms both, and the dashboard polls — so the "maximum lifetime" was never
+    // reached by a session anyone was looking at (audit A-16).
+    if (!this.servingSince.has(session.id)) this.servingSince.set(session.id, Date.now());
+    const capLeft = Math.max(0, this.servingSince.get(session.id)! + config.timeouts.sessionHardCapMs - Date.now());
     const timers: NodeJS.Timeout[] = [
       setTimeout(() => void this.stop(session.id, 'idle timeout'), config.timeouts.sessionIdleMs),
-      setTimeout(
-        () => void this.stop(session.id, 'maximum session lifetime'),
-        config.timeouts.sessionHardCapMs,
-      ),
+      setTimeout(() => void this.stop(session.id, 'maximum session lifetime'), capLeft),
     ];
     for (const t of timers) t.unref?.();
     this.timers.set(session.id, timers);
@@ -1806,8 +2005,18 @@ export class SessionManager extends EventEmitter {
    * Docker API hiccup into a spurious failure report.
    */
   private watchLiveness(session: Session): void {
-    const handle = session.handle;
-    if (typeof handle?.liveness !== 'function') return;
+    // A single service's one container, or every service of a project still running.
+    // Projects had no watch at all: a backend that died after READY left the project
+    // READY, its URL advertised, until the idle clock reclaimed it (audit A-04).
+    const watched = (): { service?: ServiceRun; handle: LaunchHandle }[] =>
+      session.run
+        ? session.run.services
+            .filter((sv) => sv.state === ExecutionState.READY && typeof sv.handle?.liveness === 'function')
+            .map((sv) => ({ service: sv, handle: sv.handle }))
+        : typeof session.handle?.liveness === 'function'
+          ? [{ handle: session.handle }]
+          : [];
+    if (watched().length === 0) return;
     const interval = this.deps.livenessIntervalMs ?? config.timeouts.livenessMs;
     let unknowns = 0;
 
@@ -1817,9 +2026,10 @@ export class SessionManager extends EventEmitter {
     // watchers.
     const generation = (this.watchGeneration.get(session.id) ?? 0) + 1;
     this.watchGeneration.set(session.id, generation);
+    // PARTIALLY_READY too: its application is running, and can die like any other.
     const current = (): boolean =>
       this.watchGeneration.get(session.id) === generation &&
-      session.state === ExecutionState.READY;
+      SERVING_STATES.includes(session.state);
 
     const schedule = (): void => {
       // A cleared timer list means the session was torn down. Not re-scheduling is how
@@ -1834,58 +2044,116 @@ export class SessionManager extends EventEmitter {
     const tick = async (): Promise<void> => {
       if (!current()) return;
 
-      let liveness: ContainerLiveness;
-      try {
-        liveness = await handle.liveness();
-      } catch (err) {
-        liveness = { kind: 'unknown', error: err instanceof Error ? err.message : String(err) };
-      }
+      const probes = await Promise.all(
+        watched().map(async (w) => {
+          let liveness: ContainerLiveness;
+          try {
+            liveness = await w.handle.liveness();
+          } catch (err) {
+            liveness = { kind: 'unknown', error: err instanceof Error ? err.message : String(err) };
+          }
+          return { ...w, liveness };
+        }),
+      );
 
       // Re-checked after the await: the session may have been torn down, or superseded
       // by a newer watch, while the probe was in flight. Reviving either would be worse
       // than missing one poll.
       if (!current()) return;
 
-      if (liveness.kind === 'unknown') {
+      const unknown = probes.find((p) => p.liveness.kind === 'unknown');
+      if (unknown && unknown.liveness.kind === 'unknown') {
         // Reported once per run of consecutive failures rather than every poll, which
         // at a five-second interval would bury the application's own output.
         if (unknowns === 0) {
           session.logs.buffer.push(
             'stderr',
             `Liveness check could not read the container state${
-              liveness.error ? `: ${liveness.error}` : ''
+              unknown.liveness.error ? `: ${unknown.liveness.error}` : ''
             }. The session is still treated as ready.`,
           );
         }
         unknowns++;
-        schedule();
-        return;
-      }
-      unknowns = 0;
-
-      const verdict = classifyPostReadyExit(liveness, lastLogLine(session), session.memoryMb);
-      if (!verdict) {
-        schedule();
-        return;
-      }
-
-      // The URL is dead the moment the container is. Continuing to advertise it is the
-      // whole defect this watch exists to close.
-      session.url = undefined;
-      if (verdict.failure) {
-        session.failure = verdict.failure;
-        session.logs.buffer.push('stderr', verdict.failure.message);
       } else {
-        session.logs.buffer.push('stdout', 'The application exited cleanly.');
+        unknowns = 0;
       }
 
-      this.setState(session, ExecutionState.CLEANING_UP);
-      await this.teardown(session);
-      this.setState(
-        session,
-        verdict.state,
-        verdict.failure ? 'the application stopped running' : 'the application exited',
-      );
+      // A lone service: its container is the session.
+      if (!session.run) {
+        const probe = probes[0];
+        const verdict = probe ? classifyPostReadyExit(probe.liveness, lastLogLine(session), session.memoryMb) : null;
+        if (!verdict) {
+          schedule();
+          return;
+        }
+        // The URL is dead the moment the container is. Continuing to advertise it is
+        // the whole defect this watch exists to close.
+        session.url = undefined;
+        if (verdict.failure) {
+          session.failure = verdict.failure;
+          session.logs.buffer.push('stderr', verdict.failure.message);
+        } else {
+          session.logs.buffer.push('stdout', 'The application exited cleanly.');
+        }
+        this.setState(session, ExecutionState.CLEANING_UP);
+        await this.teardown(session);
+        this.setState(
+          session,
+          verdict.state,
+          verdict.failure ? 'the application stopped running' : 'the application exited',
+        );
+        return;
+      }
+
+      // A project: a service that stopped is marked, named, and stops being offered.
+      const run = session.run;
+      let stopped: { name: string; failure?: FailureDetail } | undefined;
+      for (const probe of probes) {
+        const sv = probe.service!;
+        const verdict = classifyPostReadyExit(probe.liveness, lastErrorLine(sv.logs), sv.memoryMb);
+        if (!verdict) continue;
+        sv.url = undefined;
+        if (verdict.failure) {
+          sv.state = ExecutionState.FAILED;
+          sv.failure = verdict.failure;
+          session.logs.buffer.push('stderr', `${sv.name} stopped running: ${verdict.failure.message}`);
+          stopped ??= { name: sv.name, failure: verdict.failure };
+        } else {
+          sv.state = ExecutionState.COMPLETED;
+          session.logs.buffer.push('stdout', `${sv.name} exited cleanly.`);
+          stopped ??= { name: sv.name };
+        }
+      }
+      if (!stopped) {
+        schedule();
+        return;
+      }
+
+      const alive = run.services.filter((sv) => sv.state === ExecutionState.READY);
+      if (alive.length === 0) {
+        session.url = undefined;
+        const failed = run.services.find((sv) => sv.state === ExecutionState.FAILED);
+        if (failed?.failure) session.failure = { ...failed.failure, message: `${failed.name}: ${failed.failure.message}` };
+        this.setState(session, ExecutionState.CLEANING_UP);
+        await this.teardown(session);
+        this.setState(
+          session,
+          failed ? ExecutionState.FAILED : ExecutionState.COMPLETED,
+          failed ? 'every service stopped running' : 'every service exited',
+        );
+        return;
+      }
+
+      // Some still run: the project is partly running, and says which part is not.
+      const entry = run.entry();
+      session.url = entry && entry.state === ExecutionState.READY ? entry.url : alive.find((sv) => sv.url)?.url;
+      if (stopped.failure) {
+        session.failure = { ...stopped.failure, message: `${stopped.name}: ${stopped.failure.message}` };
+      }
+      if (session.state === ExecutionState.READY && stopped.failure) {
+        this.setState(session, ExecutionState.PARTIALLY_READY, `${stopped.name} stopped running`);
+      }
+      schedule();
     };
 
     schedule();
@@ -1910,13 +2178,45 @@ export class SessionManager extends EventEmitter {
    *
    * A single-service session restarts its one container by the same route.
    */
+  /**
+   * Why a restart cannot be done now, or null when it can.
+   *
+   * Only for a project that is running (or partly). It was accepted in any state before
+   * the run ended, and twice at once: a restart during the first readiness check or a
+   * repair put two drivers on one state machine, each able to tear down the other's
+   * container, and two quick clicks raced for the same port (audit A-07).
+   */
+  restartRefusal(session: Session): string | null {
+    if (TERMINAL_STATES.includes(session.state)) return 'This run has already ended.';
+    if (this.restarting.has(session.id)) return 'A restart of this run is already in progress.';
+    if (!SERVING_STATES.includes(session.state)) {
+      return `It is still ${session.state.toLowerCase().replace(/_/g, ' ')}; restart once it is running.`;
+    }
+    if (!session.run) return 'Restarting a service is only available for projects of several services.';
+    return null;
+  }
+
+  private restarting = new Set<string>();
+
   async restart(id: string, serviceName?: string): Promise<Session | undefined> {
     const session = this.sessions.get(id);
-    if (!session || TERMINAL_STATES.includes(session.state)) return session;
-    if (!session.run) {
-      session.logs.buffer.push('stderr', 'Restart is only available for multi-service projects.');
+    if (!session) return session;
+    const refusal = this.restartRefusal(session);
+    if (refusal) {
+      session.logs.buffer.push('stderr', `Not restarting: ${refusal}`);
       return session;
     }
+    this.restarting.add(id);
+    try {
+      return await this.restartNow(session, serviceName);
+    } finally {
+      this.restarting.delete(id);
+    }
+  }
+
+  private async restartNow(session: Session, serviceName?: string): Promise<Session> {
+    const id = session.id;
+    if (!session.run) return session;
 
     const targets = serviceName
       ? session.run.services.filter((sv) => sv.name === serviceName)
@@ -1936,6 +2236,8 @@ export class SessionManager extends EventEmitter {
         await target.restart();
       }
     } catch (err) {
+      // Stopped while restarting: the stop has released everything, and its state stands.
+      if (err instanceof LaunchStopped) return session;
       this.fail(session, {
         code: FailureCode.UNKNOWN_RUNTIME_ERROR,
         message: `Restart failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1945,9 +2247,11 @@ export class SessionManager extends EventEmitter {
       return session;
     }
 
+    if (session.stopped || !session.run) return session;
     this.setState(session, ExecutionState.WAITING_FOR_READY);
     const executor = new ProjectExecutor(this.exec);
     const outcome = await executor.waitForReady(session.run);
+    if (session.stopped || !session.run) return session;
 
     if (outcome.state === ExecutionState.READY) {
       session.readyAt = Date.now();
@@ -2562,6 +2866,8 @@ export class SessionManager extends EventEmitter {
     return {
       id: session.id,
       state: session.state,
+      // Which process ran it, so a restart of another one leaves it alone (audit A-12).
+      instance: config.docker.instanceId,
       ...(session.repoUrl ? { repoUrl: session.repoUrl } : {}),
       ...(session.ref ? { ref: session.ref } : {}),
       ...(session.commit !== undefined ? { commit: session.commit } : {}),
@@ -2613,10 +2919,12 @@ export class SessionManager extends EventEmitter {
    * and its containers were removed by the startup sweep. It is marked as interrupted —
    * FAILED, with the reason — rather than left claiming to run. Returns how many.
    */
-  async recoverInterrupted(): Promise<number> {
+  async recoverInterrupted(live: ReadonlySet<string> = new Set()): Promise<number> {
     let marked = 0;
     for (const r of await this.store.list()) {
       if (this.sessions.has(r.id)) continue;
+      // Still running in another live DevLaunch process: not interrupted at all.
+      if (r.instance && live.has(r.instance)) continue;
       if ((TERMINAL_STATES as readonly string[]).includes(r.state)) continue;
       const at = Date.now();
       await this.store.save({
@@ -2643,6 +2951,7 @@ export class SessionManager extends EventEmitter {
     const live = this.sessions.get(id);
     if (live && !TERMINAL_STATES.includes(live.state)) return;
     this.sessions.delete(id);
+    this.servingSince.delete(id);
     await this.flushRecords();
     await this.store.remove(id);
   }
@@ -2711,6 +3020,7 @@ export class SessionManager extends EventEmitter {
       stale.logs.removeAllListeners();
       stale.logs.buffer.clear();
       this.sessions.delete(stale.id);
+      this.servingSince.delete(stale.id);
     }
   }
 
@@ -2875,4 +3185,30 @@ function missingPackage(evidence: string | undefined): string | null {
   if (python) return python[1]!.split('.')[0]!;
   const node = /Cannot find module ['"]([^./'"][^'"]*)['"]/.exec(evidence);
   return node ? node[1]! : null;
+}
+
+/**
+ * A thrown error as a failure, without blaming the repository for DevLaunch's own trouble.
+ *
+ * Any `code` an error carried became the failure code, so Docker stopping mid-run
+ * (`ECONNREFUSED`) or git missing (`ENOENT`) was reported with the taxonomy's fallback —
+ * "this repository is not supported" (audit A-17). Only DevLaunch's own codes pass through.
+ */
+export function failureOf(err: unknown): FailureDetail {
+  const message = err instanceof Error ? err.message : String(err);
+  const code = err instanceof Error && 'code' in err ? (err as { code: unknown }).code : undefined;
+  if (typeof code === 'string' && (Object.values(FailureCode) as string[]).includes(code)) {
+    return { code: code as FailureCode, message };
+  }
+  if (typeof code === 'string' && /^E[A-Z]+$/.test(code)) {
+    return {
+      code: FailureCode.UNKNOWN_RUNTIME_ERROR,
+      message: `DevLaunch could not complete this run: ${message}`,
+      remedy: /docker|sock|ECONNREFUSED/i.test(`${code} ${message}`)
+        ? 'Docker stopped answering. Check that Colima is running (`colima status`), then run ./devlaunch doctor.'
+        : 'This is a problem on this machine, not in the repository. Run ./devlaunch doctor.',
+      confidence: 'medium',
+    };
+  }
+  return { code: FailureCode.UNKNOWN_RUNTIME_ERROR, message };
 }

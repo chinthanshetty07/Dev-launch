@@ -180,6 +180,9 @@ const CODE_INJECTING_ENV_KEYS: ReadonlySet<string> = new Set([
   'GCONV_PATH', 'LOCPATH', 'NLSPATH', 'RESOLV_HOST_CONF',
   // Python
   'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'PYTHONEXECUTABLE',
+  // Each imports or loads code by name: a warning category's module, a user site's .pth
+  // files, a breakpoint hook (audit A-20).
+  'PYTHONWARNINGS', 'PYTHONUSERBASE', 'PYTHONBREAKPOINT',
   // Shells
   'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS',
   // Other runtimes
@@ -195,6 +198,12 @@ const DENIED_ENV_PREFIXES: readonly string[] = [
   'DYLD_',
   'npm_config_',
   'NPM_CONFIG_',
+  // The other package managers' own configuration: an index to install from, a yarn
+  // binary to run, a Corepack download source (audit A-20). Nothing DevLaunch plans sets
+  // them; the runner images set what they need in the image itself.
+  'PIP_',
+  'YARN_',
+  'COREPACK_',
 ];
 
 export function validateEnvVarKey(key: string): string {

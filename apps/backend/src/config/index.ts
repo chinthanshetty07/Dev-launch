@@ -206,6 +206,13 @@ export const config = {
      */
     livenessMs: intEnv('DEVLAUNCH_TIMEOUT_LIVENESS_MS', 5_000),
     /**
+     * How long a project's worker must stay up after it starts before it counts as running.
+     *
+     * A worker has no port to ask, so "it started and is still there a moment later" is
+     * the evidence available. It used to be READY with no evidence at all.
+     */
+    workerGraceMs: intEnv('DEVLAUNCH_WORKER_GRACE_MS', 5_000),
+    /**
      * How long a database gets to start accepting connections.
      *
      * Applications connect at boot and get one chance, so this is waited on before any

@@ -25,6 +25,7 @@ const POLICIES: Readonly<Record<FailureCode, RepairPolicy>> = Object.freeze({
   [FailureCode.MISSING_ENV]: none('a secret has to come from a person; a model inventing one is worse than asking'),
   [FailureCode.DATABASE_REQUIRED]: none('DevLaunch provisions the databases it knows; one it still cannot reach is not a plan problem'),
   [FailureCode.UNSUPPORTED_PROJECT]: none('nothing to repair: no plan was produced to repair'),
+  [FailureCode.INVALID_MANIFEST]: none('a manifest no package manager can read is fixed in the repository, not by a different plan'),
 
   // --- the environment, not the repository ---------------------------------------
   [FailureCode.NETWORK_FAILURE]: none('a registry or network outage; retrying the same download with a different plan changes nothing'),

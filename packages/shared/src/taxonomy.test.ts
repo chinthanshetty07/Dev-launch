@@ -25,3 +25,14 @@ describe('the failure taxonomy', () => {
     expect(FAILURE_TAXONOMY.PLAN_REJECTED_UNSAFE_COMMAND.category).toBe('SECURITY_ERROR');
   });
 });
+
+describe('a network failure', () => {
+  it('is a network error, not a git error, and its advice fits a package download', () => {
+    // Seen on a fresh-copy run: `EAI_AGAIN registry.yarnpkg.com` during install was filed
+    // under GIT_ERROR and told to check the repository URL.
+    const d = describeFailure({ code: FailureCode.NETWORK_FAILURE, message: 'getaddrinfo EAI_AGAIN registry.yarnpkg.com' });
+    expect(d.category).toBe('NETWORK_ERROR');
+    expect(d.retryable).toBe(true);
+    expect(d.suggestedAction).toMatch(/downloading packages/);
+  });
+});

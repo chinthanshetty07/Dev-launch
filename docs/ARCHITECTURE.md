@@ -203,8 +203,11 @@ Where they overlap the file wins. Two services built from one directory — the 
 started two ways — resolve to the one *without* a `command:` override, since an override
 means the author is running something other than what the image is for.
 
-It is read as evidence and never executed. DevLaunch still runs its own hardened
-containers on its own network; `build:` contexts are read for their directory only.
+For a repository DevLaunch runs its own way, it is read as evidence and never executed:
+DevLaunch runs its own hardened containers, and `build:` contexts are read for their
+directory only. For one it cannot, the file *is* the plan: `RepoDockerSetup` translates it
+(refusing what the sandbox withholds), `BuildSandbox` builds it off the local network, and
+`RepoDockerRunner` runs it as an ordinary project under the balanced profile.
 
 An image named there is honoured only if it is a known variant of the kind already
 detected — `pgvector/pgvector` for a Postgres, never an arbitrary name or another

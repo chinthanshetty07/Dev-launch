@@ -5,10 +5,15 @@
 > no Docker socket, and sits on a network that cannot reach your LAN, cloud metadata or the
 > VM itself. DevLaunch's own secrets never enter a container. Plans — from rules or a model —
 > pass a command allowlist and a denylist of environment variables that load code
-> (`NODE_OPTIONS`, `LD_*`, `PYTHON*`, `TS_NODE_COMPILER`…). A repository's own Dockerfile
-> and compose file are never executed, only read. Only public `https://github.com` URLs are
-> accepted, with size and time limits. Deployment records are readable only by you. Details
-> and the tests that prove each control follow.
+> (`NODE_OPTIONS`, `LD_*`, the code-loading `PYTHON*` names, `PIP_*`, `YARN_*`, `COREPACK_*`,
+> `TS_NODE_COMPILER`…). When DevLaunch cannot run a repository its own way, it builds and runs
+> the repository's own Dockerfile or compose file under a **balanced** profile (below):
+> builds happen off the local network, and privileged mode, added capabilities, host mounts,
+> host namespaces and the Docker socket are refused by name. Only public `https://github.com`
+> URLs are accepted, with size and time limits; links in a clone that point outside it are
+> removed. The API answers only requests addressed to this machine, from its own pages.
+> Secrets are hidden from the API, the dashboard, logs, saved records and the model. Records
+> are readable only by you. Details and the tests that prove each control follow.
 
 DevLaunch runs code written by strangers. This document states the threat model, what is
 actually enforced, and — equally important — what is not.
@@ -80,10 +85,76 @@ a hidden assumption into informed consent.
 > The allowlist constrains what DevLaunch composes.
 > The container constrains what the repository does.
 
-### Repository Dockerfiles are ignored
+### A repository's own Docker setup: the fallback, under a balanced profile
 
-Building a repository's own Dockerfile executes arbitrary `RUN` instructions at build
-time — precisely the untrusted-code execution the sandbox exists to contain.
+Used only when DevLaunch cannot run a repository its own way (a stack it has no image for,
+a layout no rule reads) and the repository ships a Dockerfile or compose file. The user
+chose the trade-off: the image keeps its own user (often root inside the container) and a
+writable root filesystem, because real images need both; everything else holds.
+
+- **What the Docker daemon fetches itself is judged first.** `ADD <url>`, and pulling the
+  images `FROM`, `COPY --from` and a compose `image:` name, are made by the daemon on the VM's
+  own network — outside the egress rules (found by the independent verifier). So: `ADD` from
+  any URL is refused (download it in a `RUN` step, which *is* under the rules); a registry
+  that is an address, `localhost`, a local-only name, or a name resolving to a private,
+  loopback, link-local or CGNAT address is refused; a compose image is pulled fresh from its
+  registry every time, so a private image on this machine — or DevLaunch's own, or another
+  run's — is never used. `DockerfileChecks.ts`, `dockerfileChecks.test.ts`,
+  `repoDockerRunner.test.ts`.
+- **Builds** run through Docker's classic builder with `networkmode: devlaunch-net`, so
+  every `RUN` step meets the egress rules. Measured: on Docker's default network a build
+  step reached the home router, the metadata address and the VM; on `devlaunch-net` all
+  three timed out, while package registries stayed reachable. A BuildKit builder was
+  rejected: `buildx` creates it privileged, and a rootless one cannot start in this VM
+  without relaxing its AppArmor user-namespace restriction. Builds are memory- and
+  CPU-limited and labelled; images are tagged `devlaunch-built/…` and removed with the run.
+  Only images under that name are ever removed; after a crash, the next start removes those
+  a dead process left. A stop or a replace stops a build in progress, and a build's memory is
+  counted against the VM while it runs.
+- **Not closed, stated:** a build step runs with Docker's default capabilities (including
+  `NET_RAW`) and without a process limit — the classic builder takes neither setting, and an
+  `nproc` limit does not bind root. A fork bomb in a `RUN` step can exhaust the VM's process
+  table until the build is stopped; raw sockets during a build could spoof traffic on
+  `devlaunch-net`, where at the default concurrency of one only this run's own containers
+  are. Neither reaches the Mac or the local network.
+- **Containers** (`buildRepoImageHostConfig`): not privileged, no capabilities added,
+  `NET_RAW`, `MKNOD`, `AUDIT_WRITE`, `SETFCAP`, `SYS_CHROOT`, `SETPCAP`, `FSETID` dropped,
+  `no-new-privileges`, memory/CPU/pids limits, no binds, no devices, no host PID/IPC/network,
+  on `devlaunch-net`.
+- **Compose** is translated, never handed to `docker compose`. Refused, with the key named:
+  `privileged`, `cap_add`, `devices`, `security_opt`, `sysctls`, `userns_mode`, host
+  `network_mode`/`pid`/`ipc`, the Docker socket, bind mounts and `env_file`s outside the
+  repository, remote build contexts, build `ssh`/`secrets`/`network`. Bind mounts inside
+  the repository are dropped with a warning (the image carries its code).
+- **Only DevLaunch's reader** may produce a plan that runs an image: the validator refuses
+  one from a model.
+
+Proven by `integration/repoDocker.test.ts` (a breakout image probing metadata, the Docker
+bridge, the VM and private ranges from a build step and from the running container — all
+BLOCKED), `repoDockerSafety.test.ts` and `repoDockerSetup.test.ts`.
+
+### This machine only
+
+DevLaunch has no login, so it listens on loopback — which keeps the network out but not a
+browser. Every HTTP request and log-socket upgrade must be addressed to `localhost`,
+`127.0.0.1` or `[::1]` (or a name in `DEVLAUNCH_ALLOWED_HOSTS`) and, when it carries an
+`Origin`, come from such a page. A DNS-rebinding page is answered `421`, a cross-site page
+`403` (`hostGuard.test.ts`).
+
+### Secrets stay out of what leaves
+
+Values a person types, secrets DevLaunch generates and database passwords are hidden in
+`GET /api/sessions/:id` and the Plan panel (`publicPlan`), masked in log lines
+(`maskUrlPassword`), never written to records (`deploymentRecords.test.ts`), and never sent
+to the model: a repair prompt names variables without their values, and a value the model
+hands back hidden keeps the real one (`ai.test.ts`). Each run's database gets its own
+password and, when another run holds the plain name, its own network name.
+
+### Links in a clone
+
+git checks symbolic links out as links, and DevLaunch reads the clone on this machine. Every
+link that resolves outside the clone — absolute, `../`, through another link, or dangling —
+is removed right after the clone, and said so in the log (`escapingLinks.test.ts`).
 
 ## Two findings worth recording
 

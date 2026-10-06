@@ -170,6 +170,43 @@ function alreadyDecided(meta: RepositoryMetadata): string {
   return lines.filter(Boolean).join('\n');
 }
 
+/** What a value the model is not shown is replaced with, in the prompt and in its answer. */
+export const REDACTED = '[value hidden]';
+
+/** Values that say nothing about anyone: the plumbing DevLaunch sets on every run. */
+const VISIBLE_KEYS = new Set(['PORT', 'HOST', 'NODE_ENV', 'FLASK_ENV', 'FLASK_RUN_HOST', 'FLASK_RUN_PORT', 'GRADIO_SERVER_NAME', 'GRADIO_SERVER_PORT']);
+
+/**
+ * The plan as the model may see it: every variable named, no value but the plumbing.
+ *
+ * The values are what a person typed at the configuration gate (an OpenAI or Stripe
+ * key), secrets DevLaunch generated, and database URLs with their passwords. All of it
+ * was sent to the model provider whenever a repair was attempted. The model needs to
+ * know a variable is set, never what it is set to.
+ */
+export function redactPlan(plan: RunPlan): { plan: RunPlan; hidden: string[] } {
+  const hidden: string[] = [];
+  const environmentVariables = plan.environmentVariables.map((v) => {
+    if (v.value === null || VISIBLE_KEYS.has(v.key)) return v;
+    hidden.push(v.value);
+    // A URL's password appears in logs on its own, in a URL spelled differently.
+    const password = /^[a-z][a-z0-9+.-]*:\/\/[^:/@\s]*:([^@\s]+)@/i.exec(v.value)?.[1];
+    if (password) hidden.push(password);
+    return { ...v, value: REDACTED };
+  });
+  return { plan: { ...plan, environmentVariables }, hidden };
+}
+
+/** Remove every hidden value from free text, longest first so none survives in part. */
+export function redactText(text: string, hidden: readonly string[]): string {
+  // Any credentials written into a URL, whoever's they are.
+  let out = text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^:/@\s]*:)[^@\s]+@/gi, `$1${REDACTED}@`);
+  for (const value of [...hidden].filter((v) => v.length >= 4).sort((a, b) => b.length - a.length)) {
+    out = out.split(value).join(REDACTED);
+  }
+  return out;
+}
+
 export function repairPrompt(
   plan: RunPlan,
   failure: FailureDetail,
@@ -177,11 +214,20 @@ export function repairPrompt(
   previousAttempts: RunPlan[],
   meta?: RepositoryMetadata,
 ): string {
+  const shown = redactPlan(plan);
+  const clean = (t: string): string => redactText(t, shown.hidden);
+  failure = {
+    ...failure,
+    message: clean(failure.message),
+    ...(failure.evidence ? { evidence: clean(failure.evidence) } : {}),
+  };
+  logs = clean(logs);
   return [
     'A run plan failed. Propose a corrected plan.',
     '',
     'The plan that failed:',
-    JSON.stringify(plan, null, 1),
+    JSON.stringify(shown.plan, null, 1),
+    `Values shown as "${REDACTED}" are set and must be kept exactly as "${REDACTED}" in your answer.`,
     '',
     `Classified failure: ${failure.code} — ${failure.message}`,
     failure.evidence ? `Evidence: ${failure.evidence}` : '',
@@ -193,7 +239,7 @@ export function repairPrompt(
     '',
     previousAttempts.length > 0
       ? `Already attempted and rejected:\n${previousAttempts
-          .map((p, i) => `${i + 1}. start=${p.startCommand} install=${p.installCommand}`)
+          .map((p, i) => clean(`${i + 1}. start=${p.startCommand} install=${p.installCommand}`))
           .join('\n')}\nYour answer must differ from all of them.`
       : '',
     '',

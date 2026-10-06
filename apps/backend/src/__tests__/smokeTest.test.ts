@@ -86,6 +86,14 @@ describe('the end-to-end smoke test', () => {
     expect(v.passed).toBe(false);
   });
 
+  it('does not pass when there was nothing to check', async () => {
+    // Audit A-23: `every` over no checks is true, so a project whose web service had no
+    // address, beside workers, was verified by construction.
+    const v = await runSmokeTest({ services: [{ name: 'web', role: 'web', environment: [] } as never], backing: [] });
+    expect(v.passed).toBe(false);
+    expect(v.checks.at(-1)?.detail).toMatch(/nothing about the application was checked/);
+  });
+
   it('refuses to run a check against a host name that is not one', async () => {
     const v = await runSmokeTest({
       services: [{ name: 'api', runtime: 'node', environment: [], exec: async () => 'OK' }],

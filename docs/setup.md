@@ -117,6 +117,9 @@ Everything is optional; defaults live in `apps/backend/src/config`.
 | `DEVLAUNCH_TIMEOUT_SESSION_IDLE_MS` | 1800000 | Idle timeout, starts at READY |
 | `DEVLAUNCH_TIMEOUT_AWAITING_INPUT_MS` | 600000 | How long an unanswered gate holds the slot |
 | `DEVLAUNCH_TIMEOUT_LIVENESS_MS` | 5000 | How often a READY session re-checks its container |
+| `DEVLAUNCH_WORKER_GRACE_MS` | 5000 | How long a worker must stay up after starting to count as running |
+| `DEVLAUNCH_BUILD_MEMORY_MB` | 2048 | Memory limit for building a repository's own Dockerfile |
+| `DEVLAUNCH_ALLOWED_HOSTS` | (none) | Extra host names the API answers to, comma-separated, when DevLaunch is served under a name other than localhost |
 
 ## Troubleshooting
 

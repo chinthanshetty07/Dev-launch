@@ -804,3 +804,38 @@ describe('Node built-ins a repository imports', () => {
     expect(meta.nodeBuiltins).toContain('sqlite');
   });
 });
+
+/**
+ * Audit A-15: frameworks the planner runs but discovery did not know. A Streamlit page
+ * beside a FastAPI backend was never a service, so it was neither started nor mentioned;
+ * an Astro site or a Hono API in a project was a "worker", READY with no URL.
+ */
+describe('frameworks a project is made of', () => {
+  it('sees a Streamlit page beside a FastAPI backend', async () => {
+    const root = await repo({
+      'backend/requirements.txt': 'fastapi\nuvicorn\n',
+      'frontend/requirements.txt': 'streamlit\nrequests\n',
+    });
+    const { services } = await discoverServices(root);
+    expect(services.map((s) => `${s.role}:${s.dir}`).sort()).toEqual(['api:backend', 'web:frontend']);
+  });
+
+  it('calls a Gradio app a page, though Gradio itself depends on FastAPI', async () => {
+    const root = await repo({
+      'ui/requirements.txt': 'gradio\nfastapi\n',
+      'api/requirements.txt': 'flask\n',
+    });
+    const { services } = await discoverServices(root);
+    expect(services.find((s) => s.dir === 'ui')?.role).toBe('web');
+  });
+
+  it('knows an Astro site and a Hono API for what they are', async () => {
+    const root = await repo({
+      // Folder names that say nothing, so only the dependency can decide.
+      'marketing/package.json': pkg('marketing', { dev: 'astro dev' }, { astro: '4' }),
+      'edge/package.json': pkg('edge', { dev: 'tsx src/index.ts' }, { hono: '4' }),
+    });
+    const { services } = await discoverServices(root);
+    expect(services.map((s) => `${s.role}:${s.dir}`).sort()).toEqual(['api:edge', 'web:marketing']);
+  });
+});

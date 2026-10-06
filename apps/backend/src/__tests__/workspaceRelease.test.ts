@@ -52,16 +52,31 @@ describe('a single-service session', () => {
 
 describe('the sweeps', () => {
   it('remove the workspace volumes in their scope, after the containers', async () => {
+    // The startup sweep used to remove every DevLaunch container and volume, whoever made
+    // them; since audit A-12 it spares what a live DevLaunch process owns. Here `live-1`
+    // is alive and `dead-1` crashed; `old` predates the instance label.
     const calls: string[] = [];
+    const label = (id?: string) => ({ 'com.devlaunch.managed': 'true', ...(id ? { 'com.devlaunch.instance': id } : {}) });
     const docker = {
-      listManaged: async () => [{ Id: 'c1' }],
+      listManaged: async () => [
+        { Id: 'mine-live', Labels: label('live-1') },
+        { Id: 'crashed', Labels: label('dead-1') },
+        { Id: 'old', Labels: label() },
+      ],
       getContainer: (id: string) => ({ id }),
-      remove: async () => { calls.push('container'); },
-      listWorkspaceVolumes: async (scope: unknown) => { calls.push(`list:${String(scope)}`); return ['devlaunch-ws-a-1', 'devlaunch-ws-b-1']; },
+      remove: async (c: { id: string }) => { calls.push(`container:${c.id}`); },
+      listWorkspaceVolumeLabels: async () => [
+        { name: 'ws-live', labels: label('live-1') },
+        { name: 'ws-dead', labels: label('dead-1') },
+      ],
+      listWorkspaceVolumes: async (scope: unknown) => { calls.push(`list:${String(scope)}`); return ['devlaunch-ws-a-1']; },
       removeVolume: async (name: string) => { calls.push(`volume:${name}`); },
+      listBuiltImages: async () => [{ id: 'img-live', labels: label('live-1') }, { id: 'img-dead', labels: label('dead-1') }],
+      removeImage: async (id: string) => { calls.push(`image:${id}`); },
     } as unknown as DockerManager;
-    await CleanupManager.sweepAllOrphans(docker);
-    expect(calls).toEqual(['container', 'list:all', 'volume:devlaunch-ws-a-1', 'volume:devlaunch-ws-b-1']);
+    await CleanupManager.sweepAllOrphans(docker, new Set(['live-1']));
+    // Built images too, after a crash (verifier D-5): the dead process's, never a live one's.
+    expect(calls).toEqual(['container:crashed', 'container:old', 'volume:ws-dead', 'image:img-dead']);
     calls.length = 0;
     await CleanupManager.sweepOrphans(docker);
     expect(calls).toContain('list:instance');

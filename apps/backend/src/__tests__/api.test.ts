@@ -136,6 +136,23 @@ describe('HTTP API', () => {
     await sessions.cancel(id);
   });
 
+  it('never returns a secret value in a session\'s plan', async () => {
+    // Audit A-11: the plan went out whole, a typed API key and database password included.
+    const s = await sessions.launch({
+      sourceDir: FIXTURES,
+      plan: { ...stubPlan, environmentVariables: [
+        { key: 'OPENAI_API_KEY', value: 'sk-THE-REAL-ONE', required: true },
+        { key: 'DATABASE_URL', value: 'postgresql://u:pw-REAL@db/x', required: false },
+      ] } as never,
+      replace: true,
+    });
+    const body = await (await fetch(`${base}/api/sessions/${s.id}`)).text();
+    expect(body).toContain('OPENAI_API_KEY');
+    expect(body).not.toContain('sk-THE-REAL-ONE');
+    expect(body).not.toContain('pw-REAL');
+    await sessions.cancel(s.id);
+  });
+
   it('refuses a second concurrent session with 409', async () => {
     // A session that resolves immediately is already terminal by the time the second
     // request arrives, so it never exercises the conflict path. This needs one that

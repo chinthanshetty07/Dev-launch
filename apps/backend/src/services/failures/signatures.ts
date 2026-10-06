@@ -376,10 +376,35 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
 
   // --- network: last of the connectivity rules -------------------------------
   {
+    // A manifest npm, yarn or pnpm cannot parse, met at run time (a service's own
+    // package.json): fixed in the repository, never by a different plan.
+    id: 'invalid-manifest',
+    code: FailureCode.INVALID_MANIFEST,
+    patterns: [/npm (?:ERR!|error) code EJSONPARSE/, /ERR_PNPM_JSON_PARSE/, /Invalid package\.json/i, /JSON\.parse Invalid package\.json/],
+    remedy: 'Fix the package.json at the position the parser names; no package manager can read it as it is.',
+    describe: () => 'A package.json in the repository is not valid JSON, so nothing could be installed from it.',
+  },
+  {
+    // A dependency fetched from a host that does not exist. Not the network: DNS answered,
+    // and the answer is that the name has no address. Only a well-known registry failing
+    // to resolve says the network is the problem (the next signature).
+    id: 'dependency-host-unknown',
+    code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+    phases: ['install'],
+    patterns: [/getaddrinfo ENOTFOUND (?!registry\.npmjs\.org|registry\.yarnpkg\.com|registry\.npmmirror\.com|pypi\.org|files\.pythonhosted\.org|github\.com|codeload\.github\.com|objects\.githubusercontent\.com)[a-z0-9.-]+/i],
+    remedy: 'A dependency in the manifest points at a host that does not exist. Correct its URL, or depend on the published package instead.',
+    describe: (e) => {
+      const host = /ENOTFOUND ([a-z0-9.-]+)/i.exec(e)?.[1] ?? 'its host';
+      return `A dependency is fetched from ${host}, which has no address: the name does not exist, so the install cannot succeed from this manifest.`;
+    },
+  },
+  {
     id: 'network-failure',
     code: FailureCode.NETWORK_FAILURE,
     patterns: [
       /getaddrinfo\s+EAI_AGAIN/,
+      // A registry everyone depends on not resolving is this machine's network.
+      /getaddrinfo ENOTFOUND (?:registry\.npmjs\.org|registry\.yarnpkg\.com|pypi\.org|files\.pythonhosted\.org|github\.com|codeload\.github\.com)/i,
       /Temporary failure in name resolution/i,
       /Could not resolve host/i,
       /ETIMEDOUT.*registry\./i,

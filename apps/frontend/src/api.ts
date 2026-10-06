@@ -52,6 +52,7 @@ export interface SessionView {
   commit?: string | null;
   verification?: VerificationView;
   detected?: string | null;
+  planSource?: 'rule-based' | 'ai-fallback' | 'repo-docker';
   plan?: RunPlan;
   planWarnings?: string[];
   pending?: PendingInput;
@@ -84,15 +85,27 @@ export class ConflictError extends Error {
   }
 }
 
+/** The server no longer knows this session: it was restarted, or the session was forgotten. */
+export class GoneError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GoneError';
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
   const body = (await res.json().catch(() => ({}))) as T & {
-    error?: string;
+    error?: string | { message?: string };
     activeSessionId?: string;
   };
+  // Two error shapes: the session routes' `{ error: "…" }` and the structured
+  // `{ error: { message, … } }` of the deployments API and the host guard.
+  const message = typeof body.error === 'string' ? body.error : body.error?.message;
   if (res.status === 409) {
-    throw new ConflictError(body.error ?? 'A session is already running.', body.activeSessionId);
+    throw new ConflictError(message ?? 'A session is already running.', body.activeSessionId);
   }
-  if (!res.ok) throw new Error(body.error ?? `Request failed (${res.status})`);
+  if (res.status === 404) throw new GoneError(message ?? 'Not found.');
+  if (!res.ok) throw new Error(message ?? `Request failed (${res.status})`);
   return body;
 }
 

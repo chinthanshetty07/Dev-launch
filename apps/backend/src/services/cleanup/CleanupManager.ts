@@ -1,3 +1,4 @@
+import { config } from '../../config/index.js';
 import type Dockerode from 'dockerode';
 import { rm } from 'node:fs/promises';
 import type { DockerManager } from '../docker/DockerManager.js';
@@ -68,13 +69,44 @@ export class CleanupManager {
   }
 
   /**
-   * Remove every DevLaunch container regardless of creator.
+   * Remove what DevLaunch processes that are no longer running left behind.
    *
-   * Only safe at startup: a crashed process leaves containers nothing else will claim,
-   * and at that moment this process is by definition not mid-run.
+   * At startup. It used to remove every DevLaunch container regardless of creator, on
+   * the reasoning that at startup "this process is not mid-run" — true of this process,
+   * not of another one: starting a second server, or the test suite, deleted the running
+   * dashboard's application (audit A-12). `live` is every instance known to be alive;
+   * what carries one of their ids is left alone. A container with no instance label
+   * predates the label, and nothing alive claims it.
    */
-  static async sweepAllOrphans(docker: DockerManager): Promise<number> {
-    return CleanupManager.sweep(docker, 'all');
+  static async sweepAllOrphans(docker: DockerManager, live: ReadonlySet<string> = new Set()): Promise<number> {
+    const owner = (labels: Record<string, string> | undefined): string | undefined => labels?.[config.docker.instanceLabel];
+    const orphan = (labels: Record<string, string> | undefined): boolean => {
+      const id = owner(labels);
+      return id === undefined || !live.has(id);
+    };
+    let removed = 0;
+    for (const info of await docker.listManaged('all')) {
+      if (!orphan(info.Labels)) continue;
+      try {
+        await docker.remove(docker.getContainer(info.Id));
+        removed++;
+      } catch {
+        // Best effort: a container we cannot remove is reported by count, not thrown.
+      }
+    }
+    if (typeof docker.listWorkspaceVolumeLabels === 'function') {
+      for (const volume of await docker.listWorkspaceVolumeLabels().catch(() => [])) {
+        if (orphan(volume.labels)) await docker.removeVolume(volume.name).catch(() => undefined);
+      }
+    }
+    // Images built from a repository's Dockerfile by a process that crashed before its run
+    // could remove them (verifier D-5). Only `devlaunch-built/…`, only a dead process's.
+    if (typeof docker.listBuiltImages === 'function') {
+      for (const image of await docker.listBuiltImages().catch(() => [])) {
+        if (orphan(image.labels)) await docker.removeImage(image.id).catch(() => undefined);
+      }
+    }
+    return removed;
   }
 
   /**

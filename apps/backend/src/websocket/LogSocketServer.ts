@@ -7,6 +7,7 @@ import {
   type WireLogEntry,
 } from '@devlaunch/shared';
 import type { SessionManager, Session } from '../services/session/SessionManager.js';
+import { allowedHosts, configuredHosts, hostAllowed, originAllowed } from '../services/security/HostGuard.js';
 import type { LogEntry } from '../services/logs/LogBuffer.js';
 
 const PATH_PATTERN = /^\/ws\/sessions\/([^/]+)\/logs$/;
@@ -32,10 +33,22 @@ const toWire = (e: LogEntry): WireLogEntry => ({
 export class LogSocketServer {
   private readonly wss = new WebSocketServer({ noServer: true });
 
-  constructor(private readonly sessions: SessionManager) {}
+  constructor(
+    private readonly sessions: SessionManager,
+    /** Host names besides this machine's; see `HostGuard`. */
+    private readonly extraHosts?: string[],
+  ) {}
 
   attach(server: HttpServer): void {
+    const allowed = allowedHosts(this.extraHosts ?? configuredHosts());
     server.on('upgrade', (req, socket, head) => {
+      // The same check as the HTTP API's (audit A-10): a rebound page could otherwise
+      // stream any session's output.
+      if (!hostAllowed(req.headers.host, allowed) || !originAllowed(req.headers.origin, allowed)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       const url = new URL(req.url ?? '', 'http://localhost');
       const match = PATH_PATTERN.exec(url.pathname);
       if (!match) {

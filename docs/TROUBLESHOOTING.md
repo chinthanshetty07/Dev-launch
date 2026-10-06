@@ -46,9 +46,32 @@ need. Secrets an app uses only to sign its own sessions are generated for you.
 
 ## "This is a … project" / UNSUPPORTED_PROJECT
 
-The repository needs a runtime DevLaunch has no image for (Java, Go, Rust, PHP, Ruby, .NET…),
-or its code is not in the repository at all (git links to other repositories with no
-`.gitmodules`). The message says which.
+A runtime DevLaunch has no image for (Java, Go, Rust, PHP, Ruby, .NET…) is run from the
+repository's own Dockerfile or compose file when it has one — the run says "Running it from
+its own Dockerfile instead". Without one, or when its code is not in the repository at all
+(git links to other repositories with no `.gitmodules`), the message says which.
+
+## "Its own compose.yaml cannot be run here"
+
+The repository's Docker setup asks for something the sandbox withholds — `privileged`, added
+capabilities, host folders, host networking, the Docker socket. The message names each one.
+Such a setup has to be run by hand, by someone who has read it.
+
+## The repository's Dockerfile did not build
+
+The build log is in the run's log, step by step. A Dockerfile using BuildKit-only syntax
+(`RUN --mount`, heredocs) cannot build here: DevLaunch's builder is the one that keeps build
+steps off your network.
+
+## INVALID_MANIFEST
+
+`package.json` is not valid JSON — usually a trailing comma or a comment. The message gives
+the parser's position. No package manager can read it, so nothing was started.
+
+## 421 "DevLaunch answers requests addressed to this machine"
+
+Open DevLaunch at `http://127.0.0.1:3939` or `http://localhost:3939`. If you serve it under
+another name on purpose (a VM, a devcontainer), add that name to `DEVLAUNCH_ALLOWED_HOSTS`.
 
 ## A page works on your Mac but fails here
 

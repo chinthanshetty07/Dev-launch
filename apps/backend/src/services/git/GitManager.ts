@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, rm, stat, readdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, mkdtemp, rm, stat, readdir, readlink, realpath, unlink } from 'node:fs/promises';
+import { join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FailureCode } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
@@ -17,6 +17,8 @@ export interface CloneResult {
   sizeBytes: number;
   fileCount: number;
   cleanup: () => Promise<void>;
+  /** Symbolic links removed because they pointed outside the clone; relative paths. */
+  removedLinks?: string[];
 }
 
 export interface TreeMeasurement {
@@ -187,6 +189,41 @@ export async function measureTree(
   return { sizeBytes, fileCount, exceeded };
 }
 
+/**
+ * Remove every symbolic link in a clone that resolves outside it.
+ *
+ * git checks a link out as a link, and DevLaunch reads the clone on this machine: a
+ * repository committing `.env.example -> /Users/<name>/project/.env` had that file read
+ * as its example, and its values copied into a container with open internet access.
+ * A link that stays inside the clone is ordinary (a shared config, a README alias) and
+ * is kept; one that leaves it — absolute, `../…`, or through another link — is removed
+ * before anything reads the tree. A dangling link is removed too: what it would point at
+ * is not decided yet. Returns what was removed, relative to the clone.
+ */
+export async function removeEscapingLinks(root: string): Promise<string[]> {
+  const base = await realpath(root);
+  const removed: string[] = [];
+  const walk = async (current: string): Promise<void> => {
+    const entries = await readdir(current, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const full = join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = await realpath(full).catch(() => null);
+        const inside = target !== null && (target === base || target.startsWith(base + sep));
+        if (!inside) {
+          const pointsAt = await readlink(full).catch(() => '?');
+          await unlink(full);
+          removed.push(`${relative(root, full)} -> ${pointsAt}`);
+        }
+      } else if (entry.isDirectory() && entry.name !== '.git') {
+        await walk(full);
+      }
+    }
+  };
+  await walk(root);
+  return removed;
+}
+
 export interface GitManagerOptions {
   rootDir?: string;
   /** Overridable so the abort path can be exercised against a real clone. */
@@ -268,9 +305,16 @@ export class GitManager {
     };
 
     let limitError: SecurityRejection | undefined;
+    // One walk at a time: each is a stat of every file, and starting one every interval
+    // regardless let them pile up on a large clone (audit A-22).
+    let measuring = false;
     const monitor = setInterval(() => {
+      if (measuring) return;
+      measuring = true;
       void (async () => {
-        const m = await measureTree(dir, this.maxBytes, this.maxFiles);
+        const m = await measureTree(dir, this.maxBytes, this.maxFiles).finally(() => {
+          measuring = false;
+        });
         if (!m.exceeded) return;
         limitError = new SecurityRejection(
           FailureCode.REPOSITORY_TOO_LARGE,
@@ -326,8 +370,14 @@ export class GitManager {
       }
 
       const commit = await headOf(dir);
+      // After the commit is read (git itself never follows these) and before anything
+      // else in DevLaunch reads a file of the clone.
+      const removedLinks = await removeEscapingLinks(dir);
 
-      return { dir, url, ref, commit, sizeBytes: measured.sizeBytes, fileCount: measured.fileCount, cleanup };
+      return {
+        dir, url, ref, commit, sizeBytes: measured.sizeBytes, fileCount: measured.fileCount, cleanup,
+        ...(removedLinks.length ? { removedLinks } : {}),
+      };
     } catch (err) {
       await cleanup().catch(() => undefined);
       throw err;

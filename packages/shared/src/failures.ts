@@ -61,6 +61,11 @@ export const FailureCode = {
    */
   DOCKER_SOCKET_REQUIRED: 'DOCKER_SOCKET_REQUIRED',
   CONTAINER_CREATE_FAILED: 'CONTAINER_CREATE_FAILED',
+  /**
+   * A manifest no package manager can read: `package.json` that is not JSON. Nothing that
+   * installs from it can run, so it is said before anything starts.
+   */
+  INVALID_MANIFEST: 'INVALID_MANIFEST',
   UNKNOWN_RUNTIME_ERROR: 'UNKNOWN_RUNTIME_ERROR',
 } as const;
 

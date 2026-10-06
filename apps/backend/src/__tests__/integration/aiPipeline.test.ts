@@ -146,13 +146,16 @@ describe('Phase 8 — AI fallback and bounded repair', () => {
 
   it('repairs a failing plan and reaches READY', async () => {
     const provider = scripted([
-      // First: a plan that will fail — the file does not exist.
+      // First: a plan that will fail when it runs. It used to name a file that does not
+      // exist; since 2026-10-04 a model plan naming a missing file is refused before
+      // anything starts, so repair never ran. A file that exists but is not the program
+      // is the same mistake a model makes, and only running it reveals it.
       {
         runtime: NODE_RUNTIME,
         packageManager: 'npm',
         installCommand: null,
         buildCommand: null,
-        startCommand: 'node wrong-entry.js',
+        startCommand: 'node README.md',
         workingDirectory: '.',
         expectedPort: 3000,
         environmentVariables: [],
@@ -188,7 +191,7 @@ describe('Phase 8 — AI fallback and bounded repair', () => {
           packageManager: 'npm',
           installCommand: null,
           buildCommand: null,
-          startCommand: 'node missing-0.js',
+          startCommand: 'node README.md',
           workingDirectory: '.',
           expectedPort: 3000,
           environmentVariables: [],
@@ -211,8 +214,13 @@ describe('Phase 8 — AI fallback and bounded repair', () => {
     expect(s.repairs?.map((r) => r.source)).toEqual(['ai']);
     const text = s.logs.buffer.all().map((l) => l.text).join('\n');
     expect(text).toMatch(/Attempting repair 1\/2/);
-    expect(text).toMatch(/budget of 1 call\(s\) is spent/);
     expect(text).not.toMatch(/Attempting repair 2\/2/);
+    // The repair names a file that is not there. It used to run and fail, spending the
+    // budget; it is now refused before anything starts, and — the defect this caught —
+    // the run reports the repository's own failure, not "the model's plan is invalid".
+    expect(text).toMatch(/proposed a plan that cannot run here: The start command runs `missing-1\.js`/);
+    expect(s.failure?.code).toBe(FailureCode.START_COMMAND_FAILED);
+    expect(s.failure?.repairAttemptsAfter).toBe(1);
   }, 300_000);
 
   it('does not spend a repair on a failure a plan cannot fix', async () => {

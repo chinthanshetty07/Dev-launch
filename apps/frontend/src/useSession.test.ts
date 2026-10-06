@@ -17,8 +17,17 @@ describe('whether a dropped log socket is worth reconnecting', () => {
   });
 
   it('stops once the session has finished', () => {
-    for (const state of ['READY', 'FAILED', 'CANCELLED', 'COMPLETED'] as const) {
+    for (const state of ['FAILED', 'CANCELLED', 'COMPLETED'] as const) {
       expect(at({ state }), state).toBeNull();
+    }
+  });
+
+  it('keeps following an application that is running', () => {
+    // READY and PARTIALLY_READY used to count as finished, so a socket dropped by a
+    // laptop sleep or a backend restart was never reconnected, and the page kept a green
+    // READY over an application that had since died (audit A-14).
+    for (const state of ['READY', 'PARTIALLY_READY'] as const) {
+      expect(at({ state }), state).toBeGreaterThan(0);
     }
   });
 

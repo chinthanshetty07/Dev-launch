@@ -1039,6 +1039,14 @@ describe('a page with nothing to build', () => {
     expect(out.detected).toBe('flask');
   });
 
+  it('is never served beside a server in a language DevLaunch does not run', () => {
+    // GoogleCloudPlatform/cloud-run-hello: go.mod, a Dockerfile, and an index.html that is
+    // a Go template. Served raw it was READY with its checks passed, showing `{{if .Color}}`.
+    const out = planner.plan(meta({ staticIndex: true, foreignRuntimes: [{ runtime: 'Go', manifest: 'go.mod' }] }));
+    expect(out.plan).toBeNull();
+    expect(out.reason).toMatch(/Go/);
+  });
+
   it('is served beside Python files that plan to nothing — a site with a helper script', () => {
     const out = planner.plan(meta({
       staticIndex: true,

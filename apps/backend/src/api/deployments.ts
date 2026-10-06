@@ -170,7 +170,10 @@ export function registerDeploymentRoutes(app: Express, opts: DeploymentRouteOpti
       if (!r) return apiError(res, 'NOT_FOUND', `No deployment ${req.params.id.slice(0, 64)}.`);
       return apiError(res, 'NOT_AVAILABLE', 'Logs are kept in memory only, and this deployment ran before the last restart. Its events are at /events.');
     }
-    const since = Number(req.query.since ?? 0) || 0;
+    // Sequence numbers start at 0, so "everything" is "after -1"; a default of 0 dropped
+    // the first line, which is the one saying which commit was cloned (audit A-18).
+    const raw = Number(req.query.since);
+    const since = req.query.since === undefined || !Number.isFinite(raw) ? -1 : raw;
     const limit = Math.min(Math.max(Number(req.query.limit ?? 1000) || 1000, 1), 10_000);
     const entries = live.logs.buffer.all().filter((e) => e.seq > since).slice(-limit);
     res.json({ id: live.id, entries, stats: live.logs.buffer.stats });
@@ -185,8 +188,11 @@ export function registerDeploymentRoutes(app: Express, opts: DeploymentRouteOpti
     if (!r) return;
     const live = sessions.get(r.id);
     const checker = new ReadinessChecker();
+    // A single-service deployment has no service table; its one URL is the one to ask.
+    // It used to answer `services: []` and check nothing (audit A-18).
+    const targets = r.services.length > 0 ? r.services : r.url ? [{ name: 'app', state: r.state, url: r.url }] : [];
     const services = await Promise.all(
-      r.services.map(async (s) => {
+      targets.map(async (s) => {
         if (!live || !s.url) return { name: s.name, state: s.state, url: s.url ?? null, answered: null };
         const u = new URL(s.url);
         const probe = await checker.waitForReady({
@@ -226,6 +232,9 @@ export function registerDeploymentRoutes(app: Express, opts: DeploymentRouteOpti
   app.post('/api/deployments/:id/retry', async (req, res) => {
     const live = sessions.get(req.params.id);
     if (live && !TERMINAL_STATES.includes(live.state)) {
+      // Answered 202 for a single-service run, where restart does nothing (audit A-07).
+      const refusal = sessions.restartRefusal(live);
+      if (refusal) return apiError(res, 'CONFLICT', refusal);
       void sessions.restart(live.id);
       return res.status(202).json({ id: live.id, state: live.state });
     }

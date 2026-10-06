@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { allowedHosts, configuredHosts, hostGuard } from '../services/security/HostGuard.js';
+import { publicPlan } from '../services/security/Redaction.js';
 import express, { type Express } from 'express';
 import { SessionConflict, type Session, type SessionManager } from '../services/session/SessionManager.js';
 import { assertSafeRelativePath } from '../services/security/PathValidator.js';
@@ -21,6 +23,8 @@ export interface AppOptions {
   docker?: { ping(): Promise<unknown> };
   /** The egress probe's latest verdict. See `EgressProbe`. */
   egress?: () => { verdict: 'enforced' | 'absent' | 'unknown'; detail: string };
+  /** Host names besides this machine's that may address the API. See `HostGuard`. */
+  allowedHosts?: string[];
   /** Failures nothing caught. See `recordUnhandled` — health is where they surface. */
   recentErrors?: () => { at: number; detail: string }[];
 }
@@ -54,7 +58,11 @@ function present(session: Session, sessions?: Pick<SessionManager, 'installSumma
     ref: session.ref,
     commit: session.commit,
     detected: session.detected,
-    plan: session.plan,
+    // How the plan was made, for a project too: `session.plan` is the single-service
+    // field, so a project — the Docker path included — showed no source at all.
+    planSource: session.plan?.planSource ?? session.project?.planSource,
+    // Secrets hidden: see `publicPlan` (audit A-11).
+    plan: publicPlan(session.plan),
     planWarnings: session.planWarnings,
     pending: session.pending,
     url: session.url,
@@ -138,6 +146,8 @@ function present(session: Session, sessions?: Pick<SessionManager, 'installSumma
 
 export function createApp(opts: AppOptions): Express {
   const app = express();
+  // First, before anything reads the request: see `HostGuard` (audit A-10).
+  app.use(hostGuard(allowedHosts(opts.allowedHosts ?? configuredHosts())));
   app.use(express.json({ limit: '64kb' }));
 
   // Prefer the built frontend; fall back to the plain harness page when it has not
@@ -351,6 +361,12 @@ export function createApp(opts: AppOptions): Express {
       return;
     }
 
+    // Refused now rather than accepted and ignored: see `restartRefusal`.
+    const refusal = opts.sessions.restartRefusal(session);
+    if (refusal) {
+      res.status(409).json({ error: refusal });
+      return;
+    }
     // Not awaited: a restart takes as long as a start, and the client follows it over
     // the same stream it follows a launch on.
     void opts.sessions.restart(session.id, service);

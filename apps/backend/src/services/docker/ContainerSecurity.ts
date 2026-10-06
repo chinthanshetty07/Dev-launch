@@ -65,6 +65,48 @@ export function buildHostConfig(opts: SecurityOptions): Dockerode.HostConfig {
 }
 
 /**
+ * Capabilities a repository's own image keeps: Docker's defaults minus the ones nothing
+ * ordinary needs. The balanced profile the user chose lets an image run as its own user
+ * (often root) and write its own filesystem — official images (postgres, nginx…) start
+ * as root and drop to a service user, which needs CHOWN/SETUID/SETGID — but adds nothing,
+ * and removes raw sockets (packet spoofing on the shared network), device nodes and the
+ * rest below.
+ */
+const BALANCED_DROPPED_CAPS = ['NET_RAW', 'MKNOD', 'AUDIT_WRITE', 'SETFCAP', 'SYS_CHROOT', 'SETPCAP', 'FSETID'];
+
+/**
+ * Host configuration for a repository's own image (its Dockerfile or compose file).
+ *
+ * The same walls as DevLaunch's own containers where an arbitrary image can live with
+ * them — memory, CPU and process ceilings, no-new-privileges, not privileged, no Docker
+ * socket, no host mounts, no host namespaces, DevLaunch's network and its egress rules —
+ * and the image's own user and a writable root filesystem where it cannot.
+ */
+export function buildRepoImageHostConfig(opts: { memoryMb?: number; networkName?: string }): Dockerode.HostConfig {
+  const memoryMb = opts.memoryMb ?? config.container.memoryMb;
+  return {
+    Memory: memoryMb * 1024 * 1024,
+    MemorySwap: memoryMb * 1024 * 1024,
+    NanoCpus: config.container.cpus * 1_000_000_000,
+    PidsLimit: config.container.pidsLimit,
+    ReadonlyRootfs: false,
+    CapDrop: [...BALANCED_DROPPED_CAPS],
+    CapAdd: [],
+    SecurityOpt: ['no-new-privileges'],
+    Privileged: false,
+    Init: true,
+    // Named explicitly so nothing upstream can widen them.
+    Binds: undefined,
+    Devices: [],
+    PidMode: '',
+    IpcMode: 'private',
+    UsernsMode: '',
+    NetworkMode: opts.networkName,
+    AutoRemove: false,
+  };
+}
+
+/**
  * The cache volume a repository's package downloads belong in.
  *
  * Keyed on what is being installed — a repository, and within it a service — rather than

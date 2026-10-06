@@ -219,7 +219,9 @@ async function deploy(entry) {
     outcome,
     finalState: s.state,
     detected: s.detected ?? null,
-    planSource: s.plan?.planSource ?? (s.services?.length ? 'rule-based' : null),
+    // The session's own field first: a project — the Docker fallback included — has no
+    // `plan`, and was reported as 'rule-based' whatever made it (verifier D-7).
+    planSource: s.planSource ?? s.plan?.planSource ?? (s.services?.length ? 'rule-based' : null),
     plan: s.plan
       ? {
           runtime: `${s.plan.runtime.language} ${s.plan.runtime.version}`,

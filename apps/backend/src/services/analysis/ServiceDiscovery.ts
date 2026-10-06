@@ -26,15 +26,20 @@ const IGNORED = new Set([
 ]);
 
 /** Dependencies that identify a service served to a browser. */
+// Every page framework the planner knows how to run (`frameworks.ts`), so none of them is
+// mistaken for a worker in a project (audit A-15).
 const WEB_DEPS = [
   'react', 'react-dom', 'vue', 'svelte', '@angular/core', 'next', 'nuxt',
   'vite', '@vitejs/plugin-react', 'gatsby', 'solid-js', 'preact',
+  'astro', '@remix-run/dev', '@remix-run/react', '@docusaurus/core', 'parcel',
+  'webpack-dev-server', '@vue/cli-service', 'react-scripts', '@sveltejs/kit',
 ];
 
 /** Dependencies that identify a service called over HTTP by something else. */
 const API_DEPS = [
   'express', 'fastify', 'koa', '@nestjs/core', 'hapi', '@hapi/hapi', 'restify',
   'apollo-server', '@apollo/server', 'graphql-yoga', 'socket.io',
+  'hono', '@hono/node-server', '@trpc/server', 'json-server', 'elysia', 'polka', 'h3',
 ];
 
 /** Directory names that settle the question when dependencies do not. */
@@ -42,6 +47,13 @@ const WEB_NAMES = ['frontend', 'client', 'web', 'ui', 'www', 'site', 'app'];
 const API_NAMES = ['backend', 'server', 'api', 'service'];
 
 const PYTHON_API_DEPS = ['flask', 'django', 'fastapi', 'starlette', 'tornado', 'bottle'];
+
+/**
+ * Python frameworks that serve a page to a browser. The planner runs them; discovery did
+ * not see them, so `backend/` (FastAPI) + `frontend/` (Streamlit) was one service, and the
+ * other half was never started or mentioned (audit A-15).
+ */
+const PYTHON_WEB_DEPS = ['streamlit', 'gradio'];
 
 interface BackingRule {
   kind: BackingService['kind'];
@@ -312,18 +324,22 @@ async function inspectDir(
   const python = await readPythonDeps(base);
   if (!python) return null;
   const pythonEnvKeys = await serviceEnvKeys(base);
-  const isApi = python.deps.some((d) => PYTHON_API_DEPS.includes(d)) || python.hasManagePy;
-  if (!isApi) return null;
+  const webDep = python.deps.find((d) => PYTHON_WEB_DEPS.includes(d));
+  const apiDep = python.deps.find((d) => PYTHON_API_DEPS.includes(d));
+  if (!apiDep && !webDep && !python.hasManagePy) return null;
   const pythonAccepts = await findAcceptedOrigins(base);
+  // A page framework decides the role even beside an API one: Gradio itself depends on
+  // FastAPI, and a Streamlit app that imports requests is still a page.
+  const isWeb = webDep !== undefined && !python.hasManagePy;
 
   return {
     candidate: {
       name: baseName(dir),
       dir,
-      role: 'api',
+      role: isWeb ? 'web' : 'api',
       language: 'python',
       scripts: [],
-      evidence: python.hasManagePy ? 'has manage.py' : `requires ${python.deps.find((d) => PYTHON_API_DEPS.includes(d))}`,
+      evidence: python.hasManagePy ? 'has manage.py' : `requires ${isWeb ? webDep : apiDep}`,
       declaredPort: python.hasManagePy ? 8000 : undefined,
       envKeys: pythonEnvKeys,
       envExample: await serviceEnvExample(base),

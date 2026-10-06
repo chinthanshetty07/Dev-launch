@@ -23,6 +23,8 @@ export interface RepositoryMetadata {
 
   /** Variables declared in .env.example, with whether a default value was supplied. */
   envExample: EnvExampleVar[];
+  /** A manifest that is present but no package manager can read, with the parser's words. */
+  invalidManifest?: { file: string; error: string };
   readmeExcerpt?: string;
 
   /** Packages discovered when the repository is a monorepo. */

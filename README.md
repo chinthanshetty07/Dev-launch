@@ -93,12 +93,15 @@ to stop whatever is running instead of getting `409`. Errors always look like
 Repositories are untrusted code. Each runs in a container that is non-root, read-only,
 without capabilities, limited in memory, CPU and processes, without the Docker socket, and
 on a network that cannot reach your home network or cloud metadata. A repository's own
-Dockerfile and compose file are read, never executed. See [docs/SECURITY.md](docs/SECURITY.md).
+Dockerfile and compose file are used only when DevLaunch cannot run the repository its own
+way, built off your network and run with no extra privileges, no access to your files and
+no Docker socket. See [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Documentation
 
 | | |
 |---|---|
+| [RELEASE_REPORT.md](docs/RELEASE_REPORT.md) | The latest release check: verdict, every test count and real-repository result |
 | [DEVLAUNCH_AUDIT.md](docs/DEVLAUNCH_AUDIT.md) | The production audit: every finding, its severity and status |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, data flow, the decisions behind them |
 | [DEPLOYMENT_FLOW.md](docs/DEPLOYMENT_FLOW.md) | Every step from URL to working application |

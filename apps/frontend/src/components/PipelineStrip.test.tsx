@@ -109,3 +109,11 @@ describe('progressOf', () => {
     expect(progressOf(null, null)).toBeNull();
   });
 });
+
+describe('<PipelineStrip> plan source', () => {
+  it("says in words when a run uses the repository's own Docker setup", () => {
+    const html = renderToStaticMarkup(<PipelineStrip state={'READY' as never} furthest={'READY' as never} planSource="repo-docker" />);
+    expect(html).toMatch(/plan: repository(&#x27;|')s own Docker setup/);
+    expect(html).toMatch(/off the local network/);
+  });
+});

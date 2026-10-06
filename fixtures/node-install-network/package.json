@@ -1,0 +1,6 @@
+{
+  "name": "install-network",
+  "version": "1.0.0",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "left-pad": "https://registry.devlaunch-test.invalid/left-pad-1.3.0.tgz" }
+}

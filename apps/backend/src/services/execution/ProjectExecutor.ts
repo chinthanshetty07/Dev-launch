@@ -22,6 +22,7 @@ import { choosePort } from '../ports/HostPorts.js';
 import { imageForRuntime } from '../security/ImageAllowlist.js';
 import { LogManager } from '../logs/LogManager.js';
 import type { ContainerLiveness, ExecutionManager, LaunchHandle, ReadyOutcome } from './ExecutionManager.js';
+import { classifyPostReadyExit, lastErrorLine } from './ExecutionManager.js';
 import {
   applySourceRewrites,
   repointHost,
@@ -112,6 +113,13 @@ export interface ProjectLaunchOptions {
   backing?: BackingService[];
   /** Used to name the database, so it reads as the project's rather than as a default. */
   repoName?: string;
+  /**
+   * What the package cache belongs to: the repository URL. Not `repoName`, which is the
+   * repository's own `package.json` "name" — "monorepo", "frontend", "app" — and shared by
+   * unrelated repositories, which then shared a writable cache, Corepack's package-manager
+   * binaries included (audit A-09).
+   */
+  cacheKey?: string;
   /** Per service: absolute origins its source hardcodes, and the variables it declares. */
   discovery?: {
     callsOrigins: Record<string, string[]>;
@@ -143,6 +151,13 @@ export interface ProjectLaunchOptions {
    * given more memory and is installing again, `exhausted` that no more memory can be
    * given, `not-oom` that it died of something else.
    */
+  /**
+   * Handed the run the moment it exists, before anything is started, so a stop that
+   * arrives mid-launch can release what has been created so far (audit A-05).
+   */
+  onRun?(run: ProjectRun): void;
+  /** Asked between steps; true ends the launch, releasing everything it made. */
+  stopped?(): boolean;
   memory?: {
     initialMb: number;
     /** Where one service starts instead, when its repository needed more last time. */
@@ -167,6 +182,14 @@ export interface ProjectLaunchOptions {
  * the same root, one at a time, and the second used to install it all over again. Others
  * each keep their own.
  */
+/** A launch ended because its session was stopped, after releasing what it made. */
+export class LaunchStopped extends Error {
+  constructor() {
+    super('The launch was stopped.');
+    this.name = 'LaunchStopped';
+  }
+}
+
 function workspaceKeyFor(opts: { sessionId: string; project: { sharedInstall?: boolean } }, service: string): string {
   return opts.project.sharedInstall ? `${opts.sessionId}:shared` : `${opts.sessionId}:${service}`;
 }
@@ -217,6 +240,15 @@ export class ProjectExecutor {
         return { errors };
       },
     };
+    opts.onRun?.(run);
+    // Between every step. Without it a stop mid-launch released nothing — the containers
+    // existed only in this function — and the launch went on starting services and
+    // waiting on installs for minutes beside the run that replaced it.
+    const halt = async (): Promise<void> => {
+      if (!opts.stopped?.()) return;
+      await run.cleanup();
+      throw new LaunchStopped();
+    };
 
     // Databases first, and waited for. Applications connect at boot — the real
     // repository that prompted this exits with "MongoDB connection error" rather than
@@ -235,6 +267,7 @@ export class ProjectExecutor {
       await run.cleanup();
       throw err;
     }
+    await halt();
 
     // Host ports are chosen here rather than by Docker, because each service's URL has
     // to appear in its siblings' configuration and a port Docker has not assigned yet
@@ -381,6 +414,7 @@ export class ProjectExecutor {
       // needs — same tree, same packages — so it starts there rather than rediscovering the
       // limit by being killed at the default. Never more than the VM has free.
       const startMb = await startingMemory(opts, shared, this.exec, plan.name);
+      await halt();
       try {
         const handle = await this.exec.launch({
           sessionId: opts.sessionId,
@@ -390,7 +424,7 @@ export class ProjectExecutor {
           logs,
           networkAliases: aliasesFor(plan.name),
           hostPort: hostPorts[plan.name],
-          packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
+          packageCacheVolume: cacheVolumeFor(opts.cacheKey ?? opts.sourceDir ?? opts.sessionId, plan.name),
           workspaceKey: workspaceKeyFor(opts, plan.name),
           ...(startMb !== undefined ? { memoryMb: startMb } : {}),
           ...(shared.nodeHeapMb ? { nodeHeapMb: shared.nodeHeapMb } : {}),
@@ -425,7 +459,7 @@ export class ProjectExecutor {
               sourceDir: opts.sourceDir,
               image: imageForRuntime(current.runtime.language, current.runtime.version),
               logs,
-              packageCacheVolume: cacheVolumeFor(opts.repoName ?? opts.sourceDir ?? opts.sessionId, plan.name),
+              packageCacheVolume: cacheVolumeFor(opts.cacheKey ?? opts.sourceDir ?? opts.sessionId, plan.name),
               workspaceKey: workspaceKeyFor(opts, plan.name),
               networkAliases: aliasesFor(plan.name),
               hostPort: hostPorts[plan.name],
@@ -434,9 +468,17 @@ export class ProjectExecutor {
               ...(entry.memoryMb ? { memoryMb: entry.memoryMb } : {}),
               ...(entry.nodeHeapMb ? { nodeHeapMb: entry.nodeHeapMb } : {}),
             });
+            // A stop that arrived while this was being created has already released the
+            // run — including the old container, not this one, which nothing would then
+            // track (audit A-06). It is released here instead.
+            if (opts.stopped?.()) {
+              await entry.handle.cleanup().catch(() => undefined);
+              throw new LaunchStopped();
+            }
           },
         };
         services.push(entry);
+        await halt();
         await opts.memory?.onLaunch?.(entry);
 
         // One workspace install at a time.
@@ -462,6 +504,7 @@ export class ProjectExecutor {
           for (;;) {
           outcome = await waitForInstall(logs, {
             timeoutMs: config.timeouts.timeToReadyMs,
+            cancelled: opts.stopped,
             // Docker's answer, not ours: our own state is not written until readiness,
             // which runs after this loop.
             hasExited: async () => {
@@ -473,6 +516,7 @@ export class ProjectExecutor {
           // prints its install-failed marker, and exits 110 a moment later — `failed`, not
           // `exited` — with Docker's OOMKilled set. Asking only on `exited` let the live run
           // release the next service into the same kill.
+          if (outcome === 'cancelled') await halt();
           if ((outcome !== 'exited' && outcome !== 'failed') || !opts.memory?.onInstallDied) break;
           const died = await settledLiveness(entry.handle);
           const verdict = await opts.memory.onInstallDied(entry, died);
@@ -568,6 +612,12 @@ export class ProjectExecutor {
    * The project is ready only when all of them are — a frontend that answers while its
    * API is still starting is not something a person can use.
    */
+  private async waitForWorker(service: ServiceRun, timeoutMs?: number): Promise<void> {
+    const outcome = await workerOutcome(service, timeoutMs ?? config.timeouts.timeToReadyMs, config.timeouts.workerGraceMs);
+    service.state = outcome.state;
+    service.failure = outcome.failure;
+  }
+
   async waitForReady(
     run: ProjectRun,
     timeoutMs?: number,
@@ -575,7 +625,9 @@ export class ProjectExecutor {
     const outcomes = await Promise.all(
       run.services.map(async (service): Promise<ReadyOutcome | null> => {
         if (service.role === 'worker' || service.plan.expectedPort === null) {
-          service.state = ExecutionState.READY;
+          // Was READY on the spot, with no check at all: a worker whose install failed
+          // or which crashed on boot made the whole project READY (audit A-03).
+          if (service.state !== ExecutionState.READY) await this.waitForWorker(service, timeoutMs);
           return null;
         }
         // A service that is already ready is left alone. This is re-entered after a
@@ -590,7 +642,7 @@ export class ProjectExecutor {
       }),
     );
 
-    const failed = run.services.find((s) => s.state !== ExecutionState.READY);
+    const failed = run.services.find((s) => s.state !== ExecutionState.READY && s.state !== ExecutionState.COMPLETED);
     if (failed) {
       return {
         state: ExecutionState.FAILED,
@@ -609,6 +661,73 @@ export class ProjectExecutor {
     return { state: ExecutionState.READY, url: run.entry()?.url };
   }
 }
+
+/**
+ * Wait for a service with no port: until it has started (its install and build are
+ * done) and is still running a short while later.
+ *
+ * A worker that finished with exit 0 is COMPLETED, not failed — a one-off job is allowed
+ * to end. One that died, or never got as far as starting, fails with what it said.
+ */
+async function workerOutcome(
+  service: ServiceRun,
+  timeoutMs: number,
+  graceMs: number,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<{ state: ExecutionState; failure?: FailureDetail }> {
+  const deadline = Date.now() + timeoutMs;
+  let exited = false;
+  void service.handle.exit.then(() => { exited = true; }, () => { exited = true; });
+  while (!service.handle.sentinels.has(Sentinel.START_BEGIN) && !exited && Date.now() < deadline) {
+    await sleep(250);
+  }
+  if (!exited && service.handle.sentinels.has(Sentinel.START_BEGIN)) await sleep(graceMs);
+
+  let liveness: ContainerLiveness;
+  try {
+    liveness = await service.handle.liveness();
+  } catch (err) {
+    liveness = { kind: 'unknown', error: err instanceof Error ? err.message : String(err) };
+  }
+  const reached = service.handle.phaseReached();
+  if (liveness.kind === 'running') {
+    return service.handle.sentinels.has(Sentinel.START_BEGIN)
+      ? { state: ExecutionState.READY }
+      : {
+          state: ExecutionState.FAILED,
+          failure: {
+            code: FailureCode.READINESS_TIMEOUT,
+            message: `It had not finished installing after ${Math.round(timeoutMs / 1000)} s.`,
+            ...(reached !== 'none' ? { phase: reached } : {}),
+            confidence: 'medium',
+          },
+        };
+  }
+  // Nothing definite: say so rather than inventing a failure or a success.
+  if (liveness.kind === 'unknown') {
+    return {
+      state: ExecutionState.FAILED,
+      failure: { code: FailureCode.UNKNOWN_RUNTIME_ERROR, message: `Its state could not be read${liveness.error ? `: ${liveness.error}` : ''}.`, confidence: 'low' },
+    };
+  }
+  const verdict = classifyPostReadyExit(liveness, lastErrorLine(service.logs), service.memoryMb);
+  if (!verdict) return { state: ExecutionState.READY };
+  if (!verdict.failure) return { state: ExecutionState.COMPLETED };
+  // The classifier speaks of an application that had been ready; a worker never was, and
+  // one that died installing must not be told "it started correctly".
+  const when = reached === 'start' ? ' after it started' : reached === 'none' ? ' before it started' : ` during its ${reached}`;
+  return {
+    state: ExecutionState.FAILED,
+    failure: {
+      ...verdict.failure,
+      message: verdict.failure.message.replace(' after it had become ready', when),
+      ...(reached !== 'start' ? { remedy: `It stopped${when}; the end of its log says why.` } : {}),
+      ...(reached !== 'none' ? { phase: reached } : {}),
+    },
+  };
+}
+
+export { workerOutcome };
 
 /** APIs and workers first; the browser-facing service last. */
 function startRank(role: ServiceRole): number {
@@ -634,8 +753,8 @@ function startRank(role: ServiceRole): number {
  */
 export function waitForInstall(
   logs: LogManager,
-  opts: { timeoutMs: number; hasExited?: () => Promise<boolean> | boolean },
-): Promise<'ok' | 'failed' | 'exited' | 'timeout'> {
+  opts: { timeoutMs: number; hasExited?: () => Promise<boolean> | boolean; cancelled?: () => boolean },
+): Promise<'ok' | 'failed' | 'exited' | 'timeout' | 'cancelled'> {
   return new Promise((resolve) => {
     let done = false;
     // Declared before the scan below, which can finish immediately — reading a `const`
@@ -644,7 +763,7 @@ export function waitForInstall(
     let timer: NodeJS.Timeout | undefined;
     let poll: NodeJS.Timeout | undefined;
 
-    const finish = (outcome: 'ok' | 'failed' | 'exited' | 'timeout'): void => {
+    const finish = (outcome: 'ok' | 'failed' | 'exited' | 'timeout' | 'cancelled'): void => {
       if (done) return;
       done = true;
       if (timer) clearTimeout(timer);
@@ -678,6 +797,10 @@ export function waitForInstall(
     // OOM-killed during its install stayed "STARTING" for the full ten-minute budget
     // while the next service waited behind it. Observed exactly once, which was enough.
     poll = setInterval(() => {
+      if (opts.cancelled?.()) {
+        finish('cancelled');
+        return;
+      }
       void Promise.resolve(opts.hasExited?.())
         .then((exited) => {
           if (exited) finish('exited');

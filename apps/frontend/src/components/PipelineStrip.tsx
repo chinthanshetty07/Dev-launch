@@ -18,6 +18,17 @@ const MARK: Record<StageStatus, string> = {
   pending: '\u00b7', active: '\u00bb', done: 'ok', failed: '\u00d7', paused: '?',
 };
 
+/** How a plan was made, in words. */
+const PLAN_SOURCE_LABEL: Record<string, string> = {
+  'rule-based': 'rule-based',
+  'ai-fallback': 'ai-fallback',
+  'repo-docker': "repository's own Docker setup",
+};
+const PLAN_SOURCE_HINT: Record<string, string> = {
+  'repo-docker':
+    "DevLaunch could not run this repository its own way, so it built and ran the repository's own Dockerfile or compose file — off the local network, with no extra privileges.",
+};
+
 export function PipelineStrip({
   state,
   furthest,
@@ -43,8 +54,8 @@ export function PipelineStrip({
         {/* Showing how the plan was produced is the cheapest way to make the hybrid
             architecture legible at a glance. */}
         {planSource && (
-          <span className="rounded-full border border-ok/50 px-2 py-0.5 text-[11px] text-ok">
-            plan: {planSource}
+          <span className="rounded-full border border-ok/50 px-2 py-0.5 text-[11px] text-ok" title={PLAN_SOURCE_HINT[planSource]}>
+            plan: {PLAN_SOURCE_LABEL[planSource] ?? planSource}
           </span>
         )}
         {detected && (

@@ -2,15 +2,40 @@
 
 Deliberate v1 boundaries, stated honestly. Each is a decision, not an oversight.
 
-## Repository Dockerfiles are ignored
+## Live DevLaunch processes
 
-If a repository ships its own `Dockerfile`, DevLaunch does not use it. Building it
-would execute arbitrary `RUN` instructions at build time — exactly the untrusted-code
-execution the sandbox exists to prevent — and it would make the Run Plan meaningless,
-since the Dockerfile would *be* the plan.
+A DevLaunch server records itself in `~/.devlaunch/instances/` so another one starting does
+not remove its running containers. The test suite's own runs do not register (only a
+started server does), so a server started while the integration suite runs will remove the
+suite's containers — the suite's runs, never a dashboard's. A crashed server whose process
+id has been reused by another program is taken for alive until that program exits.
 
-Consequence: repositories that only build correctly via their own Dockerfile will fail
-or fall back to the AI planner.
+## A repository's own Docker setup is a fallback, not the first choice
+
+DevLaunch runs a repository its own way when it can (its runner images, its plan, the
+strict profile). Only when it cannot — a Go/Java/PHP/Rust/… project, or a layout no rule
+reads — does it build and run the repository's Dockerfile or compose file, under the
+balanced profile in `SECURITY.md`. Limits of that path:
+
+- BuildKit-only Dockerfile syntax (`RUN --mount`, heredocs) does not build: the
+  network-isolated builder is Docker's classic one.
+- Compose settings that reach outside the sandbox are refused, not emulated; a setup that
+  needs them must be run by hand.
+- Compose `healthcheck`s, `profiles`, custom `networks` and `deploy` are not honoured;
+  services start in `depends_on` order, a database once it accepts connections.
+- An image's command is the repository's: no plan repair rewrites it; only a memory raise
+  applies.
+- A repository DevLaunch *can* partly run its own way is run its own way, even when a
+  compose file describes more; the run says which compose services it does not start.
+- Not applied, and said so: `.dockerignore` (the whole repository is sent to the build),
+  compose override files, `depends_on: condition: service_completed_successfully` (a
+  dependency is started first, not waited for to finish).
+- Refused, by name: `ADD` from a URL, base images from non-public registries, and a compose
+  image that is not on a public registry.
+- With `DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS` above 1, two compose runs share
+  `devlaunch-net` under their compose service names, and DevLaunch's own MongoDB and Redis
+  have no password: one run could reach the other's. At the default of 1, a replace now
+  releases the old run before the new one starts.
 
 ## The container is the security boundary, not the planner
 

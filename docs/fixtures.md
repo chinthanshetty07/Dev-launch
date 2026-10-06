@@ -22,6 +22,18 @@ They are deliberately not in the automated suite.
 | `node-monorepo-ambiguous` | Two runnable packages. The single-service planner asks which; through the ordinary path service discovery now finds both first and the project planner runs them together, which is a better answer than a question |
 | `unrecognized-app` | No known framework and a non-approved script name, so only the AI fallback can plan it. Its README carries a live prompt injection, used to prove the allowlist rejects the payload |
 
+## The repository's own Docker setup (fallback)
+
+| Fixture | Exercises |
+|---|---|
+| `docker-go-api` | A Go server DevLaunch has no runtime for, run from its Dockerfile: built in the sandbox, run under the balanced profile, READY after the end-to-end check, nothing left on stop |
+| `docker-compose-stack` | A compose project: a Go API built from source, official `postgres:16` and `redis:7`, started in `depends_on` order; the API answers 200 only when it reaches both by their compose names |
+| `docker-refused` | `privileged: true` and the Docker socket: refused, both named, nothing started |
+| `docker-breakout` | Probes metadata, the Docker bridge, the VM and private ranges from a build step and from the running container; every probe must print BLOCKED |
+| `docker-daemon-fetch` | `ADD` from the metadata address — a download the Docker daemon makes itself, outside the egress rules: refused by name, nothing built |
+| `docker-base-image-port` | No `EXPOSE` of its own on `nginx`: served on the port the image declares |
+| `docker-port-convention` | No port declared anywhere; listens on `$PORT`: DevLaunch sets `PORT=8080` and checks it |
+
 ## Failure paths
 
 | Fixture | Expected outcome |
@@ -36,6 +48,10 @@ They are deliberately not in the automated suite.
 | `node-module-missing` | `START_COMMAND_FAILED`, naming the missing module |
 | `node-dies-after-ready` | `APPLICATION_EXITED` — serves a real request, then exits 3. The one failure readiness alone cannot see |
 | `python-slow-install` | An install that outlasts the readiness budget, then a normal start. Readiness must wait for the application, not the container |
+| `node-bad-manifest` | `package.json` with a trailing comma: `INVALID_MANIFEST` before anything starts, with the parser's words; no model asked |
+| `node-port-conflict` | Two servers on one port: `PORT_NOT_LISTENING`, "already in use" |
+| `project-backend-fails` | A frontend that runs beside a backend that crashes: partly running, the backend named, the frontend kept up |
+| `node-install-network` | A dependency from a host that does not exist: a dependency failure naming the host — not a network outage, which a well-known registry not resolving would be |
 
 ## Multi-service
 

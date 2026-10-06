@@ -115,7 +115,9 @@ A human picking from a list beats a model guessing, and it is less code.
 
 ## Execution model
 
-**Generic allowlisted base image, repo copied in. Repo Dockerfiles are ignored in v1.**
+**Generic allowlisted base image, repo copied in.** A repository's own Dockerfile or
+compose file is the fallback when no rule plans it (see `SECURITY.md`, balanced profile);
+the reasoning below is why it is not the first choice.
 
 Building a repository's own Dockerfile executes arbitrary `RUN` at build time — the
 precise untrusted-code execution the sandbox exists to contain — and it makes the Run

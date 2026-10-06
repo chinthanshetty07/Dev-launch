@@ -331,6 +331,58 @@ describe('GroqProvider', () => {
   });
 });
 
+describe('what a repair sends to the model provider', () => {
+  // A-01: a key typed at the configuration gate, a generated secret and a database
+  // password all reached api.groq.com inside the repair prompt.
+  const secret = 'sk-live-THIS-IS-THE-USERS-KEY';
+  const dbPassword = 'pw-devlaunch-9f8e7d';
+  const plan = (): RunPlan =>
+    RunPlanSchema.parse({
+      ...basePlan(),
+      environmentVariables: [
+        { key: 'OPENAI_API_KEY', value: secret, required: true },
+        { key: 'DATABASE_URL', value: `postgresql://postgres:${dbPassword}@postgres:5432/app`, required: false },
+        { key: 'PORT', value: '3000', required: false },
+      ],
+    });
+
+  it('names every variable and shows no value but the plumbing', async () => {
+    let body = '';
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      body = init.body;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"startCommand":"npm start"}' } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await new GroqProvider({ apiKey: 'test-key', fetchImpl }).diagnoseFailure({
+      plan: plan(),
+      failure: { code: FailureCode.START_COMMAND_FAILED, message: `bad key ${secret}`, evidence: `auth failed for ${secret}` },
+      logs: `Error: Incorrect API key provided: ${secret}\nconnecting to postgresql://postgres:${dbPassword}@postgres\nDB_PASSWORD is ${dbPassword}`,
+      metadata: meta(),
+      previousAttempts: [],
+    });
+    expect(body).toContain('OPENAI_API_KEY');
+    expect(body).not.toContain(secret);
+    expect(body).not.toContain(dbPassword);
+    expect(body).toContain('3000');
+  });
+
+  it('keeps the real value of a variable the model hands back hidden', async () => {
+    const { plan: repaired } = await new AIRepair(
+      fakeProvider({
+        startCommand: 'npm start',
+        environmentVariables: [
+          { key: 'OPENAI_API_KEY', value: '[value hidden]', required: true },
+          { key: 'INVENTED', value: '[value hidden]', required: false },
+          { key: 'PORT', value: '4000', required: false },
+        ],
+      }),
+    ).repair({ plan: plan(), failure: { code: FailureCode.START_COMMAND_FAILED, message: 'x' }, logs: '', metadata: meta(), previousAttempts: [] });
+    expect(repaired.environmentVariables).toEqual([
+      { key: 'OPENAI_API_KEY', value: secret, required: true },
+      { key: 'PORT', value: '4000', required: false },
+    ]);
+  });
+});
+
 describe('GroqProvider rate limiting', () => {
   const rateLimited = (body = '', headers: Record<string, string> = {}) =>
     new Response(body, { status: 429, headers });

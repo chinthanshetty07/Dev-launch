@@ -89,8 +89,11 @@ function manager(store: InMemoryDeploymentStore, outcome: ReadyOutcome) {
     } as never,
   });
 }
+// Fails when time runs out. It used to return quietly, so a wait that never came true
+// went on to assertions that could pass anyway.
 const until = async (cond: () => boolean) => {
   for (let i = 0; i < 300 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+  if (!cond()) throw new Error('until: condition not met within 3 s');
 };
 
 describe('a deployment’s record', () => {
@@ -147,6 +150,71 @@ describe('a deployment’s record', () => {
     expect(r1?.endedReason).toMatch(/interrupted by a DevLaunch restart while WAITING_FOR_READY/);
     expect(r1?.events.at(-1)?.event).toBe('INTERRUPTED_BY_RESTART');
     expect((await store.get('old-deploy-3'))?.interrupted).toBeUndefined();
+    await m.shutdown();
+  });
+
+  it('is left alone when another DevLaunch process is still running it', async () => {
+    // Audit A-12: a second server, or the test suite, starting up marked the dashboard's
+    // running deployment as interrupted.
+    const store = new InMemoryDeploymentStore();
+    await store.save({ id: 'theirs', instance: 'live-1', state: 'READY', createdAt: 1, updatedAt: 1, services: [], backing: [], containerIds: [], events: [] });
+    await store.save({ id: 'crashed', instance: 'dead-1', state: 'READY', createdAt: 2, updatedAt: 2, services: [], backing: [], containerIds: [], events: [] });
+    const m = manager(store, {} as ReadyOutcome);
+    expect(await m.recoverInterrupted(new Set(['live-1']))).toBe(1);
+    expect((await store.get('theirs'))?.state).toBe('READY');
+    expect((await store.get('crashed'))?.interrupted).toBe(true);
+    await m.shutdown();
+  });
+
+  it('never holds a secret value, in the record or in any event', async () => {
+    // R8: what is written to ~/.devlaunch/deployments must not carry a typed key, a
+    // generated secret or a database password, whatever the plan held.
+    const store = new InMemoryDeploymentStore();
+    const secret = 'sk-live-NEVER-WRITE-THIS';
+    const ready: ReadyOutcome = { state: ExecutionState.READY, hostPort: '1', url: 'http://localhost:1/', readiness: { ready: true, attempts: 1, elapsedMs: 1 } as ReadyOutcome['readiness'] };
+    const exec = {
+      async launch(o: { logs?: LogManager }) {
+        return { container: { id: 'c-1' }, logs: o.logs ?? new LogManager(), waitForReady: async () => ready, clearStartupBudget: () => undefined, cleanup: async () => ({ errors: [] }) };
+      },
+    } as unknown as ExecutionManager;
+    const m = new SessionManager(exec, {
+      deploymentStore: store,
+      analyzer: { analyze: async () => ({ warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [] }) } as never,
+      planner: {
+        planRepository: async () => ({
+          plan: RunPlanSchema.parse({
+            runtime: { language: 'node', version: '20' }, packageManager: 'npm', installCommand: null, buildCommand: null,
+            startCommand: 'npm start', workingDirectory: '.', expectedPort: 3000, planSource: 'rule-based',
+            environmentVariables: [
+              { key: 'OPENAI_API_KEY', value: secret, required: true },
+              { key: 'DATABASE_URL', value: 'postgresql://postgres:pw-NEVER@postgres:5432/x', required: false },
+            ],
+          }),
+          detected: 'node', warnings: [],
+        }),
+      } as never,
+    });
+    const s = await m.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.READY);
+    await m.flushRecords();
+    const written = JSON.stringify(await store.get(s.id));
+    expect(written).toContain('READY');
+    expect(written).not.toContain(secret);
+    expect(written).not.toContain('pw-NEVER');
+    await m.shutdown();
+  });
+
+  it('records which process ran it', async () => {
+    const store = new InMemoryDeploymentStore();
+    const failed: ReadyOutcome = {
+      state: ExecutionState.FAILED, hostPort: null, readiness: { ready: false, attempts: 0, elapsedMs: 0 } as ReadyOutcome['readiness'],
+      failure: { code: FailureCode.START_COMMAND_FAILED, message: 'x', phase: 'start' },
+    };
+    const m = manager(store, failed);
+    const s = await m.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED);
+    await m.flushRecords();
+    expect((await store.get(s.id))?.instance).toMatch(/^[0-9a-f-]{36}$/);
     await m.shutdown();
   });
 });

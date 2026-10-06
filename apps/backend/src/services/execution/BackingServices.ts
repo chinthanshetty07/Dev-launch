@@ -37,16 +37,31 @@ export interface BackingSpec {
    * healthy, the credentials right, and the connection refused with `database "x" does
    * not exist`. MongoDB hid this for a long time by creating databases on first write.
    */
-  env(database: string): string[];
+  env(database: string, password?: string): string[];
   /** Command that exits 0 once the service is accepting connections. */
-  readyCheck: string[];
+  readyCheck(password?: string): string[];
   /** Environment variable an application conventionally reads its connection from. */
   defaultEnvKey: string;
-  /** Connection string, given a database name. */
-  url(database: string): string;
+  /** Connection string, given a database name, and the run's password and host name. */
+  url(database: string, creds?: Partial<BackingCredentials>): string;
 }
 
-/** Password for the databases that insist on one. Local, ephemeral, never published. */
+/**
+ * How one run reaches its database: the name it answers to on the network, and its
+ * password.
+ *
+ * Both were the same for every run — `postgres`, `devlaunch` — so two runs at once (a
+ * raised concurrency limit) registered one name twice, Docker answered it round-robin,
+ * and an application connected, migrated and passed its checks against another run's
+ * database, which it could read and write (audit A-08). Each run now has its own password,
+ * and takes the plain name only when no other run holds it.
+ */
+export interface BackingCredentials {
+  password: string;
+  host: string;
+}
+
+/** The fallback, for callers that state none. Each provisioned run gets its own. */
 const PASSWORD = 'devlaunch';
 
 export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>> = Object.freeze({
@@ -59,9 +74,9 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     dataPaths: ['/data/db', '/data/configdb'],
     // Created on first write; naming it up front would change nothing.
     env: () => [],
-    readyCheck: ['mongosh', '--quiet', '--eval', 'db.adminCommand({ ping: 1 }).ok'],
+    readyCheck: () => ['mongosh', '--quiet', '--eval', 'db.adminCommand({ ping: 1 }).ok'],
     defaultEnvKey: 'MONGODB_URI',
-    url: (database) => `mongodb://mongodb:27017/${database}`,
+    url: (database, c) => `mongodb://${c?.host ?? 'mongodb'}:27017/${database}`,
   },
   postgres: {
     kind: 'postgres',
@@ -70,10 +85,10 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     port: 5432,
     user: '999:999',
     dataPaths: ['/var/lib/postgresql/data', '/var/run/postgresql'],
-    env: (database) => [`POSTGRES_PASSWORD=${PASSWORD}`, 'POSTGRES_USER=postgres', `POSTGRES_DB=${database}`],
-    readyCheck: ['pg_isready', '-U', 'postgres'],
+    env: (database, password = PASSWORD) => [`POSTGRES_PASSWORD=${password}`, 'POSTGRES_USER=postgres', `POSTGRES_DB=${database}`],
+    readyCheck: () => ['pg_isready', '-U', 'postgres'],
     defaultEnvKey: 'DATABASE_URL',
-    url: (database) => `postgresql://postgres:${PASSWORD}@postgres:5432/${database}`,
+    url: (database, c) => `postgresql://postgres:${c?.password ?? PASSWORD}@${c?.host ?? 'postgres'}:5432/${database}`,
   },
   mysql: {
     kind: 'mysql',
@@ -82,14 +97,14 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     port: 3306,
     user: '999:999',
     dataPaths: ['/var/lib/mysql', '/var/run/mysqld'],
-    env: (database) => [`MYSQL_ROOT_PASSWORD=${PASSWORD}`, `MYSQL_DATABASE=${database}`],
+    env: (database, password = PASSWORD) => [`MYSQL_ROOT_PASSWORD=${password}`, `MYSQL_DATABASE=${database}`],
     // As root, named. The check runs as the container's own user, `mysql`, and without
     // `-u` mysqladmin connects as that user, is refused, and never prints "mysqld is
     // alive" — so no MySQL was ever reported ready, while the server logged "ready for
     // connections" and the application connected to it without trouble.
-    readyCheck: ['mysqladmin', 'ping', '-h', '127.0.0.1', '-u', 'root', `-p${PASSWORD}`],
+    readyCheck: (password = PASSWORD) => ['mysqladmin', 'ping', '-h', '127.0.0.1', '-u', 'root', `-p${password}`],
     defaultEnvKey: 'MYSQL_URL',
-    url: (database) => `mysql://root:${PASSWORD}@mysql:3306/${database}`,
+    url: (database, c) => `mysql://root:${c?.password ?? PASSWORD}@${c?.host ?? 'mysql'}:3306/${database}`,
   },
   redis: {
     kind: 'redis',
@@ -100,9 +115,9 @@ export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>
     dataPaths: ['/data'],
     // Redis has no databases to create; it numbers them and they always exist.
     env: () => [],
-    readyCheck: ['redis-cli', 'ping'],
+    readyCheck: () => ['redis-cli', 'ping'],
     defaultEnvKey: 'REDIS_URL',
-    url: () => 'redis://redis:6379',
+    url: (_database, c) => `redis://${c?.host ?? 'redis'}:6379`,
   },
 });
 
@@ -187,9 +202,9 @@ const ASYNC_DIALECTS: Readonly<Record<string, string>> = Object.freeze({
  * Exported so both the single-service and the project path build it identically; a URL
  * that differs between them is a defect that only reproduces on one kind of repository.
  */
-export function connectionUrl(need: BackingService, database: string): string {
+export function connectionUrl(need: BackingService, database: string, creds?: Partial<BackingCredentials>): string {
   const spec = BACKING_SPECS[need.kind];
-  const url = spec.url(database);
+  const url = spec.url(database, creds);
   const dialect = need.driver ? ASYNC_DIALECTS[need.driver] : undefined;
   if (!dialect) return url;
 
@@ -208,12 +223,13 @@ export function connectionUrl(need: BackingService, database: string): string {
 export function connectionEnv(
   backing: BackingService[],
   database: string,
+  creds: Partial<Record<BackingService['kind'], BackingCredentials>> = {},
 ): { key: string; value: string; required: boolean }[] {
   const out: { key: string; value: string; required: boolean }[] = [];
   for (const need of backing) {
     const spec = BACKING_SPECS[need.kind];
     if (!spec) continue;
-    const url = connectionUrl(need, database);
+    const url = connectionUrl(need, database, creds[need.kind]);
     // An *empty* list is not a declaration, it is the absence of one, and `?? ` does not
     // catch it. A database detected only from a hardcoded URL in the source declares no
     // variable at all — correctly, because the application reads none — and it was

@@ -1,0 +1,600 @@
+{
+  "name": "after7b",
+  "startedAt": "2026-10-06T12:58:24.109Z",
+  "backend": {
+    "running": "d4e4e609bca8ed102e733a9265692322db5d6568",
+    "stale": false,
+    "egress": "enforced"
+  },
+  "results": [
+    {
+      "repo": "pyCampaDB/pipenvDjango",
+      "category": "pipenv",
+      "exercises": "Django with Pipfile + Pipfile.lock + requirements.txt",
+      "pinnedSha": "4cd7b4f47a0dd1f9e3019a33a443f53fa0cf922e",
+      "ref": null,
+      "remoteTip": "4cd7b4f47a0dd1f9e3019a33a443f53fa0cf922e",
+      "sessionId": "f3c14f9a-c3b5-4b03-ad8c-9cfe1d2f925c",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "django",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "python manage.py runserver 0.0.0.0:8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:34994/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "STARTING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 6
+        },
+        {
+          "state": "READY",
+          "atS": 13
+        }
+      ],
+      "durationS": 13
+    },
+    {
+      "repo": "streamlit/demo-uber-nyc-pickups",
+      "category": "streamlit",
+      "exercises": "Streamlit, requirements.txt",
+      "pinnedSha": "62fa70f59da265450b97429e9bfae99b85bcacdd",
+      "ref": null,
+      "remoteTip": "62fa70f59da265450b97429e9bfae99b85bcacdd",
+      "sessionId": "49164f1f-9b6a-44fe-abea-4567a77fb39d",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "streamlit",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true",
+        "port": 8501,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Requires --server.headless to avoid the first-run email prompt."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:34995/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 5
+        },
+        {
+          "state": "READY",
+          "atS": 31
+        }
+      ],
+      "durationS": 31
+    },
+    {
+      "repo": "streamlit/streamlit-example",
+      "category": "streamlit",
+      "exercises": "Streamlit, requirements.txt",
+      "pinnedSha": "8bd2197e4ba68dd68127a264dc6708f0a96f23c8",
+      "ref": null,
+      "remoteTip": "8bd2197e4ba68dd68127a264dc6708f0a96f23c8",
+      "sessionId": "93e2f0bb-ab21-406d-958e-69b4ab79cc60",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "streamlit",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install -r requirements.txt",
+        "start": "streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true",
+        "port": 8501,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Requires --server.headless to avoid the first-run email prompt."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:34996/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 4
+        },
+        {
+          "state": "READY",
+          "atS": 21
+        }
+      ],
+      "durationS": 21
+    },
+    {
+      "repo": "gogetjax/gradio-app-demo",
+      "category": "gradio",
+      "exercises": "Gradio app.py, no manifest",
+      "pinnedSha": "359aa7b1450ac0b90f3db8a7310335cdc67bc2e8",
+      "ref": null,
+      "remoteTip": "359aa7b1450ac0b90f3db8a7310335cdc67bc2e8",
+      "sessionId": "11c0aa31-5af5-42e4-96c4-8681fa575bf2",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "gradio",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install gradio",
+        "start": "python app.py",
+        "port": 7860,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "No requirements.txt or pyproject.toml, so the 1 distribution(s) its source imports are installed instead: gradio. Versions are not pinned, because the repository pinned none."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:34997/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "STARTING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 20
+        }
+      ],
+      "durationS": 20
+    },
+    {
+      "repo": "TakanoriOnuma/bun-react-vite",
+      "category": "bun",
+      "exercises": "Vite React, text bun.lock, .tool-versions",
+      "pinnedSha": "1a039ae716c2bafcc7d9c0399c9ff992fb0146ca",
+      "ref": null,
+      "remoteTip": "1a039ae716c2bafcc7d9c0399c9ff992fb0146ca",
+      "sessionId": "5118972d-57df-42d4-97f1-53aa79382b1d",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "vite",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev -- --host 0.0.0.0 --port 5173",
+        "port": 5173,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "This project records its dependencies with Bun, which DevLaunch does not ship; installing with npm from package.json instead, so versions may differ from the Bun lockfile."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:34998/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 26
+        }
+      ],
+      "durationS": 26
+    },
+    {
+      "repo": "sadrozzy/Bun-React-Template",
+      "category": "bun",
+      "exercises": "Vite React, binary bun.lockb",
+      "pinnedSha": "7a5a08a5d2b030451880f6b6e53188900a468009",
+      "ref": null,
+      "remoteTip": "7a5a08a5d2b030451880f6b6e53188900a468009",
+      "sessionId": "4634a9c8-ec8d-4f66-9f22-f4867ed60470",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": null,
+      "planSource": null,
+      "plan": null,
+      "services": [],
+      "failureCode": "UNSUPPORTED_PROJECT",
+      "failureService": null,
+      "stage": "clone",
+      "message": "The `dev` script runs `bunx --bun vite`, which needs the Bun runtime. DevLaunch runs Node 20 and 22 and ships no Bun, so no plan it can make starts this project.",
+      "evidence": null,
+      "confidence": "high",
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "This project records its dependencies with Bun, which DevLaunch does not ship; installing with npm from package.json instead, so versions may differ from the Bun lockfile."
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "FAILED",
+          "atS": 3
+        }
+      ],
+      "durationS": 3
+    },
+    {
+      "repo": "patelharsh9797/bun-hono-app",
+      "category": "bun",
+      "exercises": "Hono on the Bun runtime, bun.lockb",
+      "pinnedSha": "6cc240009a89de4d2f7371207827b76d42930966",
+      "ref": null,
+      "remoteTip": "6cc240009a89de4d2f7371207827b76d42930966",
+      "sessionId": "56ee0e31-f5a7-41c2-af42-e82bfa70a536",
+      "outcome": "PARTIAL",
+      "finalState": "PARTIALLY_READY",
+      "detected": "docker:compose",
+      "planSource": "repo-docker",
+      "plan": null,
+      "services": [
+        {
+          "name": "api",
+          "role": "api",
+          "state": "FAILED",
+          "url": null,
+          "runtime": "container built from Dockerfile",
+          "start": "(the image's own command)",
+          "failureCode": "PORT_NOT_LISTENING"
+        },
+        {
+          "name": "app",
+          "role": "web",
+          "state": "READY",
+          "url": "http://localhost:35000/",
+          "runtime": "container built from Dockerfile",
+          "start": "(the image's own command)",
+          "failureCode": null
+        }
+      ],
+      "failureCode": "PORT_NOT_LISTENING",
+      "failureService": null,
+      "stage": "start",
+      "message": "api: Nothing is listening on port 3000. Sockets observed: 127.0.0.11:43327.",
+      "evidence": "ZodError: [",
+      "confidence": "low",
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "api: not mounting ./server at /app/server; the built image carries its own copy.",
+        "app: not mounting ./frontend at /app/frontend; the built image carries its own copy."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": "app",
+          "url": "http://localhost:35000/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 76
+        },
+        {
+          "state": "PARTIALLY_READY",
+          "atS": 133
+        }
+      ],
+      "durationS": 133
+    },
+    {
+      "repo": "dan5py/turborepo-shadcn-ui",
+      "category": "turborepo",
+      "exercises": "Turborepo, pnpm@10, engines >=24",
+      "pinnedSha": "ce2b71719d03ec76e91ecbd662e6df77d8b87ef2",
+      "ref": null,
+      "remoteTip": "ce2b71719d03ec76e91ecbd662e6df77d8b87ef2",
+      "sessionId": "81ac3b9a-d6b6-40b9-9b46-09740cceffaa",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "next",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "pnpm install --frozen-lockfile",
+        "start": "npm run dev -- -H 0.0.0.0 -p 3000",
+        "port": 3000,
+        "dir": "apps/docs"
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Workspace detected; installing once at the repository root with pnpm."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:35001/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 3
+        },
+        {
+          "state": "READY",
+          "atS": 27
+        }
+      ],
+      "durationS": 27
+    },
+    {
+      "repo": "ejazahm3d/fullstack-turborepo-starter",
+      "category": "turborepo",
+      "exercises": "Turborepo, yarn@1 workspaces",
+      "pinnedSha": "56ac4e1202026fecddbb5c78fdaf061afbdcbd35",
+      "ref": null,
+      "remoteTip": "56ac4e1202026fecddbb5c78fdaf061afbdcbd35",
+      "sessionId": "9127b311-e68b-4bba-8456-dcf179042301",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "project:web+api",
+      "planSource": "rule-based",
+      "plan": null,
+      "services": [
+        {
+          "name": "api",
+          "role": "api",
+          "state": "READY",
+          "url": "http://localhost:5002/",
+          "runtime": "node 20",
+          "start": "npm run start",
+          "failureCode": null
+        },
+        {
+          "name": "web",
+          "role": "web",
+          "state": "READY",
+          "url": "http://localhost:3000/",
+          "runtime": "node 20",
+          "start": "npm run dev -- -H 0.0.0.0 -p 3000",
+          "failureCode": null
+        }
+      ],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Workspace detected; installing once at the repository root with yarn.",
+        "docker-compose.yml also declares reverse-proxy, which this run does not start: DevLaunch runs what it can plan its own way, and has no plan for it. The parts that need it will not work."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": "api",
+          "url": "http://localhost:5002/",
+          "status": 200
+        },
+        {
+          "service": "web",
+          "url": "http://localhost:3000/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 123
+        },
+        {
+          "state": "READY",
+          "atS": 137
+        }
+      ],
+      "durationS": 137
+    },
+    {
+      "repo": "nrwl/nx-examples",
+      "category": "nx",
+      "exercises": "Nx, yarn@4 packageManager, .node-version",
+      "pinnedSha": "3a884ecaf57c1ace9ff75349ceb6847a904d758f",
+      "ref": null,
+      "remoteTip": "4c8135b2a8f2544357c1ad25c6720436a3e94186",
+      "sessionId": "10eacb2b-63f9-4a31-ac34-1a1624dccf3c",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "angular",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install --immutable",
+        "start": "yarn run serve --host 0.0.0.0 --port 4200",
+        "port": 4200,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "START_COMMAND_FAILED",
+      "failureService": null,
+      "stage": "start",
+      "message": "Start command exited with code 1.",
+      "evidence": "TypeError: WorkspaceContext is not a constructor",
+      "confidence": "low",
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 5
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 378
+        },
+        {
+          "state": "FAILED",
+          "atS": 381
+        }
+      ],
+      "durationS": 381
+    }
+  ]
+}

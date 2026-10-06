@@ -11,6 +11,7 @@ import { FailureCode, type FailureDetail } from './failures.js';
  */
 export type FailureCategory =
   | 'GIT_ERROR'
+  | 'NETWORK_ERROR'
   | 'DETECTION_ERROR'
   | 'RUNTIME_ERROR'
   | 'DEPENDENCY_ERROR'
@@ -84,9 +85,12 @@ export const FAILURE_TAXONOMY: Readonly<Record<FailureCode, FailureTaxonomy>> = 
     category: 'DATABASE_ERROR', retryable: false, recoverable: false,
     suggestedAction: 'The application needs a database or service DevLaunch could not provide or reach; the evidence names it.',
   },
+  // Its own category, not GIT_ERROR: most network failures happen downloading packages
+  // (`EAI_AGAIN registry.yarnpkg.com`), and the git advice — "check the URL is public" —
+  // sent people after a repository that was fine.
   NETWORK_FAILURE: {
-    category: 'GIT_ERROR', retryable: true, recoverable: false,
-    suggestedAction: 'Check the URL and that the repository is public, and that this machine is online; then retry.',
+    category: 'NETWORK_ERROR', retryable: true, recoverable: false,
+    suggestedAction: 'A network request failed — cloning, or downloading packages. Check that this machine is online, then retry; a failed clone also means checking the URL is a public repository.',
   },
   PROCESS_TIMEOUT: {
     category: 'TIMEOUT_ERROR', retryable: true, recoverable: false,
@@ -127,6 +131,10 @@ export const FAILURE_TAXONOMY: Readonly<Record<FailureCode, FailureTaxonomy>> = 
   CONTAINER_CREATE_FAILED: {
     category: 'RUNTIME_ERROR', retryable: true, recoverable: false,
     suggestedAction: 'Docker could not create the container. Run `./devlaunch doctor` to check Docker and the runner images, then retry.',
+  },
+  INVALID_MANIFEST: {
+    category: 'DEPENDENCY_ERROR', retryable: false, recoverable: false,
+    suggestedAction: 'Fix the file at the position the parser names; no package manager can read it as it is.',
   },
   UNKNOWN_RUNTIME_ERROR: {
     category: 'STARTUP_ERROR', retryable: true, recoverable: false,

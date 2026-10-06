@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+import { maskUrlPassword } from '../security/Redaction.js';
 import type Dockerode from 'dockerode';
 import type { BackingService } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
@@ -5,6 +7,7 @@ import { buildLabels } from '../docker/ContainerSecurity.js';
 import {
   BACKING_SPECS,
   connectionEnv,
+  type BackingCredentials,
   connectionUrl,
   databaseName,
   isBackingImageApproved,
@@ -32,6 +35,7 @@ export interface LogSink {
 
 export interface BackingRun {
   kind: BackingService['kind'];
+  /** The name it answers to on the network: the plain one, or this run's own. */
   alias: string;
   container: Dockerode.Container;
   ready: boolean;
@@ -87,9 +91,27 @@ export class BackingProvisioner {
       return errors;
     };
 
+    // This run's own password, and its own name when another run holds the plain one.
+    // See `BackingCredentials` (audit A-08).
+    const password = randomBytes(12).toString('hex');
+    const creds: Partial<Record<BackingService['kind'], BackingCredentials>> = {};
+    const networkName = (await this.exec.docker.networkExists(config.docker.networkName))
+      ? config.docker.networkName
+      : undefined;
+    const claimed =
+      networkName && typeof this.exec.docker.claimedAliases === 'function'
+        ? await this.exec.docker.claimedAliases(networkName).catch(() => new Set<string>())
+        : new Set<string>();
+    for (const need of opts.backing) {
+      const spec = BACKING_SPECS[need.kind];
+      if (!spec) continue;
+      const own = `${spec.alias}-${opts.sessionId.slice(0, 8).toLowerCase()}`;
+      creds[need.kind] = { password, host: claimed.has(spec.alias) ? own : spec.alias };
+    }
+
     try {
       for (const need of opts.backing) {
-        const run = await this.startOne(opts.sessionId, need, database, opts.logs, opts.readyMs);
+        const run = await this.startOne(opts.sessionId, need, database, opts.logs, opts.readyMs, creds[need.kind]);
         if (run) runs.push(run);
       }
     } catch (err) {
@@ -97,7 +119,7 @@ export class BackingProvisioner {
       throw err;
     }
 
-    const injected = connectionEnv([...opts.backing], database);
+    const injected = connectionEnv([...opts.backing], database, creds);
     if (injected.length) {
       opts.logs.write(
         'stdout',
@@ -115,9 +137,11 @@ export class BackingProvisioner {
     database: string,
     logs: LogSink,
     readyMs?: number,
+    creds?: BackingCredentials,
   ): Promise<BackingRun | null> {
     const spec = BACKING_SPECS[need.kind];
     if (!spec) return null;
+    const host = creds?.host ?? spec.alias;
 
     const docker = this.exec.docker;
 
@@ -142,13 +166,13 @@ export class BackingProvisioner {
       : undefined;
 
     const attempt = async (from: string): Promise<BackingRun> => {
-      logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${spec.alias} from ${from}...`);
+      logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${host} from ${from}...`);
       await docker.ensureImage(from);
       const container = await docker.createBackingContainer({
         image: from,
-        alias: spec.alias,
+        alias: host,
         user: spec.user,
-        env: spec.env(database),
+        env: spec.env(database, creds?.password),
         labels: buildLabels(sessionId),
         dataPaths: spec.dataPaths,
         networkName,
@@ -157,8 +181,8 @@ export class BackingProvisioner {
       // escalation beside it cannot promise the machine more than it has.
       this.exec.memory?.hold(container.id, config.container.memoryMb, () => this.exec.usageMb(container));
       await docker.start(container);
-      const ready = await this.waitForReady(docker, container, spec.readyCheck, readyMs);
-      return { kind: need.kind, alias: spec.alias, container, ready };
+      const ready = await this.waitForReady(docker, container, spec.readyCheck(creds?.password), readyMs);
+      return { kind: need.kind, alias: host, container, ready };
     };
 
     let run = await attempt(image);
@@ -201,7 +225,8 @@ export class BackingProvisioner {
         `${need.kind} did not become ready; the project will fail${why ? `. It said: ${lastLineOf(why)}` : '.'}`,
       );
     } else {
-      logs.write('stdout', `${need.kind} is accepting connections at ${connectionUrl(need, database)}`);
+      // The address without its password: logs are shown, streamed and kept.
+      logs.write('stdout', `${need.kind} is accepting connections at ${maskUrlPassword(connectionUrl(need, database, creds))}`);
     }
     return run;
   }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExecutionState, FailureDetail, HttpRoute, ReadinessView, RepairRecord, ServerMessage, WireLogEntry } from '@devlaunch/shared';
 import { furthestOf, progressOf } from '@devlaunch/shared';
-import { api, type SessionView } from './api';
+import { api, GoneError, type SessionView } from './api';
 
 export interface LogLine extends WireLogEntry {
   /** Marks a generated notice rather than repository output, e.g. a dropped range. */
@@ -28,7 +28,12 @@ export interface SessionStream {
   connected: boolean;
 }
 
-const TERMINAL: string[] = ['READY', 'PARTIALLY_READY', 'FAILED', 'CANCELLED', 'COMPLETED'];
+// Not READY or PARTIALLY_READY: the application is running, and can still change —
+// crash, be stopped by the idle clock, lose a service. Treating them as finished meant a
+// dropped socket (sleep, a backend restart) was never reconnected, and the page kept a
+// green READY over a dead application indefinitely (audit A-14).
+const TERMINAL: string[] = ['FAILED', 'CANCELLED', 'COMPLETED'];
+const SERVING: string[] = ['READY', 'PARTIALLY_READY'];
 
 /** Reconnect ceiling. Past this the stream is gone, and retrying is not going to change it. */
 const MAX_RECONNECTS = 8;
@@ -112,7 +117,17 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
         // that died compiling a native module described two stages it never reached.
         setFurthest((prev) => progressOf(prev, view));
       })
-      .catch(() => undefined);
+      .catch((err) => {
+        // The server no longer has it — restarted since, or the run was forgotten. Say
+        // so instead of leaving its last state, and its URL, on screen.
+        if (err instanceof GoneError) {
+          live.current = 'CANCELLED';
+          setState('CANCELLED');
+          setSession((prev) =>
+            prev ? { ...prev, state: 'CANCELLED', url: undefined, endedReason: 'DevLaunch no longer knows this run; it was restarted, or the run ended.' } : prev,
+          );
+        }
+      });
   }, [sessionId]);
 
   useEffect(() => {
@@ -182,7 +197,11 @@ export function useSession(sessionId: string | null): SessionStream & { refresh:
           state: live.current,
           attempts: (attempts.current += 1),
         });
-        if (next === null) return;
+        if (next === null) {
+          // Gave up on a run that was still up: ask once what became of it.
+          if (!closed && !ended.current && SERVING.includes(live.current)) refresh();
+          return;
+        }
         retry = setTimeout(connect, next);
       };
       ws.onerror = () => ws.close();

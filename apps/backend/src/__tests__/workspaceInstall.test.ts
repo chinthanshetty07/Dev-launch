@@ -105,6 +105,14 @@ describe('waiting for a service to finish installing', () => {
     }
   });
 
+  it('stops waiting when the session is stopped, instead of for the whole install', async () => {
+    // Audit A-05: a stop mid-launch left this waiting up to ten minutes.
+    let stopped = false;
+    const waiting = waitForInstall(new LogManager(), { timeoutMs: 60_000, cancelled: () => stopped });
+    stopped = true;
+    await expect(waiting).resolves.toBe('cancelled');
+  });
+
   it('gives up rather than hanging when nothing is ever said', async () => {
     // A service with no install command prints no sentinel at all. Proceeding late beats
     // a project that never starts.

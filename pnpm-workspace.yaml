@@ -11,3 +11,11 @@ allowBuilds:
   esbuild: true
   protobufjs: false
   ssh2: false
+
+# Fixed versions for advisories in shipped and tooling dependencies (2026-10-06 audit):
+# @grpc/grpc-js comes in through dockerode; the rest through vitest/vite.
+overrides:
+  '@grpc/grpc-js': '>=1.14.5'
+  vite: '^6.4.3'
+  source-map-js: '>=1.2.2'
+  esbuild: '>=0.25.0'

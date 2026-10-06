@@ -22,12 +22,48 @@ export const HealthCheckSchema = z.object({
   expectedStatusCodes: z.array(z.number().int()).default([200, 201, 204]),
 });
 
+/**
+ * A service that runs from the repository's own Docker setup: an image built from its
+ * Dockerfile, or a stock image its compose file names. Used only when DevLaunch cannot run
+ * the repository its own way. The image's own command runs; nothing here is a shell line.
+ */
+export const DockerSpecSchema = z.object({
+  source: z.enum(['dockerfile', 'compose']),
+  /** The file it came from, relative to the repository root. */
+  file: z.string(),
+  /** The name other services reach it by: the compose service name. */
+  alias: z.string(),
+  /** A stock image, when the service is not built. */
+  image: z.string().optional(),
+  build: z
+    .object({
+      context: z.string(),
+      dockerfile: z.string(),
+      target: z.string().optional(),
+      args: z.record(z.string()).default({}),
+    })
+    .optional(),
+  /** A command override, as arguments. */
+  command: z.array(z.string()).optional(),
+  /** An entrypoint override, as arguments. */
+  entrypoint: z.array(z.string()).optional(),
+  /** Container paths that need writable storage of their own. */
+  dataPaths: z.array(z.string()).default([]),
+  /** Every container port it declares; `expectedPort` is the one opened in a browser. */
+  ports: z.array(z.number().int().positive()).default([]),
+  /** A database or broker: ready when it accepts connections, not when it answers HTTP. */
+  database: z.boolean().default(false),
+});
+
+export const PlanSourceSchema = z.enum(['rule-based', 'ai-fallback', 'repo-docker']);
+
 export const RunPlanSchema = z.object({
   runtime: z.object({
-    language: z.enum(['node', 'python']),
+    // `container`: the repository's own image decides the runtime (see `docker`).
+    language: z.enum(['node', 'python', 'container']),
     version: z.string().min(1),
   }),
-  packageManager: z.enum(['npm', 'yarn', 'pnpm', 'pip', 'poetry']),
+  packageManager: z.enum(['npm', 'yarn', 'pnpm', 'pip', 'poetry', 'none']),
   installCommand: z.string().nullable(),
   buildCommand: z.string().nullable(),
   startCommand: z.string().min(1),
@@ -44,7 +80,7 @@ export const RunPlanSchema = z.object({
   hostBinding: HostBindingSchema.default('unknown'),
   environmentVariables: z.array(EnvVarSchema).default([]),
   healthCheck: HealthCheckSchema.default({}),
-  planSource: z.enum(['rule-based', 'ai-fallback']),
+  planSource: PlanSourceSchema,
   /**
    * How the application answers: over plain HTTP, or over TLS with a certificate the
    * repository ships. Absent means HTTP, which is nearly everything.
@@ -55,6 +91,7 @@ export const RunPlanSchema = z.object({
    * and useless.
    */
   protocol: z.enum(['http', 'https']).optional(),
+  docker: DockerSpecSchema.optional(),
 });
 
 /**
@@ -78,7 +115,7 @@ export const ServiceRunPlanSchema = RunPlanSchema.extend({
  */
 export const ProjectPlanSchema = z.object({
   services: z.array(ServiceRunPlanSchema).min(1),
-  planSource: z.enum(['rule-based', 'ai-fallback']),
+  planSource: PlanSourceSchema,
   /**
    * Every service installs the same workspace, so they must not do it at once.
    *
@@ -98,5 +135,6 @@ export type ServiceRunPlan = z.infer<typeof ServiceRunPlanSchema>;
 export type ProjectPlan = z.infer<typeof ProjectPlanSchema>;
 
 export type RunPlan = z.infer<typeof RunPlanSchema>;
+export type DockerSpec = z.infer<typeof DockerSpecSchema>;
 export type EnvVar = z.infer<typeof EnvVarSchema>;
 export type HealthCheck = z.infer<typeof HealthCheckSchema>;

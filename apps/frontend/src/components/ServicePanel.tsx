@@ -29,13 +29,21 @@ export function ServicePanel({
   stats,
   onRestart,
   busy,
+  canRestart,
 }: {
   services: ServiceView[];
   backing?: BackingView[];
   stats?: Record<string, ServiceStats>;
   onRestart: (service?: string) => void;
   busy: boolean;
+  /**
+   * Whether the run is up (READY or partly). Restart is refused before that — the
+   * server says why — so the buttons are not offered while it would be refused.
+   */
+  canRestart?: boolean;
 }) {
+  const restartOff = busy || canRestart === false;
+  const restartTitle = canRestart === false ? 'Available once the run is up' : undefined;
   // Not `services.length === 0`: a single-service session has no service table and can
   // still have a database DevLaunch started on its behalf, which is worth showing.
   if (services.length === 0 && (backing?.length ?? 0) === 0) return null;
@@ -50,7 +58,8 @@ export function ServicePanel({
           <button
             type="button"
             onClick={() => onRestart()}
-            disabled={busy}
+            disabled={restartOff}
+            title={restartTitle}
             className="rounded-md border border-edge px-2 py-0.5 text-[11px] hover:border-link hover:text-link disabled:opacity-40"
           >
             restart all
@@ -98,7 +107,8 @@ export function ServicePanel({
                 <button
                   type="button"
                   onClick={() => onRestart(service.name)}
-                  disabled={busy}
+                  disabled={restartOff}
+                  title={restartTitle}
                   className="rounded-md border border-edge px-2 py-0.5 text-[11px] hover:border-link hover:text-link disabled:opacity-40"
                 >
                   restart

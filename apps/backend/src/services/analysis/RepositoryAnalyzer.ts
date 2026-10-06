@@ -190,7 +190,8 @@ export class RepositoryAnalyzer {
     const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
     const fileNames = entries.filter((e) => e.isFile()).map((e) => e.name);
 
-    const packageJson = await this.readPackageJson(join(base, 'package.json'), warnings);
+    const unreadable: { error?: string } = {};
+    const packageJson = await this.readPackageJson(join(base, 'package.json'), warnings, unreadable);
     if (packageJson) packageJson.entryFiles = await this.findEntryFiles(base, fileNames, packageJson.main);
     const python = await this.readPython(
       base,
@@ -224,6 +225,7 @@ export class RepositoryAnalyzer {
       hasDockerfile: fileNames.includes('Dockerfile'),
       tsconfig: fileNames.includes('tsconfig.json'),
       packageJson,
+      ...(unreadable.error ? { invalidManifest: { file: 'package.json', error: unreadable.error } } : {}),
       lockfiles: [...nodeFacts.lockfiles],
       ...(nodeFacts.yarnBerry ? { yarnBerry: true } : {}),
       ...(nodeFacts.pnpmWorkspace ? { pnpmWorkspace: true } : {}),
@@ -348,6 +350,7 @@ export class RepositoryAnalyzer {
   private async readPackageJson(
     path: string,
     warnings: string[],
+    unreadable?: { error?: string },
   ): Promise<PackageJsonSummary | undefined> {
     const raw = await readCapped(path);
     if (raw === null) return undefined;
@@ -371,9 +374,11 @@ export class RepositoryAnalyzer {
           typeof parsed.packageManager === 'string' ? parsed.packageManager : undefined,
       };
     } catch (err) {
-      // A malformed manifest is a fact about the repository, not a crash. The planner
-      // will route it to the AI fallback rather than guessing.
+      // A malformed manifest is a fact about the repository, not a crash. It used to be
+      // routed to the model, which planned `npm start` against a file npm cannot read
+      // either; it is now reported as what it is (see `invalidManifest`).
       warnings.push(`package.json could not be parsed: ${(err as Error).message}`);
+      if (unreadable) unreadable.error = (err as Error).message;
       return undefined;
     }
   }

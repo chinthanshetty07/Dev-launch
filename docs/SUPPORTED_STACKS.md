@@ -49,14 +49,24 @@ others' addresses under the variable names it reads, with its own health and log
 | MongoDB | ✓ | same |
 | Redis | ✓ | same |
 | SQLite | needs nothing | |
-| RabbitMQ, Kafka, Elasticsearch, MinIO | ✗ | reported as a missing dependency |
+| RabbitMQ, Kafka, Elasticsearch, MinIO | as a compose service | only when the repository's compose file runs it (the Docker fallback); not detected otherwise |
 
 Migrations: Django's `migrate` and a repository's own schema script. Prisma, Alembic,
 Sequelize and TypeORM migrations are not run yet.
 
-## Never used
+## Anything else with a Dockerfile or compose file
 
-A repository's own `Dockerfile` or `docker compose up`. Both would run the repository's
-instructions with Docker's own privileges, outside DevLaunch's sandbox and network
-policy — see `SECURITY.md`. Compose files are read as a declaration of services, ports,
-images and environment.
+When no rule plans a repository — Go, Java, PHP, Rust, .NET, Ruby, Elixir, or a layout
+nothing reads — and it ships a `Dockerfile` or a compose file, DevLaunch builds and runs
+*that*, as a fallback: built off the local network, run under the balanced profile, checked
+end to end like any other run (`SECURITY.md`). A compose file's databases and brokers
+(Postgres, MySQL, MongoDB, Redis, RabbitMQ, Kafka, Elasticsearch, MinIO…) start as the
+images it names, in `depends_on` order, and are waited for until they accept connections.
+Refused, with the setting named: anything that needs privileges, host files or networks,
+or the Docker socket. Fixtures: `docker-go-api`, `docker-compose-stack`, `docker-refused`,
+`docker-breakout`.
+
+A repository DevLaunch runs its own way never takes this path, Dockerfile or not.
+
+`docker compose up` itself is never run: it would grant `privileged` and host mounts before
+anything could refuse them.

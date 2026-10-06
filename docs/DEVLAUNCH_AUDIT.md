@@ -186,14 +186,14 @@ What holds, verified by the existing security suite: non-root (1000:1000), read-
 rootfs, all capabilities dropped, `no-new-privileges`, memory/CPU/pids limits, tmpfs
 `noexec`, no Docker socket, egress to RFC1918/metadata/VM host blocked, static wrapper with
 commands via env and control variables assigned last, command allowlist, code-injecting env
-denylist (`NODE_OPTIONS`, `LD_*`, `PYTHON*`…), path validation, size and time limits on
+denylist (`NODE_OPTIONS`, `LD_*`, the code-loading `PYTHON*` names — see A-20 —…), path validation, size and time limits on
 intake, API bound to loopback, DevLaunch's own secrets never passed to containers.
 
 **H1 — MEDIUM — `TS_NODE_COMPILER` / `TS_NODE_TRANSPILER` are not denied.** ✅
 *Why:* both make ts-node load a module by name before the app runs, like `NODE_OPTIONS`.
 *Fix:* added to the denylist. *Test:* validator test.
 
-**H2 — 🚫 declined — Building a repository's Dockerfile / running its compose file as is.**
+**H2 — 🚫 declined then, ✅ built 2026-10-06 as a fallback under a balanced profile (see §6 and `SECURITY.md`) — Building a repository's Dockerfile / running its compose file as is.**
 A build runs the repository's `RUN` lines with Docker's default privileges on the default
 network — outside DevLaunch's hardening and outside the egress policy that keeps a
 container off the LAN and the metadata endpoint — and a compose file can ask for
@@ -300,3 +300,48 @@ What ran, where, and what it showed. Machine: Apple Silicon Mac, 8 GB; Colima VM
 - **Changed since after4:** JayBhatt passes by rule; the Poetry cookiecutter template no
   longer passes (its earlier pass was a model's lucky guess; recognising templates is a
   candidate).
+
+## 6. Second audit — 2026-10-06 (production-readiness mission)
+
+An independent, read-only adversarial audit of `d4e4e60` (full report with mechanisms and
+failure scenarios: `.claude/tasks/2026-10-06-production-readiness-mission/audit-findings.md`).
+Every finding was confirmed against the code before it was changed; every fix has a test
+that fails with the fix removed (mutation-checked), except where noted.
+
+| ID | Sev | Finding | Status | Proof |
+|---|---|---|---|---|
+| A-01 | high | Typed secrets, generated secrets and DB passwords sent to the model in repair prompts | ✅ values hidden; hidden values restored in the model's answer; URL passwords masked | `ai.test.ts` (request body) |
+| A-02 | high | Symlinks in a clone followed on the host (`.env.example -> ~/…`) | ✅ links leaving the clone removed after cloning, and logged | `escapingLinks.test.ts` (6 kinds incl. prefix-sibling) |
+| A-03 | high | A project's worker READY with no check | ✅ started + still up after a grace period; exit 0 is COMPLETED | `workerReadiness.test.ts` |
+| A-04 | high | No liveness watch for projects after READY | ✅ every service watched; partly running / ended, service named, URL withdrawn | `sessionManager.test.ts`; seen in a real browser |
+| A-05 | high | Stop/replace during a project launch released nothing for minutes | ✅ run handed to the session at once; launcher halts between steps and in the install wait | `stopDuringStart.test.ts`, `workspaceInstall.test.ts`, `lifecycle.test.ts` |
+| A-06 | medium | Stop during a service restart leaked the replacement | ✅ a restart notices the stop and releases what it made | `sessionManager.test.ts` |
+| A-07 | medium | Restart unguarded, re-entrant; `/retry` 202 no-op | ✅ refused unless serving, one at a time, `409` with the reason; dashboard buttons follow | `sessionManager`, `deploymentsApi`, `ServicePanel` tests |
+| A-08 | medium | Every run's database shared one name and password | ✅ per-run password; own network name when the plain one is held | `sessionManager.test.ts` |
+| A-09 | high | Project package cache keyed by `package.json` name | ✅ keyed by repository URL | `sessionManager.test.ts` |
+| A-10 | medium | No Host/Origin check: DNS rebinding could drive the API | ✅ `hostGuard` on HTTP and the log socket (`421`/`403`) | `hostGuard.test.ts` (real HTTP and WebSocket) |
+| A-11 | medium | Secrets returned by the API and shown in the Plan panel | ✅ `publicPlan`; DB password masked in logs | `redaction`, `api`, `sessionManager` tests; real browser |
+| A-12 | medium | Startup sweep removed other live instances' containers | ✅ instance registry; only dead instances' leftovers removed; their records left alone | `instanceRegistry`, `workspaceRelease`, `deploymentRecords` tests |
+| A-13 | low | `/resolve` `workspaceDir` not validated | ✅ only a package the run offered | `sessionManager.test.ts` |
+| A-14 | medium | Dashboard stopped listening at READY | ✅ reconnects while running; says when the server no longer knows the run | `useSession`, `api` tests; real browser |
+| A-15 | medium | Streamlit/Gradio and several frameworks invisible to project discovery | ✅ recognised | `serviceDiscovery.test.ts` |
+| A-16 | low | Hard lifetime cap reset by every read | ✅ counted once from serving | `sessionManager.test.ts` (fake timers) |
+| A-17 | low | Docker/git errors reported as "repository unsupported" | ✅ only DevLaunch's own codes pass through; machine errors say so | `lowFindings.test.ts` |
+| A-18 | low | `/logs` dropped line 0; `/health` checked nothing for one service | ✅ both | `deploymentsApi.test.ts` |
+| A-19 | low | Stop during clone leaked the clone; a stopped run still asked the model | ✅ checked after the clone and before the model | `sessionManager.test.ts` |
+| A-20 | low | `PYTHON*` denylist claim wider than the code | ✅ `PYTHONWARNINGS`/`USERBASE`/`BREAKPOINT`, `PIP_*`, `YARN_*`, `COREPACK_*` denied; docs corrected | `lowFindings.test.ts` |
+| A-21 | low | A failed restart's attempt left without an outcome | ✅ finished as FAILED | not covered by a test (one line, by reading) |
+| A-22 | low | Overlapping size walks during clone | ✅ one walk at a time | not covered by a test (inside the clone process) |
+| A-23 | medium | Tests asserting the defects; an empty smoke test passed | ✅ rewritten with reasons; a check that checked nothing fails; three `until` helpers now fail on timeout, which exposed three tests passing by luck | the tests above |
+
+Also found and fixed during this pass, outside the audit: a model *repair* naming a missing
+file replaced the repository's diagnosis with `INVALID_AI_PLAN` and leaked the database it
+had started (baseline integration failure); copying every `.env.example` value broke
+`remix-run/indie-stack` (narrowed on 2026-10-05); a TCP readiness check fooled by Docker's
+port forwarder (Docker fallback, first real run).
+
+Dependency scan: 13 advisories (3 critical, 3 high) → 1 moderate (`uuid` < 11.1.1 through
+`dockerode`, in functions DevLaunch does not call; forcing `uuid` 11 on `dockerode` is not
+worth the risk). Fixed by upgrading Vitest 2 → 4 and Vite 5 → 6, and overriding
+`@grpc/grpc-js` ≥ 1.14.5, `source-map-js` ≥ 1.2.2, `esbuild` ≥ 0.25 (`pnpm-workspace.yaml`).
+

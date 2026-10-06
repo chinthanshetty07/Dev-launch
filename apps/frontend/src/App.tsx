@@ -276,13 +276,14 @@ export default function App() {
             stats={stats}
             onRestart={restart}
             busy={busy}
+            canRestart={state === 'READY' || state === 'PARTIALLY_READY'}
           />
         )}
 
         <PipelineStrip
           state={state}
           furthest={furthest}
-          planSource={session?.plan?.planSource}
+          planSource={session?.planSource ?? session?.plan?.planSource}
           detected={session?.detected}
         />
 

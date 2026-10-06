@@ -2,6 +2,7 @@ import { FailureCode, type FailureDetail, type RepositoryMetadata, type RunPlan 
 import { SecurityRejection } from '../security/ImageAllowlist.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { MAX_REPAIR_ATTEMPTS, type AIProvider } from './AIProvider.js';
+import { REDACTED } from './prompts.js';
 
 export interface RepairResult {
   plan: RunPlan;
@@ -94,7 +95,18 @@ export class AIRepair {
     if ('buildCommand' in r) candidate.buildCommand = r.buildCommand ?? null;
     if (typeof r.startCommand === 'string') candidate.startCommand = r.startCommand;
     if (typeof r.expectedPort === 'number') candidate.expectedPort = r.expectedPort;
-    if (Array.isArray(r.environmentVariables)) candidate.environmentVariables = r.environmentVariables;
+    if (Array.isArray(r.environmentVariables)) {
+      // The model saw hidden values as REDACTED (see `redactPlan`); a variable it hands
+      // back that way keeps the real value it never saw. One it invents with the marker
+      // as its value has no real value to keep, and is dropped rather than set to it.
+      const real = new Map(original.environmentVariables.map((v) => [v.key, v.value]));
+      candidate.environmentVariables = (r.environmentVariables as unknown[]).flatMap((v) => {
+        if (!v || typeof v !== 'object') return [v];
+        const e = v as { key?: unknown; value?: unknown };
+        if (e.value !== REDACTED) return [v];
+        return typeof e.key === 'string' && real.has(e.key) ? [{ ...e, value: real.get(e.key) }] : [];
+      });
+    }
     if (r.runtime && typeof r.runtime === 'object') candidate.runtime = r.runtime;
     if (r.healthCheck && typeof r.healthCheck === 'object') candidate.healthCheck = r.healthCheck;
 

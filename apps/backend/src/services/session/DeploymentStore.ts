@@ -37,6 +37,8 @@ export interface DeploymentRecord {
   verification?: import('../verification/SmokeTest.js').Verification;
   /** Set when a backend restart found this record still running. */
   interrupted?: boolean;
+  /** The DevLaunch process that ran it. */
+  instance?: string;
 }
 
 export interface DeploymentStore {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -117,6 +117,9 @@ async function until(predicate: () => boolean, ms = 2000): Promise<void> {
     if (predicate()) return;
     await new Promise((r) => setTimeout(r, 5));
   }
+  // It used to return quietly here, so a test waiting for a state that never came went
+  // on to assert something else and passed. Two tests did exactly that.
+  throw new Error(`until: condition not met within ${ms} ms`);
 }
 
 const failed = (): ReadyOutcome => ({
@@ -687,6 +690,179 @@ function fakeDocker(created: string[]) {
   };
 }
 
+describe('a stop during the clone (A-19)', () => {
+  it('removes the clone when it lands, and asks no model about a stopped run', async () => {
+    let finishClone!: () => void;
+    const cloned = new Promise<void>((r) => { finishClone = r; });
+    let removedClone = false;
+    let modelAsked = false;
+    const mgr = new SessionManager(fakeExec(ready), {
+      git: {
+        clone: async () => {
+          await cloned;
+          return { dir: '/tmp/repo', url: 'https://github.com/a/b', commit: 'abc', sizeBytes: 1, fileCount: 1, cleanup: async () => { removedClone = true; } };
+        },
+      } as never,
+      analyzer: { analyze: async () => ({ envExample: [], warnings: [] }) } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      aiPlanner: { plan: async () => { modelAsked = true; throw new Error('no'); } } as never,
+    });
+    const s = await mgr.launch({ repoUrl: 'https://github.com/a/b' });
+    await until(() => s.state === ExecutionState.CLONING);
+    await mgr.cancel(s.id);
+    finishClone();
+    await until(() => removedClone);
+    expect(modelAsked).toBe(false);
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    await mgr.shutdown();
+  });
+
+  it('removes the clone of a repository that would have asked for a setting', async () => {
+    // The path the audit traced: it asks, `awaitInput` returns normally, nothing throws,
+    // and the clone stayed on disk.
+    let finishClone!: () => void;
+    const cloned = new Promise<void>((r) => { finishClone = r; });
+    let removedClone = false;
+    const mgr = new SessionManager(fakeExec(ready), {
+      git: {
+        clone: async () => {
+          await cloned;
+          return { dir: '/tmp/repo', url: 'https://github.com/a/b', commit: 'abc', sizeBytes: 1, fileCount: 1, cleanup: async () => { removedClone = true; } };
+        },
+      } as never,
+      analyzer: { analyze: async () => ({ envExample: [{ key: 'PAYMENT_API_KEY', hasDefault: false }], warnings: [] }) } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'node', warnings: [] }) } as never,
+    });
+    const s = await mgr.launch({ repoUrl: 'https://github.com/a/b' });
+    await until(() => s.state === ExecutionState.CLONING);
+    await mgr.cancel(s.id);
+    finishClone();
+    await until(() => removedClone);
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    await mgr.shutdown();
+  });
+});
+
+describe('choosing a package', () => {
+  it('accepts only one the run offered (A-13)', async () => {
+    const analyzed: string[] = [];
+    const mgr = new SessionManager(fakeExec(ready), {
+      analyzer: { analyze: async (_dir: string, sub?: string) => { analyzed.push(sub ?? '.'); return { envExample: [], warnings: [] }; } } as never,
+      planner: {
+        planRepository: async () => ({
+          plan: null, detected: null, warnings: [],
+          choices: [{ name: 'web', dir: 'apps/web', scripts: ['dev'] }, { name: 'api', dir: 'apps/api', scripts: ['dev'] }],
+        }),
+      } as never,
+    });
+    const s = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.AWAITING_INPUT);
+
+    await mgr.resolve(s.id, { workspaceDir: '../../../../Users/someone/project' });
+    expect(s.state).toBe(ExecutionState.AWAITING_INPUT);
+    expect(analyzed).not.toContain('../../../../Users/someone/project');
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/not one of those this run offered/);
+
+    await mgr.resolve(s.id, { workspaceDir: 'apps/web' });
+    await until(() => analyzed.includes('apps/web'));
+    await mgr.shutdown();
+  });
+});
+
+describe('the maximum session lifetime', () => {
+  it('is reached by a session somebody keeps looking at', async () => {
+    // Audit A-16: every read re-armed the hard cap with the idle clock, and the dashboard
+    // reads every few seconds — so a watched session never reached its maximum lifetime.
+    const mgr = new SessionManager(fakeExec(ready));
+    const s = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.READY);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const capMs = config.timeouts.sessionHardCapMs;
+      const step = Math.min(config.timeouts.sessionIdleMs / 2, capMs / 4);
+      for (let t = 0; t < capMs + step && s.state === ExecutionState.READY; t += step) {
+        mgr.touch(s.id);
+        await vi.advanceTimersByTimeAsync(step);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    await until(() => s.state === ExecutionState.COMPLETED);
+    expect(s.endedReason).toBe('maximum session lifetime');
+    await mgr.shutdown();
+  });
+});
+
+describe('the databases of two runs at once', () => {
+  it('get their own passwords, and the second its own name when the first holds the plain one', async () => {
+    // Audit A-08: every run's Postgres answered to `postgres` with password `devlaunch`.
+    // Two at once shared one name, and an application could connect to the other's.
+    const { BackingProvisioner } = await import('../services/execution/BackingProvisioner.js');
+    const holders = new Set<string>();
+    const created: { alias: string; env: string[] }[] = [];
+    const docker = {
+      networkExists: async () => true,
+      claimedAliases: async () => new Set(holders),
+      ensureImage: async () => undefined,
+      createBackingContainer: async (o: { alias: string; env: string[] }) => {
+        created.push(o);
+        holders.add(o.alias);
+        return { id: o.alias } as never;
+      },
+      start: async () => undefined,
+      execCapture: async () => 'accepting connections',
+    };
+    const p = new BackingProvisioner({ docker } as never);
+    const need = [{ kind: 'postgres' as const, evidence: 'pg', urlEnvKeys: ['DATABASE_URL'], neededBy: [] }];
+    const logs = { write: () => undefined };
+    const a = await p.provision({ sessionId: 'aaaaaaaa-1', backing: need, logs });
+    const b = await p.provision({ sessionId: 'bbbbbbbb-2', backing: need, logs });
+
+    expect(created.map((c) => c.alias)).toEqual(['postgres', 'postgres-bbbbbbbb']);
+    expect(a.injected[0]!.value).toMatch(/@postgres:5432\//);
+    expect(b.injected[0]!.value).toMatch(/@postgres-bbbbbbbb:5432\//);
+    const pw = (v: string) => /postgres:([^@]+)@/.exec(v)![1];
+    expect(pw(a.injected[0]!.value)).not.toBe(pw(b.injected[0]!.value));
+    // The container is started with the password its URL carries.
+    expect(created[1]!.env).toContain(`POSTGRES_PASSWORD=${pw(b.injected[0]!.value)}`);
+  });
+});
+
+describe('a repair that proposes a plan that cannot run', () => {
+  it('keeps the repository\'s own diagnosis and releases what the run holds', async () => {
+    // A model repair naming a file that is not there is refused before it runs. It used
+    // to end the run as INVALID_AI_PLAN — replacing the diagnosis of the repository with
+    // one about the model's invention — and to leave the database it had started running.
+    const created: string[] = [];
+    const removed: string[] = [];
+    const exec = fakeExec(failed) as ExecutionManager & { docker: unknown };
+    exec.docker = { ...fakeDocker(created), remove: async () => { removed.push('db'); } } as never;
+    const mgr = new SessionManager(exec, {
+      analyzer: {
+        analyze: async () => ({
+          backing: [{ kind: 'postgres' as const, evidence: 'pg', driver: 'pg', urlEnvKeys: ['DATABASE_URL'], neededBy: [] }],
+        }),
+      } as never,
+      planner: { planRepository: async () => ({ plan: plan(), detected: 'x', warnings: [] }) } as never,
+      aiRepair: {
+        repair: async () => ({
+          plan: RunPlanSchema.parse({ ...plan(), startCommand: 'node invented.js', planSource: 'ai-fallback' }),
+          attempt: 1,
+        }),
+      } as never,
+    });
+    const s = await mgr.launch({ sourceDir: cloneWith('server.js'), image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.FAILED);
+
+    expect(s.failure?.code).not.toBe(FailureCode.INVALID_AI_PLAN);
+    expect(s.failure?.repairAttemptsAfter).toBe(1);
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/proposed a plan that cannot run here/);
+    expect(created, 'a database was started').toEqual(['postgres:16']);
+    expect(removed, 'and released').toContain('db');
+    await mgr.shutdown();
+  });
+});
+
 describe('a failure that outlived its plan', () => {
   it('says how many times the plan was rewritten after the diagnosis was taken', async () => {
     // The first diagnosis is kept on purpose: it describes the repository, where every
@@ -775,12 +951,16 @@ describe('a single service that needs a database', () => {
     // Async driver, because the repository named one. `postgresql://` reaches psycopg2
     // and dies with "the asyncio extension requires an async driver" against a database
     // that is running and correct.
-    expect(launchedWith).toContainEqual({
-      key: 'DATABASE_URL',
-      value: 'postgresql+asyncpg://postgres:devlaunch@postgres:5432/repo',
-      required: false,
-    });
+    // The password is the run's own since audit A-08 (it was `devlaunch` for every run).
+    const injected = launchedWith.find((v) => v.key === 'DATABASE_URL');
+    expect(injected?.value).toMatch(/^postgresql\+asyncpg:\/\/postgres:[0-9a-f]{24}@postgres:5432\/repo$/);
+    expect(injected?.required).toBe(false);
     expect(session.state).toBe(ExecutionState.READY);
+    // The URL above carries the password; the log, which is shown and streamed, must not.
+    const password = /postgres:([0-9a-f]{24})@/.exec(injected!.value!)![1]!;
+    const log = session.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(log).toMatch(/accepting connections at postgresql/);
+    expect(log).not.toContain(password);
     await mgr.shutdown();
   });
 
@@ -851,13 +1031,10 @@ describe('a single service that needs a database', () => {
     await mgr.launch({ sourceDir: cloneWith('server.js'), image: 'devlaunch/python:3.12' });
     await settle();
 
-    expect(launchedWith.filter((v) => v.key === 'DATABASE_URL')).toEqual([
-      {
-        key: 'DATABASE_URL',
-        value: 'postgresql+asyncpg://postgres:devlaunch@postgres:5432/repo',
-        required: false,
-      },
-    ]);
+    // One URL — the provisioned one, with this run's own password — not the invented one.
+    const urls = launchedWith.filter((v) => v.key === 'DATABASE_URL');
+    expect(urls).toHaveLength(1);
+    expect(urls[0]!.value).toMatch(/^postgresql\+asyncpg:\/\/postgres:[0-9a-f]{24}@postgres:5432\/repo$/);
     await mgr.shutdown();
   });
 
@@ -907,9 +1084,9 @@ describe('a single service that needs a database', () => {
     expect(created, 'one database, however many attempts').toEqual(['postgres:16']);
     // Every attempt, including the repaired ones, knows where the database is.
     expect(launches.length).toBeGreaterThan(1);
-    expect(new Set(launches)).toEqual(
-      new Set(['postgresql+asyncpg://postgres:devlaunch@postgres:5432/repo']),
-    );
+    // The same URL every time — one database, one password, across every attempt.
+    expect(new Set(launches).size).toBe(1);
+    expect(launches[0]).toMatch(/^postgresql\+asyncpg:\/\/postgres:[0-9a-f]{24}@postgres:5432\/repo$/);
     await mgr.shutdown();
   });
 });
@@ -1160,9 +1337,13 @@ describe('repairing a project, not only a lone service', () => {
       aiRepair: { repair: async () => { calls.push(1); throw new Error('should not be called'); } } as never,
     });
     const session = await mgr.launch({ sourceDir: '/tmp/repo' });
-    await until(() => session.state === ExecutionState.FAILED, 8000);
+    // PARTIALLY_READY, not FAILED: the web service runs and stays up while api is
+    // explained. This waited for FAILED, which never came; it passed only because
+    // `until` used to return quietly when its time ran out (it now fails).
+    await until(() => session.state === ExecutionState.PARTIALLY_READY, 8000);
 
     expect(calls).toEqual([]);
+    expect(session.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/are not repaired by a model/);
     await mgr.shutdown();
   });
 });
@@ -2380,8 +2561,8 @@ describe('a project that is partly running', () => {
     } as unknown as ExecutionManager;
 
     // `healthy-api` is planned first and survives; `web` is the entry and also survives.
-    // `broken` is an api rather than a worker: a worker has no port to wait on and is
-    // ready as soon as it runs, so it could not fail here even if it wanted to.
+    // `broken` is an api. A worker used to be ready as soon as it ran, so it could not
+    // fail here; since audit A-03 it is checked too (see workerOutcome's tests).
     const mgr = new SessionManager(manager, {
       analyzer: { analyze: async () => projectMeta } as never,
       planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
@@ -2416,6 +2597,174 @@ describe('a project that is partly running', () => {
     // Including what was dropped: a service nobody planned is a thing to be told about,
     // not a silent absence from a list.
     expect(session.planWarnings).toContain('Skipping worker: no plan could be produced');
+    await mgr.shutdown();
+  });
+});
+
+/**
+ * Audit A-04: a project had no watch after READY. A backend that died ten minutes in left
+ * the project READY, its URL advertised, until the idle clock reclaimed it.
+ */
+describe('a project whose service dies after it is ready', () => {
+  const projectMeta = {
+    warnings: [], envExample: [], lockfiles: [], frameworkConfigs: [],
+    services: [
+      { name: 'web', dir: 'web', role: 'web', language: 'node', scripts: ['dev'], evidence: 'x' },
+      { name: 'api', dir: 'api', role: 'api', language: 'node', scripts: ['dev'], evidence: 'x' },
+    ],
+  };
+  const svc = (name: string, role: string, port: number) =>
+    ({ ...RunPlanSchema.parse({
+      runtime: { language: 'node', version: '20' },
+      packageManager: 'npm', installCommand: null, buildCommand: null,
+      startCommand: `npm run dev --port ${port}`, workingDirectory: name,
+      expectedPort: port, planSource: 'rule-based',
+    }), name, role }) as never;
+
+  function setup(hold?: { next?: Promise<void> }) {
+    const alive: Record<string, ContainerLiveness> = {};
+    const cleanups: string[] = [];
+    let launches = 0;
+    const exec = {
+      docker: { networkExists: async () => false, claimedAliases: async () => new Set<string>() },
+      async launch(o: { plan: { name?: string }; logs?: LogManager }) {
+        const name = o.plan.name ?? 'single';
+        launches++;
+        if (launches > 2 && hold?.next) await hold.next;
+        alive[name] = { kind: 'running' };
+        return {
+          logs: o.logs ?? new LogManager(),
+          waitForReady: async (): Promise<ReadyOutcome> =>
+            ({ state: ExecutionState.READY, hostPort: '1', url: `http://localhost/${name}`, readiness: { ready: true, attempts: 1, elapsedMs: 1 } }),
+          liveness: async () => alive[name]!,
+          clearStartupBudget: () => undefined,
+          cleanup: async () => (cleanups.push(name), { errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+    const mgr = new SessionManager(exec, {
+      livenessIntervalMs: 10,
+      analyzer: { analyze: async () => projectMeta } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      projectPlanner: {
+        planProject: async () => ({
+          plan: { services: [svc('api', 'api', 4000), svc('web', 'web', 5173)], planSource: 'rule-based' },
+          skipped: [], warnings: [],
+        }),
+      } as never,
+    });
+    return { mgr, alive, cleanups };
+  }
+
+  it('becomes partly running, names the service, and stops offering its URL', async () => {
+    const { mgr, alive } = setup();
+    const s = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.READY, 4000);
+
+    alive.api = { kind: 'exited', exitCode: 1, oomKilled: false };
+    await until(() => s.state === ExecutionState.PARTIALLY_READY, 4000);
+    expect(s.failure?.message).toMatch(/^api: /);
+    expect(s.url).toBe('http://localhost/web');
+    const api = s.run!.services.find((sv) => sv.name === 'api')!;
+    expect(api.state).toBe(ExecutionState.FAILED);
+    expect(api.url).toBeUndefined();
+    await mgr.shutdown();
+  });
+
+  it('stops offering the front door when that is what died', async () => {
+    const { mgr, alive } = setup();
+    const s = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.READY, 4000);
+    alive.web = { kind: 'exited', exitCode: 1, oomKilled: false };
+    await until(() => s.state === ExecutionState.PARTIALLY_READY, 4000);
+    expect(s.url).toBe('http://localhost/api');
+    await mgr.shutdown();
+  });
+
+  it('ends, and releases everything, when the last service stops', async () => {
+    const { mgr, alive, cleanups } = setup();
+    const s = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.READY, 4000);
+
+    alive.api = { kind: 'exited', exitCode: 1, oomKilled: false };
+    await until(() => s.state === ExecutionState.PARTIALLY_READY, 4000);
+    alive.web = { kind: 'exited', exitCode: 137, oomKilled: true };
+    await until(() => s.state === ExecutionState.FAILED, 4000);
+    expect(s.url).toBeUndefined();
+    expect(cleanups.sort()).toEqual(['api', 'web']);
+    await mgr.shutdown();
+  });
+
+  it('gives unrelated repositories with the same package name separate package caches', async () => {
+    // Audit A-09: the cache was keyed by package.json "name", so every repository called
+    // "monorepo" shared one writable cache — Corepack's package-manager binaries included.
+    const caches: string[] = [];
+    const run = async (dir: string) => {
+      const { mgr } = setup();
+      const exec = (mgr as unknown as { exec: { launch: (o: { packageCacheVolume?: string }) => unknown } }).exec;
+      const launch = exec.launch.bind(exec);
+      exec.launch = (o) => {
+        if (o.packageCacheVolume) caches.push(o.packageCacheVolume);
+        return launch(o);
+      };
+      const s = await mgr.launch({ sourceDir: dir });
+      await until(() => s.state === ExecutionState.READY, 4000);
+      await mgr.shutdown();
+    };
+    (projectMeta as unknown as { packageJson: unknown }).packageJson = { name: 'monorepo', scripts: {}, dependencies: {} };
+    await run('/tmp/owner-a/repo');
+    await run('/tmp/owner-b/repo');
+    expect(caches).toHaveLength(4);
+    expect(new Set(caches).size, JSON.stringify(caches)).toBe(4);
+  });
+
+  it('refuses a restart while starting, and a second while one runs (A-07)', async () => {
+    let release!: () => void;
+    const hold = { next: new Promise<void>((r) => { release = r; }) };
+    const { mgr } = setup(hold);
+    const s = await mgr.launch({ sourceDir: '/tmp/repo' });
+    expect(mgr.restartRefusal(s)).toMatch(/restart once it is running/);
+    // And restart() itself honours it, whoever calls it.
+    await mgr.restart(s.id, 'api');
+    expect(s.logs.buffer.all().map((l) => l.text).join('\n')).toMatch(/Not restarting: It is still/);
+    await until(() => s.state === ExecutionState.READY, 4000);
+    expect(mgr.restartRefusal(s)).toBeNull();
+
+    const first = mgr.restart(s.id, 'api');
+    expect(mgr.restartRefusal(s)).toMatch(/already in progress/);
+    release();
+    await first;
+    await until(() => s.state === ExecutionState.READY, 4000);
+    expect(mgr.restartRefusal(s)).toBeNull();
+    await mgr.shutdown();
+  });
+
+  it('releases a container a restart creates after a stop arrived (A-06)', async () => {
+    let release!: () => void;
+    const hold = { next: new Promise<void>((r) => { release = r; }) };
+    const { mgr, cleanups } = setup(hold);
+    const s = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.READY, 4000);
+
+    const restarting = mgr.restart(s.id, 'api');
+    await until(() => cleanups.includes('api'), 4000); // the old api container is gone
+    await mgr.cancel(s.id);
+    const before = cleanups.length;
+    release(); // the replacement is created only now, after the stop
+    await restarting;
+    expect(cleanups.length, 'the replacement was released too').toBe(before + 1);
+    expect(cleanups.at(-1)).toBe('api');
+    expect(s.state).toBe(ExecutionState.CANCELLED);
+    await mgr.shutdown();
+  });
+
+  it('keeps a service that cannot be inspected for a moment', async () => {
+    const { mgr, alive } = setup();
+    const s = await mgr.launch({ sourceDir: '/tmp/repo' });
+    await until(() => s.state === ExecutionState.READY, 4000);
+    alive.api = { kind: 'unknown', error: 'socket hang up' };
+    await new Promise((r) => setTimeout(r, 100));
+    expect(s.state).toBe(ExecutionState.READY);
     await mgr.shutdown();
   });
 });
@@ -2809,10 +3158,16 @@ describe('a plan naming a script the manifest does not have', () => {
         }),
       } as never,
     });
+    const released: string[] = [];
+    (exec as unknown as { releaseWorkspaces: (id: string) => Promise<void> }).releaseWorkspaces = async (id) => {
+      released.push(id);
+    };
     const s = await mgr.launch({ sourceDir: cloneWith('README.md'), image: 'devlaunch/node:20' });
     await until(() => s.state === ExecutionState.FAILED, 4000);
 
     expect(launches).toEqual([]);
+    // Refused runs release what they hold, like every other refusal.
+    await until(() => released.includes(s.id), 4000);
     expect(s.failure?.code).toBe(FailureCode.INVALID_AI_PLAN);
     expect(s.failure?.message).toBe('The start command runs `index.js`, and the repository has no such file.');
     await mgr.shutdown();
