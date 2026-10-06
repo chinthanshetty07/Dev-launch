@@ -33,10 +33,13 @@ describe('<RunHeader>', () => {
     // Named for what it does. "Stop" on a finished run reads as stopping the run, which
     // already stopped; what is still running is the application it produced.
     expect(html).toMatch(/release the slot/i);
-    // And "Run another" must not be the alternative offered here. That is the button
-    // that orphaned the session: it clears the view, the containers keep running, and
-    // the next launch is refused by a session nothing on screen can reach any more.
-    expect(html).not.toMatch(/Run another/);
+    // "Run another" is offered beside it now. It was kept out of here because it
+    // orphaned the session: the view cleared, the containers kept running, and the next
+    // launch was refused. That fact changed on 2026-10-06 — a new launch replaces the
+    // running one, and the launch page names it before the click — so the button that
+    // was a trap is now simply the way to the next repository.
+    expect(html).toMatch(/Run another/);
+    expect(html).toMatch(/running it stops this one/);
   });
 
   it('offers the same shut down for a project that is only partly running', () => {
@@ -45,7 +48,7 @@ describe('<RunHeader>', () => {
     // half-running project is the one somebody is most likely to want rid of.
     const html = render('PARTIALLY_READY' as ExecutionState);
     expect(html).toMatch(/Shut down/);
-    expect(html).not.toMatch(/Run another/);
+    expect(html).toMatch(/Run another/);
     // And it does not read as success.
     expect(html).toContain('text-warn');
   });

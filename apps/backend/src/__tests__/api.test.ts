@@ -166,6 +166,30 @@ describe('HTTP API', () => {
       await expect(second.json()).resolves.toMatchObject({
         error: expect.stringContaining('already running'),
       });
+
+      // What the dashboard and `./devlaunch deploy` send: the running one makes way.
+      const firstId = ((await first.json()) as { id: string }).id;
+      const replacing = await fetch(`${url}/api/sessions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fixture: 'node-http-basic', replace: true }),
+      });
+      expect(replacing.status).toBe(201);
+      expect(stalling.get(firstId)?.state).toBe(ExecutionState.CANCELLED);
+
+      // And for a repository URL, on both routes.
+      for (const route of ['/api/sessions', '/api/deployments']) {
+        // A fixture that stalls holds the slot; the URL run itself may fail fast offline.
+        const holding = await stalling.launch({ sourceDir: `${FIXTURES}/node-http-basic`, replace: true });
+        const before = holding.id;
+        const byUrl = await fetch(`${url}${route}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ repoUrl: 'https://github.com/octocat/Hello-World', replace: true }),
+        });
+        expect(byUrl.status, route).toBe(201);
+        expect(stalling.get(before)?.state, route).toBe(ExecutionState.CANCELLED);
+      }
     } finally {
       await stalling.shutdown();
       await new Promise<void>((r) => srv.close(() => r()));

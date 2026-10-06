@@ -263,7 +263,7 @@ export function createApp(opts: AppOptions): Express {
           throw err;
         }
 
-        const session = await opts.sessions.launch({ repoUrl, ref, readinessTimeoutMs });
+        const session = await opts.sessions.launch({ repoUrl, ref, readinessTimeoutMs, replace: body.replace === true });
         res.status(201).json({ id: session.id, state: session.state });
         return;
       }
@@ -281,6 +281,7 @@ export function createApp(opts: AppOptions): Express {
       const session = await opts.sessions.launch({
         sourceDir: resolve(opts.fixturesDir, fixture),
         readinessTimeoutMs,
+        replace: body.replace === true,
       });
       res.status(201).json({ id: session.id, state: session.state });
     } catch (err) {

@@ -228,6 +228,14 @@ export interface LaunchRequest {
   plan?: RunPlan;
   image?: string;
   readinessTimeoutMs?: number;
+  /**
+   * Stop whatever is running to make room, instead of refusing.
+   *
+   * How a person uses DevLaunch locally: look at one repository, then paste the next.
+   * Being told "a session is already running" and having to stop it first was a step
+   * that only ever had one answer.
+   */
+  replace?: boolean;
 }
 
 export interface ResolveInput {
@@ -393,7 +401,31 @@ export class SessionManager extends EventEmitter {
     return raw !== undefined && Number.isInteger(n) && n >= 1 && n <= 16 ? n : config.concurrency.maxSessions;
   }
 
+  /** Replacing launches, one at a time: two at once would each make room for itself. */
+  private replacing: Promise<unknown> = Promise.resolve();
+
   async launch(req: LaunchRequest): Promise<Session> {
+    if (!req.replace) return this.launchNow(req);
+    const turn = this.replacing.then(async () => {
+      await this.makeRoom(req);
+      return this.launchNow(req);
+    });
+    this.replacing = turn.catch(() => undefined);
+    return turn;
+  }
+
+  /** Stop the oldest running deployments until a new one fits. */
+  private async makeRoom(req: LaunchRequest): Promise<void> {
+    const limit = this.maxConcurrent();
+    while (this.activeCount() >= limit) {
+      // By the order they were started, which a shared millisecond cannot reorder.
+      const oldest = this.list().find((s) => !TERMINAL_STATES.includes(s.state));
+      if (!oldest) return;
+      await this.cancel(oldest.id, `replaced by ${req.repoUrl ?? 'a new deployment'}`);
+    }
+  }
+
+  private async launchNow(req: LaunchRequest): Promise<Session> {
     const limit = this.maxConcurrent();
     if (this.activeCount() >= limit) {
       const blocking = this.active()[0];
@@ -1989,13 +2021,13 @@ export class SessionManager extends EventEmitter {
     this.setState(session, ExecutionState.COMPLETED, reason);
   }
 
-  async cancel(id: string): Promise<void> {
+  async cancel(id: string, reason = 'cancelled by request'): Promise<void> {
     const session = this.sessions.get(id);
     if (!session || TERMINAL_STATES.includes(session.state)) return;
     session.stopped = true;
     this.setState(session, ExecutionState.CLEANING_UP);
     await this.teardown(session);
-    this.setState(session, ExecutionState.CANCELLED, 'cancelled by request');
+    this.setState(session, ExecutionState.CANCELLED, reason);
   }
 
   /**

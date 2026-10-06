@@ -151,6 +151,44 @@ describe('SessionManager', () => {
     await mgr.shutdown();
   });
 
+  it('stops the running deployment when a new one asks to replace it', async () => {
+    // Local use: look at one repository, then paste the next. Being refused, and having to
+    // stop the first by hand, was a step with only one answer.
+    const mgr = new SessionManager(fakeExec(ready));
+    const first = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20', repoUrl: 'https://github.com/a/one' });
+    await until(() => first.state === ExecutionState.READY);
+
+    const second = await mgr.launch({ plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20', repoUrl: 'https://github.com/a/two', replace: true });
+    expect(first.state).toBe(ExecutionState.CANCELLED);
+    expect(first.endedReason).toBe('replaced by https://github.com/a/two');
+    await until(() => second.state === ExecutionState.READY);
+    expect(mgr.active().map((s) => s.id)).toEqual([second.id]);
+    await mgr.shutdown();
+  });
+
+  it('makes room by stopping the oldest, keeping the newer ones', async () => {
+    const mgr = new SessionManager(fakeExec(ready), { maxConcurrent: 2 });
+    const req = { plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20' };
+    const a = await mgr.launch(req);
+    await new Promise((r) => setTimeout(r, 5));
+    const b = await mgr.launch(req);
+    await settle();
+    const c = await mgr.launch({ ...req, replace: true });
+    expect(a.state).toBe(ExecutionState.CANCELLED);
+    expect(mgr.active().map((s) => s.id).sort()).toEqual([b.id, c.id].sort());
+    await mgr.shutdown();
+  });
+
+  it('never runs more than the limit when several replace at once', async () => {
+    const mgr = new SessionManager(fakeExec(ready));
+    const req = { plan: plan(), sourceDir: '/tmp', image: 'devlaunch/node:20', replace: true };
+    await mgr.launch(req);
+    const started = await Promise.all([mgr.launch(req), mgr.launch(req), mgr.launch(req)]);
+    await settle();
+    expect(mgr.active().map((s) => s.id)).toEqual([started[2]!.id]);
+    await mgr.shutdown();
+  });
+
   it('evicts the oldest finished sessions beyond the retention cap', async () => {
     // Each retained session holds a log buffer of up to several megabytes, so an
     // unbounded registry is a memory leak for any long-running backend.

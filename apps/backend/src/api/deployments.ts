@@ -116,7 +116,7 @@ export function registerDeploymentRoutes(app: Express, opts: DeploymentRouteOpti
         let { repoUrl, ref } = splitRepoInput(body.repoUrl);
         if (typeof body.ref === 'string' && body.ref.trim() !== '') ref = normaliseRef(body.ref);
         normaliseRepoUrl(repoUrl);
-        const s = await sessions.launch({ repoUrl, ...(ref ? { ref } : {}) });
+        const s = await sessions.launch({ repoUrl, ...(ref ? { ref } : {}), replace: body.replace === true });
         res.status(201).json({ id: s.id, state: s.state, links: { self: `/api/deployments/${s.id}` } });
         return;
       }
@@ -127,7 +127,7 @@ export function registerDeploymentRoutes(app: Express, opts: DeploymentRouteOpti
           apiError(res, 'INVALID_INPUT', `Unknown fixture "${body.fixture.slice(0, 80)}".`, { available: known });
           return;
         }
-        const s = await sessions.launch({ sourceDir: resolve(opts.fixturesDir, body.fixture) });
+        const s = await sessions.launch({ sourceDir: resolve(opts.fixturesDir, body.fixture), replace: body.replace === true });
         res.status(201).json({ id: s.id, state: s.state, links: { self: `/api/deployments/${s.id}` } });
         return;
       }

@@ -45,7 +45,7 @@ case "$cmd" in
   deploy)
     [ $# -ge 1 ] || { echo "Usage: ./devlaunch deploy https://github.com/owner/repo [ref]" >&2; exit 2; }
     need_api
-    body=$(node -e 'const [u,r]=process.argv.slice(1);process.stdout.write(JSON.stringify(r?{repoUrl:u,ref:r}:{repoUrl:u}))' "$1" "${2:-}")
+    body=$(node -e 'const [u,r]=process.argv.slice(1);process.stdout.write(JSON.stringify(r?{repoUrl:u,ref:r,replace:true}:{repoUrl:u,replace:true}))' "$1" "${2:-}")
     created=$(curl -s -X POST "$API/api/deployments" -H 'content-type: application/json' -d "$body")
     id=$(printf '%s' "$created" | json 'if(!j.id){console.error(j.error?.message??JSON.stringify(j));process.exit(1)};console.log(j.id)')
     echo "Deployment $id"

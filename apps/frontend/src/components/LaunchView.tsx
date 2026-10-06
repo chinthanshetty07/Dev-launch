@@ -49,6 +49,7 @@ export function LaunchView({
       .catch(() => undefined);
   }, []);
 
+  const running = recent.find((s) => s.active);
   const trimmed = repoUrl.trim();
   // Only a complaint once there is something to complain about. Marking an empty field
   // invalid the moment the page loads is noise, not help.
@@ -95,6 +96,7 @@ export function LaunchView({
             {busy ? 'Starting…' : 'Run it'}
           </button>
         </div>
+        <ReplacesRunning running={running} />
         {malformed && (
           <p id="repo-url-error" className="mt-2 text-[12px] text-bad">
             That is not a github.com repository URL. It should look like{' '}
@@ -213,4 +215,15 @@ function when(ts: number): string {
   const hours = Math.round(mins / 60);
   if (hours < 24) return `${hours}h ago`;
   return new Date(ts).toLocaleDateString();
+}
+
+/** One deployment at a time, and a new one replaces it: said before the click, not after. */
+export function ReplacesRunning({ running }: { running?: Pick<SessionSummary, 'repoUrl'> }) {
+  if (!running) return null;
+  return (
+    <p data-testid="replaces-running" className="mt-2 text-[12px] text-warn">
+      {shortRepo(running.repoUrl) ?? 'A local fixture'} is running now. Running another stops
+      it first.
+    </p>
+  );
 }

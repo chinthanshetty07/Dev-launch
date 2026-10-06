@@ -28,7 +28,9 @@ cd Dev-launch
 ./devlaunch start                            # http://127.0.0.1:3939
 ```
 
-Then open <http://127.0.0.1:3939> and paste a repository URL, or from another terminal:
+Then open <http://127.0.0.1:3939> and paste a repository URL. One runs at a time: pasting
+the next one stops the last and cleans it up. No account or login: DevLaunch only answers on
+your own computer. Or from another terminal:
 
 ```bash
 ./devlaunch deploy https://github.com/mdn/todo-react
@@ -82,7 +84,8 @@ The full list is in [docs/setup.md](docs/setup.md).
 `POST /api/deployments` `{ "repoUrl": "https://github.com/owner/repo" }`, then
 `GET /api/deployments/:id` (identity, state, URLs, failure, repairs, check results),
 `/:id/events` (timeline), `/:id/logs`, `/:id/services`, `/:id/health`,
-`POST /:id/cancel`, `POST /:id/retry`, `DELETE /:id`. Errors always look like
+`POST /:id/cancel`, `POST /:id/retry`, `DELETE /:id`. Add `"replace": true` to the first call
+to stop whatever is running instead of getting `409`. Errors always look like
 `{ "error": { "code", "category", "message", "retryable", "suggestedAction" } }`.
 
 ## Safety

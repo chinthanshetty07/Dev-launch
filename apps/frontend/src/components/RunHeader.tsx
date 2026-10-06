@@ -106,15 +106,17 @@ export function RunHeader({
               {SERVING.includes(state) ? 'Shut down' : 'Stop'}
             </button>
           )}
-          {finished && (
-            <button
-              type="button"
-              onClick={onNew}
-              className="rounded-md border border-link px-3 py-1.5 text-[12px] text-link hover:bg-link/10"
-            >
-              Run another
-            </button>
-          )}
+          {/* Always offered. It once orphaned a running session, because the next launch
+              was refused while that one held the slot; a new launch now replaces it, and
+              the launch page names what will be stopped before the click. */}
+          <button
+            type="button"
+            onClick={onNew}
+            className="rounded-md border border-link px-3 py-1.5 text-[12px] text-link hover:bg-link/10"
+            title={finished ? undefined : 'Pick another repository; running it stops this one'}
+          >
+            Run another
+          </button>
         </div>
       </div>
     </header>

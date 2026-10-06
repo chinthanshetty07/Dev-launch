@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-06 — A new repository replaces the running one
+
+Using DevLaunch locally is: look at one repository, then paste the next. The second was
+refused ("a session is already running") until the first was stopped by hand. Now the
+dashboard and `./devlaunch deploy` stop the oldest running deployment, clean it up, and
+start the new one; the dashboard says which will be stopped before the click, and the
+stopped one's record says `replaced by …`. Replacing launches take turns, so several at
+once never run more than the limit. The API without `"replace": true` still answers `409`.
+
 ## 2026-10-05 — Example values only where the code needs them; the newer error after a repair
 
 - **`.env.example` values are copied only for variables the code cannot start without**

@@ -120,11 +120,13 @@ export const api = {
 
   sessions: () => fetch('/api/sessions').then((r) => json<SessionSummary[]>(r)),
 
+  // `replace`: deploying something new stops what is running, which is how a person uses
+  // this — look at one repository, then the next — rather than being refused.
   launch: (body: { repoUrl?: string; fixture?: string }) =>
     fetch('/api/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, replace: true }),
     }).then((r) => json<{ id: string; state: ExecutionState }>(r)),
 
   get: (id: string) => fetch(`/api/sessions/${id}`).then((r) => json<SessionView>(r)),

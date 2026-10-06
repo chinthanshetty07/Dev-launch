@@ -8,11 +8,17 @@ DevLaunch was started before the code on disk changed. Stop it (Ctrl-C in its te
 `./devlaunch start` again. The commit it runs is shown in `GET /api/health`
 (`build.running` vs `build.head`).
 
-## "A session is already running" / 409
+## Deploying a new repository stopped the one I had running
 
-DevLaunch runs `DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS` deployments at once (default 1, because
-a 6 GB Docker VM cannot safely hold more). Stop the one in the way — the dashboard offers to —
-or raise the limit in `.env` if your VM is larger.
+That is on purpose. DevLaunch runs `DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS` deployments at
+once (default 1, because a 6 GB Docker VM cannot safely hold more). The dashboard and
+`./devlaunch deploy` stop the oldest running one, and clean it up, before starting the new
+one; the dashboard says which before you click. Its record shows
+`replaced by <the new repository>`. To keep two running, raise the limit in `.env` if your
+VM is larger.
+
+A script calling the API without `"replace": true` is refused with `409` instead, and told
+which deployment is in the way.
 
 ## OUT_OF_MEMORY during install
 
