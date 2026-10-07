@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-07 — The installer installs what DevLaunch needs
+
+`install.sh` used to check for git, Node and Docker and stop when one was missing. Now it
+lists what it will install, asks once (`DEVLAUNCH_YES=1` answers yes), and installs it: Node
+22 into `~/.devlaunch/tools` (no password, nothing system-wide, the download checked against
+nodejs.org's SHA-256 list before it is used); git with Homebrew or the system's package
+manager; Docker as Colima with Homebrew on a Mac (an existing Docker Desktop or OrbStack is
+opened, not replaced) and as Docker Engine from Docker's own script on Linux and WSL2 (with
+systemd), adding the user to the `docker` group; Homebrew itself on a Mac that has none. It
+then installs DevLaunch, starts it and opens the dashboard (`DEVLAUNCH_NO_START=1` skips
+that). `./devlaunch` finds the Node it installed, and on Linux runs through `sg docker`
+until the new group takes effect at the next login.
+
+**Evidence:** on this Mac with Node hidden and an empty home folder: Node 22 downloaded,
+checked and used for everything, doctor "Ready"; with a wrong checksum: refused, nothing
+installed; run to the end: DevLaunch started and the dashboard opened. A new CI job removes
+Docker, Node and git from a fresh Linux machine, runs the installer, and runs an app to
+READY in a new shell. **Not tested:** installing Homebrew and Colima on a Mac that has
+neither (this Mac has both), and WSL2.
+
 ## 2026-10-07 — Open source, for anyone's computer
 
 DevLaunch becomes a tool anyone installs and runs on their own computer, with no login, plus

@@ -116,3 +116,49 @@ jobs:
           test "$left" -eq 0
           if sudo iptables -S DOCKER-USER 2>/dev/null | grep -q DEVLAUNCH; then echo "rules left behind"; exit 1; fi
           echo "rules removed"
+
+  installer:
+    name: installer on a bare Linux machine
+    # Same schedule as the integration job: it downloads Docker and Node from the internet.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: make this machine bare — no Docker, no Node, no git, and not in the docker group
+        run: |
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo apt-get purge -y -qq 'docker-ce*' 'docker-buildx*' 'docker-compose*' 'moby-*' containerd.io git >/dev/null 2>&1 || true
+          sudo rm -rf /var/lib/docker /etc/docker /usr/bin/docker /usr/local/bin/docker
+          sudo gpasswd -d "$USER" docker 2>/dev/null || true
+          export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+          for t in docker node git; do command -v $t && { echo "$t is still here"; exit 1; } || echo "no $t"; done
+
+      - name: run the installer, as someone would
+        run: |
+          # Without the runner's own Node and tools on the PATH, as on a new computer.
+          env -i HOME="$HOME" USER="$USER" PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            DEVLAUNCH_YES=1 DEVLAUNCH_NO_START=1 \
+            DEVLAUNCH_REPO="$GITHUB_WORKSPACE" DEVLAUNCH_DIR="$HOME/devlaunch" \
+            bash install.sh
+
+      - name: start it in a new shell and run an app to READY
+        run: |
+          cd "$HOME/devlaunch"
+          # A new shell, still without the docker group (that needs a new login): the
+          # devlaunch command must cope by itself.
+          env -i HOME="$HOME" USER="$USER" PATH=/usr/sbin:/usr/bin:/sbin:/bin ./devlaunch doctor
+          env -i HOME="$HOME" USER="$USER" PATH=/usr/sbin:/usr/bin:/sbin:/bin nohup ./devlaunch start > /tmp/devlaunch.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:3939/api/health >/dev/null && break; sleep 2; done
+          curl -sf http://127.0.0.1:3939/api/health
+          id=$(curl -sf -X POST http://127.0.0.1:3939/api/sessions -H 'content-type: application/json' \
+                 -d '{"fixture":"node-http-basic"}' | jq -r .id)
+          echo "session $id"
+          for i in $(seq 1 120); do
+            state=$(curl -sf http://127.0.0.1:3939/api/sessions/$id | jq -r .state)
+            case "$state" in READY) echo "READY"; exit 0 ;; FAILED|CANCELLED) echo "ended $state"; break ;; esac
+            sleep 3
+          done
+          echo "--- DevLaunch log:"; tail -60 /tmp/devlaunch.log
+          exit 1

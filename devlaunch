@@ -4,6 +4,17 @@ set -euo pipefail
 cd "$(dirname "$0")"
 API="${DEVLAUNCH_API:-http://127.0.0.1:3939}"
 
+# Node and pnpm the installer put in DevLaunch's own folder, when it had to.
+export PATH="$HOME/.devlaunch/tools/node/bin:$HOME/.devlaunch/tools/bin:$PATH"
+
+# On Linux, the installer adds this user to the docker group, which only takes effect at
+# the next login. Until then, run through `sg` rather than failing on permission.
+if [ -z "${DEVLAUNCH_IN_SG:-}" ] && command -v sg >/dev/null 2>&1 && command -v docker >/dev/null 2>&1 \
+   && ! docker info >/dev/null 2>&1 && getent group docker 2>/dev/null | grep -qw "$(id -un)"; then
+  export DEVLAUNCH_IN_SG=1
+  exec sg docker -c "$(printf '%q ' "$0" "$@")"
+fi
+
 usage() {
   cat <<'USAGE'
 Usage: ./devlaunch <command>

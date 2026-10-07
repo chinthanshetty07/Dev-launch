@@ -16,22 +16,29 @@ real repositories, is in [docs/SUPPORTED_STACKS.md](docs/SUPPORTED_STACKS.md).
 
 ## Install
 
-You need **Docker**, **Node 20 or newer** and **git**. Any of these Docker setups works:
-
-| Computer | Docker |
-|---|---|
-| Mac (Apple Silicon or Intel) | [Docker Desktop](https://www.docker.com/products/docker-desktop), [OrbStack](https://orbstack.dev) or Colima (`brew install colima docker && colima start --cpu 4 --memory 6`) |
-| Windows | Docker Desktop with WSL2; run DevLaunch inside your WSL distro |
-| Linux | [Docker Engine](https://docs.docker.com/engine/install/), with your user in the `docker` group |
-
-Give Docker at least 4 GB of memory (6 GB is better). Then, in a terminal:
+On a Mac or Linux computer (on Windows: inside WSL2), open a terminal and run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chinthanshetty07/Dev-launch/main/install.sh | bash
 ```
 
-It checks what you have, says exactly what is missing and how to get it, and stops — it never
-installs Docker or changes system settings by itself. Then:
+That is all. The installer:
+
+1. checks what the computer is missing — git, Node 20+, a running Docker;
+2. lists what it will install and asks you once;
+3. installs it:
+
+   | | Mac | Linux / WSL2 |
+   |---|---|---|
+   | Node | into `~/.devlaunch/tools`, for DevLaunch only | same |
+   | git | with Homebrew (installed too if missing) | with apt, dnf or pacman |
+   | Docker | Colima (free, open source), with Homebrew. Docker Desktop or OrbStack, if you have one, is used as it is | Docker Engine, from Docker's own script; you are added to the `docker` group |
+
+   Installing git, Docker or Homebrew asks for your computer's password — your computer's
+   rule for system software;
+4. downloads DevLaunch into `~/devlaunch`, sets it up, starts it and opens the dashboard.
+
+Next time, start it with:
 
 ```bash
 cd ~/devlaunch && ./devlaunch start          # http://127.0.0.1:3939
