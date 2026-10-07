@@ -264,8 +264,8 @@ describe('SessionManager', () => {
     // Let the real pipeline open the gate, rather than forcing it and racing the
     // background run that is still in flight.
     const s = await mgr.launch({ sourceDir: '/tmp' });
-    await settle();
-    expect(s.state).toBe(ExecutionState.AWAITING_INPUT);
+    // Waited for, not a fixed number of turns: planning reads files (see above).
+    await until(() => s.state === ExecutionState.AWAITING_INPUT);
     expect(s.pending?.requiredEnv.map((v) => v.key)).toEqual(['X']);
 
     await new Promise((r) => setTimeout(r, 250));
@@ -647,7 +647,9 @@ describe('a session that never becomes ready', () => {
       awaitingInputMs: 60_000,
     });
     const s = await mgr.launch({ sourceDir: '/tmp' });
-    await settle();
+    // Waited for, not a fixed number of turns: planning reads files, which a slower machine
+    // (CI) takes longer than `settle` allows over.
+    await until(() => s.state === ExecutionState.AWAITING_INPUT);
     expect(s.state).toBe(ExecutionState.AWAITING_INPUT);
 
     await new Promise((r) => setTimeout(r, 200));
@@ -945,7 +947,9 @@ describe('a single service that needs a database', () => {
       planner: planned as never,
     });
     const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
-    await settle();
+    // Waited for, not a fixed number of turns: planning and provisioning read files, which a
+    // slower machine (CI) takes longer than `settle` allows over.
+    await until(() => session.state === ExecutionState.READY || session.state === ExecutionState.FAILED);
 
     expect(created, 'a postgres container was started').toEqual(['postgres:16']);
     // Async driver, because the repository named one. `postgresql://` reaches psycopg2
@@ -986,7 +990,7 @@ describe('a single service that needs a database', () => {
     const mgr = new SessionManager(exec, { analyzer: analyzed as never, planner: planned as never });
     mgr.on('state', (updated: { state: ExecutionState }) => seen.push(updated.state));
     const session = await mgr.launch({ sourceDir: '/tmp/repo', image: 'devlaunch/python:3.12' });
-    await settle();
+    await until(() => session.state === ExecutionState.READY || session.state === ExecutionState.FAILED);
 
     expect(session.state).toBe(ExecutionState.READY);
     expect(stateWhenProvisioning).toBe(ExecutionState.STARTING);
@@ -1028,8 +1032,9 @@ describe('a single service that needs a database', () => {
       analyzer: analyzed as never,
       planner: invented as never,
     });
-    await mgr.launch({ sourceDir: cloneWith('server.js'), image: 'devlaunch/python:3.12' });
-    await settle();
+    const session = await mgr.launch({ sourceDir: cloneWith('server.js'), image: 'devlaunch/python:3.12' });
+    // Waited for, not a fixed number of turns: planning reads the clone's files.
+    await until(() => session.state === ExecutionState.READY || session.state === ExecutionState.FAILED);
 
     // One URL — the provisioned one, with this run's own password — not the invented one.
     const urls = launchedWith.filter((v) => v.key === 'DATABASE_URL');
