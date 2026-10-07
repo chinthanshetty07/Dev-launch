@@ -101,6 +101,8 @@ case "$cmd" in
     [ -n "$ids" ] && docker rm -f $(echo $ids) >/dev/null && echo "Removed $(echo $ids | wc -w | tr -d ' ') container(s)." || echo "No containers to remove."
     vols=$(docker volume ls -q --filter label=com.devlaunch.workspace=true)
     [ -n "$vols" ] && docker volume rm $(echo $vols) >/dev/null && echo "Removed $(echo $vols | wc -w | tr -d ' ') workspace volume(s)." || echo "No workspace volumes to remove."
+    nets=$(docker network ls -q --filter label=com.devlaunch.runnet=true)
+    [ -n "$nets" ] && docker network rm $(echo $nets) >/dev/null && echo "Removed $(echo $nets | wc -w | tr -d ' ') run network(s)." || echo "No run networks to remove."
     if [ "${1:-}" = "--caches" ]; then
       caches=$(docker volume ls -q --filter label=com.devlaunch.cache=true)
       [ -n "$caches" ] && docker volume rm $(echo $caches) >/dev/null && echo "Removed $(echo $caches | wc -w | tr -d ' ') download cache(s)." || echo "No caches to remove."

@@ -75,6 +75,12 @@ async function main() {
     if (net) ok('Protected network devlaunch-net exists');
     else warn('Network devlaunch-net is missing', 'Containers would run without the rule that keeps them off your home network. Run: bash scripts/setup-network-policy.sh');
 
+    // The process cap a repository's own Dockerfile build runs under (see BuildSandbox).
+    const pidsMax = await cmd('docker', ['run', '--rm', '--cgroupns', 'host', '--network', 'none', '--user', '1000:1000',
+      '--cap-drop', 'ALL', 'devlaunch/node:20', 'cat', '/sys/fs/cgroup/devlaunch-build/pids.max'], 30_000);
+    if (pidsMax && /^\d+$/.test(pidsMax)) ok(`Dockerfile builds are capped at ${pidsMax} processes`);
+    else warn('Dockerfile builds have no process cap', 'A repository\'s own Dockerfile will not be built until it does. Run: bash scripts/setup-network-policy.sh');
+
     const ours = await cmd('docker', ['ps', '-aq', '--filter', 'label=com.devlaunch.managed=true']);
     const count = ours ? ours.split('\n').filter(Boolean).length : 0;
     if (count > 0) warn(`${count} DevLaunch container(s) exist`, 'Fine while DevLaunch is running something. If it is not: ./devlaunch clean');

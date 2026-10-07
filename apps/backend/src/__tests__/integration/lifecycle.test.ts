@@ -37,12 +37,14 @@ async function until(m: SessionManager, id: string, ok: (s: ExecutionState) => b
   }
 }
 const serving = (s: ExecutionState) => s === ExecutionState.READY || s === ExecutionState.PARTIALLY_READY;
-async function leftovers(sessionId: string): Promise<{ containers: number; volumes: number }> {
+async function leftovers(sessionId: string): Promise<{ containers: number; volumes: number; networks: number }> {
   const client = docker.client();
   const label = [`${config.docker.sessionLabel}=${sessionId}`];
   const containers = await client.listContainers({ all: true, filters: { label } });
   const { Volumes } = await client.listVolumes({ filters: { label } });
-  return { containers: containers.length, volumes: (Volumes ?? []).length };
+  // A run's own network (verifier D-8) is part of what it leaves, or must not.
+  const networks = await client.listNetworks({ filters: { label } });
+  return { containers: containers.length, volumes: (Volumes ?? []).length, networks: networks.length };
 }
 
 describe('the lifecycle of a run, on real Docker', () => {
@@ -75,7 +77,7 @@ describe('the lifecycle of a run, on real Docker', () => {
     expect(s.state).not.toBe(ExecutionState.READY);
     await m.cancel(s.id);
     expect(s.state).toBe(ExecutionState.CANCELLED);
-    expect(await leftovers(s.id)).toEqual({ containers: 0, volumes: 0 });
+    expect(await leftovers(s.id)).toEqual({ containers: 0, volumes: 0, networks: 0 });
   }, 300_000);
 
   it('replaced by a new run, is stopped and leaves nothing, and the new one runs', async () => {
@@ -85,11 +87,11 @@ describe('the lifecycle of a run, on real Docker', () => {
     const b = await m.launch({ sourceDir: `${FIXTURES}/node-http-basic`, replace: true });
     expect(a.state).toBe(ExecutionState.CANCELLED);
     expect(a.endedReason).toMatch(/^replaced by/);
-    expect(await leftovers(a.id)).toEqual({ containers: 0, volumes: 0 });
+    expect(await leftovers(a.id)).toEqual({ containers: 0, volumes: 0, networks: 0 });
     await until(m, b.id, serving);
     expect((await fetch(b.url!)).status).toBeLessThan(500);
     await m.cancel(b.id);
-    expect(await leftovers(b.id)).toEqual({ containers: 0, volumes: 0 });
+    expect(await leftovers(b.id)).toEqual({ containers: 0, volumes: 0, networks: 0 });
   }, 300_000);
 
   it('restarts one service of a project at the same address, and stops cleanly afterwards', async () => {
@@ -105,7 +107,7 @@ describe('the lifecycle of a run, on real Docker', () => {
     expect(frontend().handle.container.id).not.toBe(before.container);
     expect((await fetch(frontend().url!)).status).toBe(200);
     await m.cancel(s.id);
-    expect(await leftovers(s.id)).toEqual({ containers: 0, volumes: 0 });
+    expect(await leftovers(s.id)).toEqual({ containers: 0, volumes: 0, networks: 0 });
   }, 300_000);
 
   it('stopped, does not touch another run', async () => {
@@ -115,11 +117,11 @@ describe('the lifecycle of a run, on real Docker', () => {
     await until(m, a.id, serving);
     await until(m, b.id, serving);
     await m.cancel(a.id);
-    expect(await leftovers(a.id)).toEqual({ containers: 0, volumes: 0 });
+    expect(await leftovers(a.id)).toEqual({ containers: 0, volumes: 0, networks: 0 });
     expect(b.state).toBe(ExecutionState.READY);
     expect((await fetch(b.url!)).status).toBeLessThan(500);
     expect((await leftovers(b.id)).containers).toBe(1);
     await m.cancel(b.id);
-    expect(await leftovers(b.id)).toEqual({ containers: 0, volumes: 0 });
+    expect(await leftovers(b.id)).toEqual({ containers: 0, volumes: 0, networks: 0 });
   }, 300_000);
 });

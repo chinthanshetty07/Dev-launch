@@ -13,6 +13,7 @@ import {
   isBackingImageApproved,
 } from './BackingServices.js';
 import type { ExecutionManager } from './ExecutionManager.js';
+import { sessionNetwork } from './RunNetworks.js';
 
 /**
  * Start the databases a repository expects, and say how to reach them.
@@ -95,9 +96,7 @@ export class BackingProvisioner {
     // See `BackingCredentials` (audit A-08).
     const password = randomBytes(12).toString('hex');
     const creds: Partial<Record<BackingService['kind'], BackingCredentials>> = {};
-    const networkName = (await this.exec.docker.networkExists(config.docker.networkName))
-      ? config.docker.networkName
-      : undefined;
+    const networkName = await sessionNetwork(this.exec, opts.sessionId);
     const claimed =
       networkName && typeof this.exec.docker.claimedAliases === 'function'
         ? await this.exec.docker.claimedAliases(networkName).catch(() => new Set<string>())
@@ -161,9 +160,7 @@ export class BackingProvisioner {
       }
     }
 
-    const networkName = (await docker.networkExists(config.docker.networkName))
-      ? config.docker.networkName
-      : undefined;
+    const networkName = await sessionNetwork(this.exec, sessionId);
 
     const attempt = async (from: string): Promise<BackingRun> => {
       logs.write('stdout', `Starting ${need.kind} (${need.evidence}) as ${host} from ${from}...`);

@@ -81,6 +81,22 @@ export const config = {
      * prerequisite for running at all.
      */
     networkName: process.env.DEVLAUNCH_NETWORK ?? 'devlaunch-net',
+    /**
+     * The VM cgroup every Dockerfile build runs under, capped at a process count and a
+     * memory size by scripts/setup-network-policy.sh. The classic builder accepts no
+     * process limit of its own, so without this a fork bomb in a `RUN` step fills the
+     * VM's process table (verifier D-2).
+     */
+    buildCgroup: process.env.DEVLAUNCH_BUILD_CGROUP ?? 'devlaunch-build',
+    /**
+     * Each run gets a network of its own, carved from this range, so two runs at once
+     * cannot reach each other's databases or services by name (verifier D-8). The egress
+     * rules installed by scripts/setup-network-policy.sh cover the whole range;
+     * `networkName` above is one /24 inside it, kept for builds and the egress check.
+     */
+    runNetworkPool: process.env.DEVLAUNCH_NETWORK_POOL ?? '172.31.0.0/16',
+    runNetworkPrefix: 'devlaunch-run-',
+    runNetworkLabel: 'com.devlaunch.runnet',
   },
 
   container: {

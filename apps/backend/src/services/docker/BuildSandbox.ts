@@ -20,6 +20,12 @@ import { config } from '../../config/index.js';
  *
  * The cost, stated: BuildKit-only Dockerfile syntax (`RUN --mount`, heredocs) does not
  * build here, and fails with the builder's own message.
+ *
+ * The classic builder also takes no process limit, so every build is placed under a VM
+ * cgroup that has one (`config.docker.buildCgroup`, set up by `./devlaunch install`).
+ * Measured: a `RUN` starting 3,000 processes started all of them without it, and stopped
+ * at 2,048 with "can't fork" under it. Docker creates a missing parent cgroup with *no*
+ * limit rather than failing, so the cap is checked before every build, not assumed.
  */
 
 /** Images DevLaunch builds are tagged under this name, so nothing else is ever touched. */
@@ -71,6 +77,8 @@ export function buildOptions(req: Omit<BuildRequest, 'onLine' | 'timeoutMs' | 's
     // The classic builder: the one that runs RUN steps on a network we name.
     version: '1',
     networkmode: config.docker.networkName,
+    // Under the VM's capped cgroup: the only process limit a classic build can have.
+    cgroupparent: `/${config.docker.buildCgroup}`,
     memory: memoryMb * 1024 * 1024,
     memswap: memoryMb * 1024 * 1024,
     cpuperiod: 100_000,
@@ -88,6 +96,50 @@ export function buildOptions(req: Omit<BuildRequest, 'onLine' | 'timeoutMs' | 's
   };
 }
 
+/**
+ * Why the build cgroup cannot be trusted to cap a build, or null when it can: it must
+ * exist and carry a number. `max` is what Docker leaves on a cgroup it created itself
+ * because the VM restarted without DevLaunch's boot service.
+ */
+export function buildCapProblem(pidsMax: string | null): string | null {
+  const value = pidsMax?.trim();
+  if (value && /^\d+$/.test(value) && Number(value) > 0) return null;
+  return `the Docker VM has no process limit for builds (${value ? `${config.docker.buildCgroup} pids.max is ${value}` : `no ${config.docker.buildCgroup} cgroup`}; run ./devlaunch install), so a build step could start processes until the VM stalls`;
+}
+
+/**
+ * Read the build cgroup's `pids.max` from inside the VM. A throwaway container sees the
+ * VM's cgroup tree (host cgroup namespace, mounted read-only by Docker) and nothing else:
+ * no network, no capabilities, not root.
+ */
+async function readBuildPidsMax(docker: Dockerode): Promise<string | null> {
+  const container = await docker.createContainer({
+    Image: 'devlaunch/node:20',
+    Cmd: ['cat', `/sys/fs/cgroup/${config.docker.buildCgroup}/pids.max`],
+    User: '1000:1000',
+    Labels: { [config.docker.managedLabel]: 'true', [config.docker.instanceLabel]: config.docker.instanceId },
+    HostConfig: {
+      CgroupnsMode: 'host',
+      NetworkMode: 'none',
+      ReadonlyRootfs: true,
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges'],
+      Memory: 64 * 1024 * 1024,
+      PidsLimit: 16,
+    },
+  } as Dockerode.ContainerCreateOptions);
+  try {
+    await container.start();
+    const { StatusCode } = (await container.wait()) as { StatusCode: number };
+    if (StatusCode !== 0) return null;
+    // Not a TTY, so the log is framed; the value is the last word in it.
+    const out = (await container.logs({ stdout: true, stderr: false })).toString('utf8');
+    return /(\d+|max)\s*$/.exec(out)?.[1] ?? null;
+  } finally {
+    await container.remove({ force: true }).catch(() => undefined);
+  }
+}
+
 export class BuildSandbox {
   /** The memory a build may use, counted against the VM while it runs. */
   get memoryMb(): number {
@@ -100,14 +152,21 @@ export class BuildSandbox {
       memoryMb: Number(process.env.DEVLAUNCH_BUILD_MEMORY_MB) || 2048,
       cpus: config.container.cpus,
     },
+    /** The build cgroup's `pids.max` as the VM has it, or null when it does not exist. */
+    private readonly readPidsMax: () => Promise<string | null> = () => readBuildPidsMax(docker),
   ) {}
 
-  /** The sandbox exists only on DevLaunch's network; without it, nothing is built. */
+  /**
+   * The sandbox exists only on DevLaunch's network and under the capped build cgroup;
+   * without either, nothing is built.
+   */
   async ready(): Promise<string | null> {
     const nets = await this.docker.listNetworks({ filters: { name: [config.docker.networkName] } });
-    return nets.some((n) => n.Name === config.docker.networkName)
-      ? null
-      : `the ${config.docker.networkName} network does not exist (run ./devlaunch install), so a build could not be kept off the local network`;
+    if (!nets.some((n) => n.Name === config.docker.networkName)) {
+      return `the ${config.docker.networkName} network does not exist (run ./devlaunch install), so a build could not be kept off the local network`;
+    }
+    const pidsMax = await this.readPidsMax().catch(() => null);
+    return buildCapProblem(pidsMax);
   }
 
   async build(req: BuildRequest): Promise<BuildResult> {

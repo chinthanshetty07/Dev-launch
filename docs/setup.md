@@ -58,7 +58,11 @@ Python start command fails with exit 127.
 ```
 
 Creates the `devlaunch-net` bridge and installs iptables rules inside the Colima VM,
-blocking container egress to RFC1918, link-local, and the VM host itself. Idempotent.
+blocking container egress to RFC1918, link-local, and the VM host itself, for every network
+in `172.31.0.0/16` (each run gets one of its own from that range). Also creates the
+`devlaunch-build` cgroup that caps a Dockerfile build at 2,048 processes and 4 GB, with a
+boot service so it comes back after the VM restarts. Idempotent. `./devlaunch install`
+runs it; `./devlaunch doctor` reports both.
 
 **The rules live inside the VM and do not survive `colima delete`.** Re-run after
 recreating it. If the policy network is absent the runner falls back to the default
@@ -109,7 +113,11 @@ Everything is optional; defaults live in `apps/backend/src/config`.
 | `DEVLAUNCH_MEMORY_RESERVE_MB` | 512 | VM memory never promised to containers |
 | `DEVLAUNCH_CONTAINER_CPUS` | 2 | Per-container CPU limit |
 | `DEVLAUNCH_CONTAINER_PIDS_LIMIT` | 256 | Fork-bomb ceiling |
-| `DEVLAUNCH_NETWORK` | `devlaunch-net` | Network carrying the egress policy |
+| `DEVLAUNCH_NETWORK` | `devlaunch-net` | Network carrying the egress policy (builds, checks) |
+| `DEVLAUNCH_NETWORK_POOL` | `172.31.0.0/16` | Range each run's own network comes from; must match the setup script's |
+| `DEVLAUNCH_BUILD_CGROUP` | `devlaunch-build` | VM cgroup that caps Dockerfile builds |
+| `DEVLAUNCH_BUILD_PIDS_MAX` | 2048 | Setup script only: the build process cap |
+| `DEVLAUNCH_BUILD_MEMORY_MAX_MB` | 4096 | Setup script only: the build memory cap |
 | `DEVLAUNCH_REPO_MAX_BYTES` | 500 MB | Clone size cap |
 | `DEVLAUNCH_REPO_MAX_FILES` | 20000 | Clone file-count cap |
 | `DEVLAUNCH_LOG_MAX_BYTES` | 5 MB | Log buffer cap (bytes first) |

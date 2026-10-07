@@ -111,16 +111,30 @@ writable root filesystem, because real images need both; everything else holds.
   Only images under that name are ever removed; after a crash, the next start removes those
   a dead process left. A stop or a replace stops a build in progress, and a build's memory is
   counted against the VM while it runs.
+- **Process limit for builds** (verifier D-2, closed): the classic builder takes no process
+  limit of its own, so every build runs under a VM cgroup, `devlaunch-build`, capped at
+  2,048 processes and 4 GB (`--cgroup-parent`). `./devlaunch install` creates it and a boot
+  service in the VM recreates it after a restart. Docker would create a missing cgroup with
+  *no* limit, so DevLaunch reads the cap before every build and refuses to build without
+  it. Measured: a `RUN` starting 3,000 processes started all of them without the cap, and
+  stopped at 2,048 with "can't fork" under it (`integration/repoDocker.test.ts`).
 - **Not closed, stated:** a build step runs with Docker's default capabilities (including
-  `NET_RAW`) and without a process limit — the classic builder takes neither setting, and an
-  `nproc` limit does not bind root. A fork bomb in a `RUN` step can exhaust the VM's process
-  table until the build is stopped; raw sockets during a build could spoof traffic on
-  `devlaunch-net`, where at the default concurrency of one only this run's own containers
-  are. Neither reaches the Mac or the local network.
+  `NET_RAW`) — the classic builder takes no capability settings. Raw sockets during a build
+  could spoof traffic on `devlaunch-net`, where only builds and DevLaunch's own checks are:
+  runs have networks of their own. It does not reach the Mac or the local network.
 - **Containers** (`buildRepoImageHostConfig`): not privileged, no capabilities added,
   `NET_RAW`, `MKNOD`, `AUDIT_WRITE`, `SETFCAP`, `SYS_CHROOT`, `SETPCAP`, `FSETID` dropped,
   `no-new-privileges`, memory/CPU/pids limits, no binds, no devices, no host PID/IPC/network,
-  on `devlaunch-net`.
+  on the run's own network (below).
+- **A network of its own for every run** (verifier D-8, closed): each run, whichever way
+  it runs, gets a bridge network from `172.31.0.0/16`, the range the egress rules cover.
+  Containers on different bridges cannot reach each other, so two runs at once cannot
+  reach each other's services or databases by name or by address. Before the first one,
+  DevLaunch checks on this VM that a network from that range is under the rules (a
+  container on it must not reach the VM); until it is, runs share `devlaunch-net` and the
+  log says so. A run's network is removed when the run ends; after a crash, the next start
+  removes it. Measured with two runs at once: each reached its own service and not the
+  other's (`integration/concurrency.test.ts`).
 - **Compose** is translated, never handed to `docker compose`. Refused, with the key named:
   `privileged`, `cap_add`, `devices`, `security_opt`, `sysctls`, `userns_mode`, host
   `network_mode`/`pid`/`ipc`, the Docker socket, bind mounts and `env_file`s outside the

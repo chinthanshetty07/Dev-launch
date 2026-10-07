@@ -12,6 +12,7 @@ import {
 import { config } from '../../config/index.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { BackingProvisioner, type BackingRun } from './BackingProvisioner.js';
+import { sessionNetwork } from './RunNetworks.js';
 import {
   browserWiringProblems,
   preferredApiHostPort,
@@ -280,8 +281,10 @@ export class ProjectExecutor {
     // Another project may already be running a service of the same name. Docker
     // round-robins a duplicated alias rather than refusing it, so claiming it again
     // would send half of this project's traffic into that one.
-    const networkName = config.docker.networkName;
-    const claimed = (await this.exec.docker.networkExists(networkName))
+    // On this run's own network that is only ever this run's own services; on the
+    // shared one (see RunNetworks) it can be another run's.
+    const networkName = await sessionNetwork(this.exec, opts.sessionId);
+    const claimed = networkName
       ? await this.exec.docker.claimedAliases(networkName)
       : new Set<string>();
 

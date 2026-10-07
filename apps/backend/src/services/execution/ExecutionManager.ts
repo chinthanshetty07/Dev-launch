@@ -21,6 +21,7 @@ import { joinWorkspace } from '../security/PathValidator.js';
 import { RunPlanValidator } from '../planning/RunPlanValidator.js';
 import { FailureClassifier } from '../failures/FailureClassifier.js';
 import { MemoryBudget, containerCapacityMb } from './MemoryPolicy.js';
+import { RunNetworks } from './RunNetworks.js';
 import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
 import { definitiveStartFailure } from '../failures/DefinitiveStart.js';
 import { basename, dirname, join, resolve, sep } from 'node:path';
@@ -424,9 +425,11 @@ export class ExecutionManager {
   private workspaceSeq = 0;
   private capacityMb: number | null = null;
   private capacityRead = false;
+  private readonly networks: RunNetworks;
 
   constructor(readonly docker: DockerManager) {
     this.ports = new PortManager(docker);
+    this.networks = new RunNetworks(docker);
     this.memory = new MemoryBudget(() => this.capacityMb);
   }
 
@@ -478,11 +481,10 @@ export class ExecutionManager {
     await this.docker.ensureImage(opts.image);
     if (opts.packageCacheVolume) await this.docker.ensureVolume(opts.packageCacheVolume);
 
-    // The egress policy lives on a user-defined network. Without it the run still
-    // works, but with weaker isolation, so the degradation is explicit rather than silent.
-    const networkName = (await this.docker.networkExists(config.docker.networkName))
-      ? config.docker.networkName
-      : undefined;
+    // The egress policy lives on a user-defined network — this run's own (see
+    // RunNetworks). Without it the run still works, but with weaker isolation, so the
+    // degradation is explicit rather than silent.
+    const networkName = await this.networkFor(opts.sessionId);
     this.lastNetworkUsed = networkName;
 
     const workdir = joinWorkspace(config.container.workspacePath, opts.plan.workingDirectory);
@@ -653,9 +655,7 @@ export class ExecutionManager {
     const spec = plan.docker!;
     const cleanup = new CleanupManager(this.docker);
     await this.docker.ensureImage(opts.image);
-    const networkName = (await this.docker.networkExists(config.docker.networkName))
-      ? config.docker.networkName
-      : undefined;
+    const networkName = await this.networkFor(opts.sessionId);
     // A repository's own image only ever runs under the egress rules; without their
     // network it would run on Docker's default one (verifier D-12).
     if (!networkName) {
@@ -768,6 +768,20 @@ export class ExecutionManager {
     }
     this.workspaces.set(opts.workspaceKey, { volume, sessionId: opts.sessionId });
     return { volume, reused: false };
+  }
+
+  /**
+   * The network a session's containers join: its own, so that two runs at once cannot
+   * reach each other (verifier D-8), or the shared one where its own cannot be kept
+   * under the egress rules. Undefined when there is no protected network at all.
+   */
+  networkFor(sessionId: string): Promise<string | undefined> {
+    return this.networks.forSession(sessionId);
+  }
+
+  /** Remove a session's own network. Its containers must be gone first. */
+  async releaseNetwork(sessionId: string): Promise<void> {
+    await this.networks.release(sessionId);
   }
 
   /** Remove every workspace volume a session made. Its containers must be gone first. */

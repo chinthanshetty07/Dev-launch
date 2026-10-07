@@ -158,6 +158,10 @@ describe('Phase 3 — port mapping and readiness', () => {
 });
 
 describe('readiness waits for the application, not the container', () => {
+  // A run's own network outlives a container cleaned up by hand; the sweep removes it.
+  afterAll(async () => {
+    await CleanupManager.sweepOrphans(docker);
+  });
   it('does not fail a project whose install outlasts the readiness budget', async () => {
     // Reported from a real run: a Python project with a large dependency tree was
     // declared PORT_NOT_LISTENING while pip was still resolving, then "repaired" twice —

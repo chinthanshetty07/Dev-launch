@@ -16,6 +16,15 @@ set -euo pipefail
 
 NETWORK_NAME="${DEVLAUNCH_NETWORK:-devlaunch-net}"
 SUBNET="${DEVLAUNCH_SUBNET:-172.31.250.0/24}"
+# Every network DevLaunch creates comes from this range: devlaunch-net above, and the one
+# network each run gets so that two runs cannot reach each other. The rules below apply to
+# the whole range, so each of those networks is under them from the moment it exists.
+POOL="${DEVLAUNCH_NETWORK_POOL:-172.31.0.0/16}"
+# Every Dockerfile build runs in this cgroup (Docker's --cgroup-parent), capped below, so a
+# fork bomb in a build step stops at the cap instead of filling the VM's process table.
+BUILD_CGROUP="${DEVLAUNCH_BUILD_CGROUP:-devlaunch-build}"
+BUILD_PIDS_MAX="${DEVLAUNCH_BUILD_PIDS_MAX:-2048}"
+BUILD_MEMORY_MAX_MB="${DEVLAUNCH_BUILD_MEMORY_MAX_MB:-4096}"
 
 echo "==> Ensuring Docker network ${NETWORK_NAME} (${SUBNET})"
 if docker network inspect "${NETWORK_NAME}" >/dev/null 2>&1; then
@@ -48,8 +57,8 @@ iptables -A DEVLAUNCH -d 169.254.0.0/16  -j DROP
 iptables -A DEVLAUNCH -j RETURN
 
 # Jump only for traffic *from* DevLaunch containers, so no other workload is affected.
-iptables -C DOCKER-USER -s ${SUBNET} -j DEVLAUNCH 2>/dev/null \
-  || iptables -I DOCKER-USER 1 -s ${SUBNET} -j DEVLAUNCH
+iptables -C DOCKER-USER -s ${POOL} -j DEVLAUNCH 2>/dev/null \
+  || iptables -I DOCKER-USER 1 -s ${POOL} -j DEVLAUNCH
 
 # DOCKER-USER only sees *forwarded* traffic. A packet from a container to the VM itself
 # — its own default gateway included — terminates locally and hits INPUT instead, so
@@ -61,13 +70,50 @@ iptables -N DEVLAUNCH-IN 2>/dev/null || iptables -F DEVLAUNCH-IN
 iptables -A DEVLAUNCH-IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 iptables -A DEVLAUNCH-IN -j DROP
 
-iptables -C INPUT -s ${SUBNET} -j DEVLAUNCH-IN 2>/dev/null \
-  || iptables -I INPUT 1 -s ${SUBNET} -j DEVLAUNCH-IN
+iptables -C INPUT -s ${POOL} -j DEVLAUNCH-IN 2>/dev/null \
+  || iptables -I INPUT 1 -s ${POOL} -j DEVLAUNCH-IN
 
 echo "    installed (forward):"
 iptables -L DEVLAUNCH -n | sed 's/^/      /'
 echo "    installed (input):"
 iptables -L DEVLAUNCH-IN -n | sed 's/^/      /'
+SCRIPT
+
+echo "==> Capping Dockerfile builds at ${BUILD_PIDS_MAX} processes and ${BUILD_MEMORY_MAX_MB} MB"
+colima ssh -- sudo sh -s <<SCRIPT
+set -eu
+# Written to the VM so it can be run again at boot: cgroups do not survive a restart.
+cat > /usr/local/sbin/devlaunch-build-cgroup.sh <<'INNER'
+#!/bin/sh
+set -eu
+root=/sys/fs/cgroup
+dir=\$root/${BUILD_CGROUP}
+mkdir -p "\$dir"
+# The controllers must be on in the parent to limit anything in the child.
+echo "+pids +memory +cpu" > "\$root/cgroup.subtree_control"
+echo ${BUILD_PIDS_MAX} > "\$dir/pids.max"
+echo \$(( ${BUILD_MEMORY_MAX_MB} * 1024 * 1024 )) > "\$dir/memory.max"
+echo "+pids +memory +cpu" > "\$dir/cgroup.subtree_control"
+INNER
+chmod 755 /usr/local/sbin/devlaunch-build-cgroup.sh
+/usr/local/sbin/devlaunch-build-cgroup.sh
+
+cat > /etc/systemd/system/devlaunch-build-cgroup.service <<'UNIT'
+[Unit]
+Description=DevLaunch: process and memory cap for Dockerfile builds
+Before=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/devlaunch-build-cgroup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable devlaunch-build-cgroup.service >/dev/null 2>&1
+echo "    pids.max=\$(cat /sys/fs/cgroup/${BUILD_CGROUP}/pids.max) memory.max=\$(cat /sys/fs/cgroup/${BUILD_CGROUP}/memory.max)"
 SCRIPT
 
 if [ "${NETWORK_NAME}" = "devlaunch-net" ]; then

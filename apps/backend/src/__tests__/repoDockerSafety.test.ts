@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { RunPlanSchema } from '@devlaunch/shared';
-import { BuildSandbox, buildOptions, builtImageTag } from '../services/docker/BuildSandbox.js';
+import { BuildSandbox, buildCapProblem, buildOptions, builtImageTag } from '../services/docker/BuildSandbox.js';
 import { buildRepoImageHostConfig } from '../services/docker/ContainerSecurity.js';
 import { RunPlanValidator } from '../services/planning/RunPlanValidator.js';
 import { dockerProjectPlan } from '../services/docker/RepoDockerRunner.js';
@@ -31,9 +31,52 @@ describe('the build sandbox', () => {
     expect(opts.labels).toMatchObject({ [config.docker.managedLabel]: 'true', [config.docker.sessionLabel]: 'abc-session' });
   });
 
+  it('runs every build under the VM cgroup that caps its processes (verifier D-2)', () => {
+    // Measured: a RUN starting 3,000 processes started them all without it, and stopped
+    // at 2,048 with "can't fork" under it.
+    expect(opts.cgroupparent).toBe(`/${config.docker.buildCgroup}`);
+  });
+
   it('carries a Dockerfile from outside its context under a fixed name', () => {
     const out = buildOptions({ sessionId: 's', service: 'a', contextDir: '/r/api', dockerfile: '/r/docker/api.Dockerfile' }, 1024, 1);
     expect(out.dockerfile).toBe('.devlaunch.Dockerfile');
+  });
+});
+
+describe('the build process cap must be there before anything is built', () => {
+  const docker = { listNetworks: async () => [{ Name: config.docker.networkName }] };
+  const sandbox = (pidsMax: string | null | Error) =>
+    new BuildSandbox(docker as never, { memoryMb: 1024, cpus: 1 }, async () => {
+      if (pidsMax instanceof Error) throw pidsMax;
+      return pidsMax;
+    });
+
+  it('builds when the cgroup carries a number', async () => {
+    expect(await sandbox('2048\n').ready()).toBeNull();
+  });
+
+  it.each([
+    // Docker creates a missing parent cgroup itself, with no limit: "max".
+    ['no limit on the cgroup', 'max'],
+    ['no cgroup at all', null],
+    ['a check that could not run', new Error('no such image')],
+    ['a value that is not a number', 'garbage'],
+  ])('refuses with %s, saying how to fix it', async (_label, value) => {
+    const problem = await sandbox(value as string | null | Error).ready();
+    expect(problem).toMatch(/no process limit for builds/);
+    expect(problem).toMatch(/\.\/devlaunch install/);
+  });
+
+  it('a build refused for it runs nothing', async () => {
+    const r = await sandbox('max').build({
+      sessionId: 's', service: 'a', contextDir: '/nope', dockerfile: '/nope/Dockerfile', timeoutMs: 1000, onLine: () => undefined,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/^Not building: .*no process limit/);
+  });
+
+  it('reads 0 as no limit worth trusting', () => {
+    expect(buildCapProblem('0')).not.toBeNull();
   });
 });
 

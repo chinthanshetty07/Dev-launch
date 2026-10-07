@@ -2687,6 +2687,8 @@ export class SessionManager extends EventEmitter {
       session.backing = undefined;
       // Last: a workspace volume can only be removed once no container mounts it.
       await this.exec.releaseWorkspaces?.(session.id);
+      // And its own network, once nothing is attached to it.
+      await this.exec.releaseNetwork?.(session.id);
     } catch (err) {
       // A thrown failure must not mask the transition that triggered teardown, but it
       // should still be visible.

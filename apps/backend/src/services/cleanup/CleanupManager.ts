@@ -106,6 +106,12 @@ export class CleanupManager {
         if (orphan(image.labels)) await docker.removeImage(image.id).catch(() => undefined);
       }
     }
+    // A run's own network (see RunNetworks), after the containers that were attached to it.
+    if (typeof docker.listRunNetworks === 'function') {
+      for (const network of await docker.listRunNetworks().catch(() => [])) {
+        if (orphan(network.labels)) await docker.removeNetwork(network.name).catch(() => undefined);
+      }
+    }
     return removed;
   }
 
@@ -170,6 +176,14 @@ export class CleanupManager {
     if (typeof docker.listWorkspaceVolumes === 'function') {
       for (const volume of await docker.listWorkspaceVolumes(scope).catch(() => [] as string[])) {
         await docker.removeVolume(volume).catch(() => undefined);
+      }
+    }
+    // And the runs' own networks (see RunNetworks), now that nothing is attached to them.
+    if (typeof docker.listRunNetworks === 'function') {
+      for (const network of await docker.listRunNetworks().catch(() => [])) {
+        if (scope === 'all' || network.labels[config.docker.instanceLabel] === config.docker.instanceId) {
+          await docker.removeNetwork(network.name).catch(() => undefined);
+        }
       }
     }
     return removed;

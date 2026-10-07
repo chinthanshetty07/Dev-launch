@@ -250,6 +250,10 @@ describe('Phase 2 — security hardening (§27)', () => {
 });
 
 describe('build scratch has somewhere to go', () => {
+  // A run's own network outlives a container cleaned up by hand; the sweep removes it.
+  afterAll(async () => {
+    await CleanupManager.sweepOrphans(docker);
+  });
   it('installs a package too large for the tmpfs', async () => {
     // Reported from a real run: `[Errno 28] No space left on device` while the VM was
     // 8% full. /tmp is a 64 MB tmpfs — it is memory, and deliberately small — and pip

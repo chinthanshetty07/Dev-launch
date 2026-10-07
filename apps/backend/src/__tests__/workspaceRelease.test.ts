@@ -5,6 +5,7 @@ import { CleanupManager } from '../services/cleanup/CleanupManager.js';
 import type { ExecutionManager, ReadyOutcome } from '../services/execution/ExecutionManager.js';
 import type { DockerManager } from '../services/docker/DockerManager.js';
 import { LogManager } from '../services/logs/LogManager.js';
+import { config } from '../config/index.js';
 
 /**
  * Workspace volumes outlive containers on purpose, so something has to remove them: the
@@ -57,6 +58,10 @@ describe('the sweeps', () => {
     // is alive and `dead-1` crashed; `old` predates the instance label.
     const calls: string[] = [];
     const label = (id?: string) => ({ 'com.devlaunch.managed': 'true', ...(id ? { 'com.devlaunch.instance': id } : {}) });
+    const networks = [
+      { name: 'devlaunch-run-live', labels: label('live-1') },
+      { name: 'devlaunch-run-dead', labels: label('dead-1') },
+    ];
     const docker = {
       listManaged: async () => [
         { Id: 'mine-live', Labels: label('live-1') },
@@ -73,12 +78,19 @@ describe('the sweeps', () => {
       removeVolume: async (name: string) => { calls.push(`volume:${name}`); },
       listBuiltImages: async () => [{ id: 'img-live', labels: label('live-1') }, { id: 'img-dead', labels: label('dead-1') }],
       removeImage: async (id: string) => { calls.push(`image:${id}`); },
+      listRunNetworks: async () => networks,
+      removeNetwork: async (name: string) => { calls.push(`network:${name}`); },
     } as unknown as DockerManager;
     await CleanupManager.sweepAllOrphans(docker, new Set(['live-1']));
     // Built images too, after a crash (verifier D-5): the dead process's, never a live one's.
-    expect(calls).toEqual(['container:crashed', 'container:old', 'volume:ws-dead', 'image:img-dead']);
+    // And a dead process's run networks (D-8), last, once nothing is attached to them.
+    expect(calls).toEqual(['container:crashed', 'container:old', 'volume:ws-dead', 'image:img-dead', 'network:devlaunch-run-dead']);
     calls.length = 0;
+    // Later, this process has made a run network of its own, and is shutting down.
+    networks.push({ name: 'devlaunch-run-mine', labels: label(config.docker.instanceId) });
     await CleanupManager.sweepOrphans(docker);
     expect(calls).toContain('list:instance');
+    // At this process's shutdown: its own run networks, never another live process's.
+    expect(calls.filter((c) => c.startsWith('network:'))).toEqual(['network:devlaunch-run-mine']);
   });
 });

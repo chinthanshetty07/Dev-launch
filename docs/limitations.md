@@ -32,10 +32,13 @@ balanced profile in `SECURITY.md`. Limits of that path:
   dependency is started first, not waited for to finish).
 - Refused, by name: `ADD` from a URL, base images from non-public registries, and a compose
   image that is not on a public registry.
-- With `DEVLAUNCH_MAX_CONCURRENT_DEPLOYMENTS` above 1, two compose runs share
-  `devlaunch-net` under their compose service names, and DevLaunch's own MongoDB and Redis
-  have no password: one run could reach the other's. At the default of 1, a replace now
-  releases the old run before the new one starts.
+- A build step runs with Docker's default capabilities (the classic builder takes no
+  capability settings); its processes and memory are capped by the VM's `devlaunch-build`
+  cgroup, and nothing is built when that cap is missing (`./devlaunch install` sets it).
+- Two runs at once are kept apart by a network each, which needs `./devlaunch install`
+  from after this change: on an older install, runs share `devlaunch-net`, the log says
+  so, and DevLaunch's own MongoDB and Redis (no password) would be reachable from another
+  run. At the default of one run at a time, a replace releases the old run first.
 
 ## The container is the security boundary, not the planner
 

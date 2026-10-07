@@ -8,9 +8,10 @@ otherwise. Pipeline: `.claude/tasks/2026-10-06-production-readiness-mission/`
 ## 1. Verdict
 
 **Release candidate for local use — with stated limits.** Every requirement R1–R15 has
-recorded evidence; every critical and high finding is fixed with a test; two medium risks
-on the new Docker path are not closable with Docker's classic builder and are documented
-(§8). Not a candidate for hosting for other people (non-goal; see `HOSTING_PLAN.md`).
+recorded evidence; every critical and high finding is fixed with a test. The two medium
+risks first left open on the Docker path (D-2, D-8) were closed in a follow-up (§13); what
+remains is default capabilities during a build step (§8). Not a candidate for hosting for
+other people (non-goal; see `HOSTING_PLAN.md`).
 
 ## 2. The kick-ass audit
 
@@ -126,11 +127,12 @@ Fixed this pass: A-01, A-02, A-09, A-10, A-11, A-12, A-20, D-1, D-11, D-12. Prov
 `repoDockerSafety`, `integration/repoDocker`, `integration/security`, `ai`,
 `deploymentRecords` tests.
 
+**Closed in the follow-up (§13):** D-2's process limit (builds capped by a VM cgroup) and
+D-8 (a network per run).
+
 **Outstanding, stated:**
-- D-2: during a Dockerfile build step, no process limit and Docker's default capabilities
-  (the classic builder accepts neither). A fork bomb can exhaust the VM until stopped.
-- D-8: with concurrency above 1, compose service names and DevLaunch's MongoDB/Redis (no
-  password) are not isolated between runs. Default concurrency is 1.
+- During a Dockerfile build step, Docker's default capabilities (the classic builder takes
+  no capability settings). It reaches only `devlaunch-net`: builds and DevLaunch's checks.
 - No login: local use only, by design.
 
 ## 9. Checklist
@@ -147,15 +149,15 @@ Fixed this pass: A-01, A-02, A-09, A-10, A-11, A-12, A-20, D-1, D-11, D-12. Prov
 | Memory escalation obeys real limits | ✅ |
 | Readiness, cancel, restart, cleanup tested | ✅ (`lifecycle.test.ts`) |
 | No unresolved critical/high defect | ✅ |
-| No ignored critical security issue | ✅ (D-2 is medium, documented) |
+| No ignored critical security issue | ✅ (build-step capabilities: medium, documented) |
 | UI reports real state | ✅ |
 | Docs state what works and what is limited | ✅ |
 
 ## 10. Remaining blockers
 
-None for local use. For the Docker fallback's hardest edge, D-2 needs a different builder
-(a rootless one, which needs the Colima VM's AppArmor user-namespace restriction lifted —
-a decision for the machine's owner).
+None for local use. Dropping capabilities during a build step would need a different
+builder (a rootless one, which needs the Colima VM's AppArmor user-namespace restriction
+lifted — a decision for the machine's owner).
 
 ## 11. Run instructions
 
@@ -173,3 +175,29 @@ node scripts/corpus/run.mjs --name <name>   # the 40-repository corpus (~60 min)
 
 Commit this work, then run the corpus nightly (a single job is limited to an hour; split as
 `after7`/`after7b` were) so a change that breaks a real repository is caught the same day.
+
+## 13. Follow-up (2026-10-07): D-2's process limit and D-8 closed
+
+With the user's OK to change the Docker VM.
+
+| What | Proof |
+|---|---|
+| Builds run under the VM cgroup `devlaunch-build` (2,048 processes, 4 GB), recreated at boot; a build is refused without it | A `RUN` starting 3,000 processes: all 3,000 start without the cap; under it, stops at 2,048 with "can't fork" and the VM carries on (`integration/repoDocker.test.ts`; with the cap option removed the test failed) |
+| Every run has a network of its own from `172.31.0.0/16`; the egress rules cover that range and are checked on the VM first | Two runs at once: each reached its own service and not the other's; both networks gone after stopping (`integration/concurrency.test.ts`; with runs forced onto the shared network the test failed). `lifecycle.test.ts` now counts networks left behind: 0 |
+| Found by the first full run: a stop racing a run's start removed its network under a just-created database | Network kept while any of the run's containers exists (`runNetworks.test.ts`, mutation caught) |
+
+Mutation checks: 15 deliberate breaks across the two changes, each caught by a test.
+
+| Check | Result |
+|---|---|
+| Typecheck, 3 packages | clean |
+| Backend quick tests (77 files) | 1,203 passed |
+| Backend real-Docker tests, in two batches (24 files) | 52 passed; 111 passed, 3 skipped |
+| Backend total | **1,366 passed, 3 skipped, 0 failed** (101 files) |
+| Frontend / shared | 83 / 24 passed |
+| Left behind afterwards | 0 containers, 0 run networks |
+
+Run in two batches because a single background job is stopped at one hour; the first,
+single run hung on the race above and was stopped there. Not re-run: the 40-repository
+corpus (this change touches networking and builds only; the Docker-path tests above
+cover both).

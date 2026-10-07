@@ -22,13 +22,15 @@ describe('the doctor', () => {
   it('never prints a value from .env', async () => {
     const d = await mkdtemp(join(tmpdir(), 'devlaunch-doctor-'));
     dirs.push(d);
-    await writeFile(join(d, '.env'), 'GROQ_API_KEY=gsk_THIS_MUST_NOT_APPEAR_123\nDEVLAUNCH_CONTAINER_MEMORY_MB=2048\n');
+    // Was 2048, which the doctor now prints for its own reason (the build process cap), so
+    // the value must be one nothing else prints.
+    await writeFile(join(d, '.env'), 'GROQ_API_KEY=gsk_THIS_MUST_NOT_APPEAR_123\nDEVLAUNCH_CONTAINER_MEMORY_MB=3517\n');
     const out = await promisify(execFile)('node', [DOCTOR], {
       env: { ...process.env, DEVLAUNCH_ENV_FILE: join(d, '.env'), DEVLAUNCH_STATE_DIR: join(d, 'state') },
       timeout: 60_000,
     }).then((r) => r.stdout, (e: { stdout?: string }) => e.stdout ?? '');
     expect(out).toMatch(/\.env sets 2 key\(s\): GROQ_API_KEY, DEVLAUNCH_CONTAINER_MEMORY_MB/);
     expect(out).not.toContain('gsk_THIS_MUST_NOT_APPEAR_123');
-    expect(out).not.toContain('2048');
+    expect(out).not.toContain('3517');
   }, 90_000);
 });

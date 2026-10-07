@@ -269,6 +269,71 @@ export class DockerManager {
     await this.docker.getImage(id).remove({ force: true });
   }
 
+  /** Networks DevLaunch made for single runs, with their labels. */
+  async listRunNetworks(): Promise<{ name: string; labels: Record<string, string> }[]> {
+    const nets = await this.docker.listNetworks({ filters: { label: [`${config.docker.runNetworkLabel}=true`] } });
+    return nets.map((n) => ({ name: n.Name, labels: n.Labels ?? {} }));
+  }
+
+  /** Every subnet any Docker network on this daemon uses, DevLaunch's or not. */
+  async usedSubnets(): Promise<Set<string>> {
+    const used = new Set<string>();
+    for (const n of await this.docker.listNetworks()) {
+      for (const c of n.IPAM?.Config ?? []) if (c.Subnet) used.add(c.Subnet);
+    }
+    return used;
+  }
+
+  /** A plain bridge network on the given subnet, labelled as DevLaunch's. */
+  async createRunNetwork(name: string, subnet: string, labels: Record<string, string>): Promise<void> {
+    await this.docker.createNetwork({
+      Name: name,
+      Driver: 'bridge',
+      CheckDuplicate: true,
+      IPAM: { Driver: 'default', Config: [{ Subnet: subnet }] },
+      Labels: { ...labels, [config.docker.runNetworkLabel]: 'true' },
+    } as Dockerode.NetworkCreateOptions);
+  }
+
+  async removeNetwork(name: string): Promise<void> {
+    await this.docker.getNetwork(name).remove();
+  }
+
+  /**
+   * Whether a container on this network is kept off the VM, as the egress rules keep
+   * every DevLaunch network: true when a connection to the network's own gateway (the
+   * VM) on port 22 hangs, false when it connects or is refused — either means nothing
+   * dropped it. Measured: from Docker's default network the VM's port 22 answers; from
+   * a network inside the rules' range it times out. `null` when the check could not run.
+   */
+  async vmGuardedFrom(networkName: string, image = 'devlaunch/node:20', timeoutMs = 1500): Promise<boolean | null> {
+    const info = (await this.docker.getNetwork(networkName).inspect()) as { IPAM?: { Config?: { Gateway?: string }[] } };
+    const gateway = info.IPAM?.Config?.[0]?.Gateway;
+    if (!gateway) return null;
+    const script =
+      `const s=require('net').connect(22,'${gateway}');` +
+      `s.on('connect',()=>{console.log('DEVLAUNCH_REACHED');process.exit(0)});` +
+      `s.on('error',()=>{console.log('DEVLAUNCH_REACHED');process.exit(0)});` +
+      `setTimeout(()=>{console.log('DEVLAUNCH_BLOCKED');process.exit(0)},${timeoutMs});`;
+    const container = await this.docker.createContainer({
+      Image: image,
+      Cmd: ['node', '-e', script],
+      Labels: { [config.docker.managedLabel]: 'true', [config.docker.instanceLabel]: config.docker.instanceId },
+      HostConfig: { ...buildHostConfig({ sessionId: 'network-probe' }), NetworkMode: networkName, AutoRemove: false },
+      User: '1000:1000',
+    });
+    try {
+      await container.start();
+      await container.wait();
+      const output = (await container.logs({ stdout: true, stderr: true })).toString('utf8');
+      if (output.includes('DEVLAUNCH_BLOCKED')) return true;
+      if (output.includes('DEVLAUNCH_REACHED')) return false;
+      return null;
+    } finally {
+      await container.remove({ force: true }).catch(() => undefined);
+    }
+  }
+
   /** Every workspace volume, with its labels, so a sweep can tell whose it is. */
   async listWorkspaceVolumeLabels(): Promise<{ name: string; labels: Record<string, string> }[]> {
     const { Volumes } = await this.docker.listVolumes({ filters: { label: [`${config.docker.workspaceLabel}=true`] } });

@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-10-06 — The two risks left open: a build process cap, a network per run
+
+**A Dockerfile build had no process limit (verifier D-2).** Docker's classic builder — the
+one that keeps build steps under the egress rules — takes no process limit, so a fork bomb
+in a `RUN` step could fill the VM's process table until stopped. Now `./devlaunch install`
+creates a VM cgroup, `devlaunch-build`, capped at 2,048 processes and 4 GB, plus a boot
+service that recreates it after a VM restart, and every build runs under it
+(`--cgroup-parent`). Docker creates a missing parent cgroup with *no* limit rather than
+failing, so the cap is read before every build and nothing is built without it.
+Measured on this VM: a `RUN` starting 3,000 processes started all 3,000 without the cap;
+under it, it stopped at 2,048 with "can't fork" and the VM carried on. `./devlaunch doctor`
+reports the cap.
+
+**Two runs at once shared one network (verifier D-8).** Every run joined `devlaunch-net`,
+so with more than one run allowed, one could reach the other's services by compose name,
+and DevLaunch's MongoDB and Redis (no password). Now every run gets a bridge network of its
+own from `172.31.0.0/16`; the egress rules were widened from `devlaunch-net`'s /24 to that
+whole range. Before the first one, DevLaunch checks the rules cover it (a container on a
+new network must not reach the VM — measured: it reaches the VM from a network outside the
+range and times out inside it); until they do, runs share `devlaunch-net` and the log says
+so. A run's network goes when the run ends, and a crashed process's at the next start.
+Measured with two runs at once: each reached its own service and not the other's, and both
+networks were gone after stopping.
+
+**Found by the first full run, then fixed.** A stop arriving while a run was still starting
+removed the run's network between a database container's create and its start (Docker
+removes a network a created-but-not-started container is on), so the database could never
+start. A run's network now stays while any of its containers exists, and goes at shutdown
+otherwise. The check that the rules cover a new network, when it could not run under load,
+was reported as "rules missing"; it now says it could not check, and tries again after
+30 seconds.
+
+**Evidence:** see the "Follow-up" section of `docs/RELEASE_REPORT.md`. Mutation checks:
+every change was broken on purpose and its test failed.
+
+**Not done:** a build step still has Docker's default capabilities (including `NET_RAW`);
+the classic builder takes no capability settings. It reaches only `devlaunch-net`, where
+there are now only builds and DevLaunch's own checks. The VM's iptables rules still vanish
+on a VM restart (the health check reports it; `./devlaunch install` restores them).
+
 ## 2026-10-06 — Production-readiness mission: a second audit, the Docker fallback, proof
 
 Run under the kick-ass pipeline (`.claude/tasks/2026-10-06-production-readiness-mission/`:
