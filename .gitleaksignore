@@ -1,0 +1,5 @@
+# Findings checked by hand and known not to be secrets. One line per finding:
+# <commit>:<file>:<rule>:<line>. Never add a real key here — remove it from history instead.
+
+# A made-up key in the test proving a typed key is never sent to the model provider (A-01).
+9c90a811442f29df368999267f717ccabd744412:apps/backend/src/__tests__/ai.test.ts:generic-api-key:338

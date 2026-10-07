@@ -307,9 +307,11 @@ export class DockerManager {
    * a network inside the rules' range it times out. `null` when the check could not run.
    */
   async vmGuardedFrom(networkName: string, image = 'devlaunch/node:20', timeoutMs = 1500): Promise<boolean | null> {
-    const info = (await this.docker.getNetwork(networkName).inspect()) as { IPAM?: { Config?: { Gateway?: string }[] } };
-    const gateway = info.IPAM?.Config?.[0]?.Gateway;
-    if (!gateway) return null;
+    const info = (await this.docker.getNetwork(networkName).inspect()) as {
+      IPAM?: { Config?: { Gateway?: string; Subnet?: string }[] };
+    };
+    const gateway = networkGateway(info.IPAM?.Config ?? []);
+    if (!gateway) throw new Error(`the network ${networkName} has no IPv4 gateway to check against`);
     const script =
       `const s=require('net').connect(22,'${gateway}');` +
       `s.on('connect',()=>{console.log('DEVLAUNCH_REACHED');process.exit(0)});` +
@@ -324,11 +326,13 @@ export class DockerManager {
     });
     try {
       await container.start();
-      await container.wait();
+      const { StatusCode } = (await container.wait()) as { StatusCode?: number };
       const output = (await container.logs({ stdout: true, stderr: true })).toString('utf8');
       if (output.includes('DEVLAUNCH_BLOCKED')) return true;
       if (output.includes('DEVLAUNCH_REACHED')) return false;
-      return null;
+      // Say what happened, so "could not check" can be acted on rather than guessed at.
+      const tail = output.replace(/[^\x20-\x7e\n]/g, '').trim().split('\n').slice(-3).join(' | ').slice(0, 300);
+      throw new Error(`the check container exited ${StatusCode ?? '?'} without a result${tail ? `: ${tail}` : ' and printed nothing'}`);
     } finally {
       await container.remove({ force: true }).catch(() => undefined);
     }
@@ -824,4 +828,17 @@ function normaliseMode(mode: number | undefined): number {
   const m = mode ?? 0o644;
   const readExec = ((m >> 6) & 0o7) & 0o5;
   return m | (readExec << 3) | readExec;
+}
+
+/**
+ * A network's IPv4 gateway: the one Docker reports, or — when it reports none, as some
+ * Docker versions do for a network created with only a subnet — the subnet's first
+ * address, which is where Docker puts it.
+ */
+export function networkGateway(config: { Gateway?: string; Subnet?: string }[]): string | null {
+  const v4 = config.filter((c) => (c.Subnet ?? c.Gateway ?? '').includes('.'));
+  const reported = v4.find((c) => c.Gateway)?.Gateway;
+  if (reported) return reported;
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/\d+$/.exec(v4[0]?.Subnet ?? '');
+  return m ? `${m[1]}.${m[2]}.${m[3]}.${Number(m[4]) + 1}` : null;
 }

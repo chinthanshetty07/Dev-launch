@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { RunNetworks, pickRunSubnet, runNetworkName } from '../services/execution/RunNetworks.js';
 import { config } from '../config/index.js';
+import { networkGateway } from '../services/docker/DockerManager.js';
 
 /**
  * A network of its own for every run (verifier D-8): with two runs at once, neither can
@@ -163,5 +164,18 @@ describe('never a network outside the egress rules', () => {
     docker.createRunNetwork = async () => { throw new Error('daemon said no'); };
     expect(await nets.forSession('s-1')).toBe(config.docker.networkName);
     expect(warnings.join('\n')).toMatch(/daemon said no/);
+  });
+});
+
+describe('the gateway the rules check is made against', () => {
+  // Seen on CI (Docker 28, Linux): the check "said nothing" and every run fell back to the
+  // shared network. A network created with only a subnet need not report its gateway.
+  it('uses the gateway Docker reports, or else the subnet\'s first address, where Docker puts it', () => {
+    expect(networkGateway([{ Subnet: '172.31.4.0/24', Gateway: '172.31.4.1' }])).toBe('172.31.4.1');
+    expect(networkGateway([{ Subnet: '172.31.4.0/24' }])).toBe('172.31.4.1');
+  });
+  it('ignores an IPv6 entry, and says when there is nothing to check against', () => {
+    expect(networkGateway([{ Subnet: 'fd00::/64', Gateway: 'fd00::1' }, { Subnet: '172.31.9.0/24' }])).toBe('172.31.9.1');
+    expect(networkGateway([])).toBeNull();
   });
 });
