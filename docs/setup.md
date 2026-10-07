@@ -64,8 +64,9 @@ in `172.31.0.0/16` (each run gets one of its own from that range). Also creates 
 boot service so it comes back after the VM restarts. Idempotent. `./devlaunch install`
 runs it; `./devlaunch doctor` reports both.
 
-**The rules live inside the VM and do not survive `colima delete`.** Re-run after
-recreating it. If the policy network is absent the runner falls back to the default
+**The rules live inside the VM.** Boot services the script installs restore them, and the
+build cap, at every VM start — after `colima stop`/`start` or a Mac reboot nothing needs
+re-running. Only `colima delete` loses them: re-run the script after recreating the VM. If the policy network is absent the runner falls back to the default
 bridge and the security suite fails loudly rather than passing with weaker isolation.
 
 ## Run it

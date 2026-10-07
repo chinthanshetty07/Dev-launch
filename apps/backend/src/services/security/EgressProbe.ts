@@ -16,6 +16,10 @@ import { config } from '../../config/index.js';
  * Every run in between used the weaker isolation the docs warn about, and nothing said
  * so. The silence was the defect, not the missing rules.
  *
+ * Since then the setup script also installs a boot service in the VM that restores the
+ * rules after Docker starts, so a restart no longer loses them. This check stays: it is
+ * what notices when that service did not run, or the VM was recreated.
+ *
  * Checked by behaviour rather than by reading the rules. The rules live inside the VM
  * and the backend runs on the host, so inspecting them would mean shelling out to
  * `colima ssh` — tying the product to one VM manager and to a binary it has no business

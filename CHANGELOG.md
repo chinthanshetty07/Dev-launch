@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-07 — The network rules come back after a VM restart
+
+The VM's iptables rules existed only in the running kernel, so after `colima stop`/`start`
+or a Mac reboot every container ran without them until `./devlaunch install` was run
+again; the health check warned, but nothing restored them. The setup script now saves the
+rules as a script inside the VM and installs `devlaunch-network-rules.service`, which runs
+it after Docker starts (and again if Docker alone restarts). It also removes the older,
+narrower jump rules left from before the rules covered the whole `172.31.0.0/16` range.
+
+**Evidence:** with DevLaunch's rules wiped by hand inside the VM, the service restored all
+of them. Then a real `colima stop` / `colima start`: with no setup re-run, the fresh VM had
+the rules and the build cap (2,048) back, and a container on `devlaunch-net` was blocked
+from the VM (172.31.250.1:22), cloud metadata (169.254.169.254) and the Mac (192.168.5.2),
+while still reaching registry.npmjs.org; `/api/health` reported `"egress":"enforced"`.
+
 ## 2026-10-06 — The two risks left open: a build process cap, a network per run
 
 **A Dockerfile build had no process limit (verifier D-2).** Docker's classic builder — the

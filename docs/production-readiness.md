@@ -294,6 +294,10 @@ Between those two states containers ran with the weaker isolation the docs warn 
 **Remediation:** check the chain at startup and refuse, or warn loudly, when it is
 missing. Correct the doc's wording either way.
 
+> **Later (2026-10-07):** the rules are now also *restored* at every VM start, by
+> `devlaunch-network-rules.service`, which the setup script installs. The probe stays as
+> the check that they are really there.
+
 ### F6 — MEDIUM — ✅ **CLOSED 2026-09-29** — The AI path is never exercised by the suite
 
 > **Closed by** the same offline tests as F2. The three `groqLive.test.ts` tests still

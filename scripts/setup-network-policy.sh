@@ -11,7 +11,8 @@
 # guarantees is consulted before its own FORWARD rules and preserved across restarts of
 # individual containers. Re-running this script is safe.
 #
-# Requires: colima running. Rules live inside the VM and are lost if the VM is recreated.
+# Requires: colima running. The rules and the build cap are restored at every VM start by
+# boot services this installs; they are lost only if the VM is deleted (colima delete).
 set -euo pipefail
 
 NETWORK_NAME="${DEVLAUNCH_NETWORK:-devlaunch-net}"
@@ -37,6 +38,22 @@ fi
 echo "==> Installing iptables policy inside the Colima VM"
 colima ssh -- sudo sh -s <<SCRIPT
 set -eu
+# Written to the VM and run by a boot service, as well as now: iptables rules live only in
+# the running kernel, so a VM restart (colima stop/start, a Mac reboot) used to leave every
+# container with no rules at all until this script was run again by hand.
+cat > /usr/local/sbin/devlaunch-network-rules.sh <<'INNER'
+#!/bin/sh
+set -eu
+POOL="${POOL}"
+
+# Docker creates DOCKER-USER as it starts; at boot this runs after Docker, but wait a
+# little in case its firewall setup is still going.
+i=0
+until iptables -L DOCKER-USER -n >/dev/null 2>&1; do
+  i=\$((i + 1))
+  [ \$i -gt 30 ] && { echo "DOCKER-USER chain never appeared" >&2; exit 1; }
+  sleep 1
+done
 
 # Idempotent: create the chain, or empty it if a previous run left rules behind.
 iptables -N DEVLAUNCH 2>/dev/null || iptables -F DEVLAUNCH
@@ -57,8 +74,8 @@ iptables -A DEVLAUNCH -d 169.254.0.0/16  -j DROP
 iptables -A DEVLAUNCH -j RETURN
 
 # Jump only for traffic *from* DevLaunch containers, so no other workload is affected.
-iptables -C DOCKER-USER -s ${POOL} -j DEVLAUNCH 2>/dev/null \
-  || iptables -I DOCKER-USER 1 -s ${POOL} -j DEVLAUNCH
+iptables -C DOCKER-USER -s "\$POOL" -j DEVLAUNCH 2>/dev/null \\
+  || iptables -I DOCKER-USER 1 -s "\$POOL" -j DEVLAUNCH
 
 # DOCKER-USER only sees *forwarded* traffic. A packet from a container to the VM itself
 # — its own default gateway included — terminates locally and hits INPUT instead, so
@@ -70,13 +87,41 @@ iptables -N DEVLAUNCH-IN 2>/dev/null || iptables -F DEVLAUNCH-IN
 iptables -A DEVLAUNCH-IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 iptables -A DEVLAUNCH-IN -j DROP
 
-iptables -C INPUT -s ${POOL} -j DEVLAUNCH-IN 2>/dev/null \
-  || iptables -I INPUT 1 -s ${POOL} -j DEVLAUNCH-IN
+iptables -C INPUT -s "\$POOL" -j DEVLAUNCH-IN 2>/dev/null \\
+  || iptables -I INPUT 1 -s "\$POOL" -j DEVLAUNCH-IN
+
+# Before the rules covered the whole range they matched devlaunch-net's /24 alone; that
+# older jump is redundant now, so it goes.
+while iptables -D DOCKER-USER -s 172.31.250.0/24 -j DEVLAUNCH 2>/dev/null; do :; done
+while iptables -D INPUT -s 172.31.250.0/24 -j DEVLAUNCH-IN 2>/dev/null; do :; done
+INNER
+chmod 755 /usr/local/sbin/devlaunch-network-rules.sh
+/usr/local/sbin/devlaunch-network-rules.sh
+
+# After Docker, which sets up its own chains as it starts; part of Docker, so a restart
+# of Docker alone runs this again too.
+cat > /etc/systemd/system/devlaunch-network-rules.service <<'UNIT'
+[Unit]
+Description=DevLaunch: keep containers off the local network and the VM
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/devlaunch-network-rules.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=docker.service
+UNIT
+systemctl daemon-reload
+systemctl enable devlaunch-network-rules.service >/dev/null 2>&1
 
 echo "    installed (forward):"
 iptables -L DEVLAUNCH -n | sed 's/^/      /'
 echo "    installed (input):"
 iptables -L DEVLAUNCH-IN -n | sed 's/^/      /'
+echo "    restored at every VM start by devlaunch-network-rules.service"
 SCRIPT
 
 echo "==> Capping Dockerfile builds at ${BUILD_PIDS_MAX} processes and ${BUILD_MEMORY_MAX_MB} MB"
