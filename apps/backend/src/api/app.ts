@@ -21,6 +21,11 @@ export interface AppOptions {
   repoRoot?: string;
   /** Pinged for health. Absent in tests that do not care whether Docker is reachable. */
   docker?: { ping(): Promise<unknown> };
+  /**
+   * Whether a model is available to plan what no rule recognises (a GROQ_API_KEY is set).
+   * Optional for the person running DevLaunch; the dashboard says so when it is off.
+   */
+  ai?: boolean;
   /** The egress probe's latest verdict. See `EgressProbe`. */
   egress?: () => { verdict: 'enforced' | 'absent' | 'unknown'; detail: string };
   /** Host names besides this machine's that may address the API. See `HostGuard`. */
@@ -200,6 +205,7 @@ export function createApp(opts: AppOptions): Express {
       ...(problems.length > 0 ? { problems } : {}),
       sessions: opts.sessions.list().length,
       ...(egress ? { egress: egress.verdict } : {}),
+      ...(opts.ai !== undefined ? { ai: opts.ai } : {}),
       ...(errors.length > 0 ? { recentErrors: errors.slice(-5) } : {}),
       build: await buildStamp(opts.repoRoot ?? process.cwd()),
     });

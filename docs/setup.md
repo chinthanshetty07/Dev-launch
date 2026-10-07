@@ -4,19 +4,25 @@
 
 - **Node ≥ 20** (developed on 24)
 - **pnpm**
-- **Docker via Colima.** Docker Desktop should work but is untested; the network policy
-  script assumes `colima ssh`.
+- **Docker**, any engine that runs Linux containers: Docker Desktop (macOS, or Windows with
+  WSL2), OrbStack, Colima, or Docker Engine on Linux. Tested here on Colima (Apple Silicon)
+  and, by CI, on Docker Engine on Linux (x86-64).
+- **git**
 
-Development targets Apple Silicon. See [limitations](limitations.md) — v1 does not
-emulate x86.
+Runner images are built on the machine itself, so they match its processor (Apple Silicon,
+ARM or x86-64). Nothing is emulated.
 
-## Provision the VM
+## Give Docker enough memory
 
-DevLaunch runs one container at a time with a 1 GB ceiling. On an 8 GB host:
+DevLaunch runs one container at a time with a 1 GB starting limit, raised on a retry when an
+install needs more. Give Docker 4 GB at least, 6 GB if you can:
 
-```bash
-colima start --cpu 4 --memory 4
-```
+| Engine | Where |
+|---|---|
+| Docker Desktop | Settings → Resources → Memory |
+| OrbStack | Settings → System → Memory limit |
+| Colima | `colima start --cpu 4 --memory 6` |
+| Linux | the machine's own memory |
 
 4 GB is the practical maximum on an 8 GB machine — it leaves 4 GB for macOS. If Colima
 is already running at a smaller size, `colima stop` first. **That stops every container
@@ -57,17 +63,18 @@ Python start command fails with exit 127.
 ./scripts/setup-network-policy.sh
 ```
 
-Creates the `devlaunch-net` bridge and installs iptables rules inside the Colima VM,
-blocking container egress to RFC1918, link-local, and the VM host itself, for every network
-in `172.31.0.0/16` (each run gets one of its own from that range). Also creates the
-`devlaunch-build` cgroup that caps a Dockerfile build at 2,048 processes and 4 GB, with a
-boot service so it comes back after the VM restarts. Idempotent. `./devlaunch install`
-runs it; `./devlaunch doctor` reports both.
+Creates the `devlaunch-net` bridge and starts the guard, which installs iptables rules on the
+machine that runs Docker (the engine's VM on a Mac or Windows), blocking container egress to
+RFC1918, link-local and the Docker host itself for every network in `172.31.0.0/16` (each
+run gets one of its own from that range), and caps every Dockerfile build at 2,048 processes
+and 4 GB (a cgroup, or a systemd slice where Docker uses the systemd cgroup driver).
+Idempotent. `./devlaunch install` runs it; `./devlaunch doctor` reports both.
 
-**The rules live inside the VM.** Boot services the script installs restore them, and the
-build cap, at every VM start — after `colima stop`/`start` or a Mac reboot nothing needs
-re-running. Only `colima delete` loses them: re-run the script after recreating the VM. If the policy network is absent the runner falls back to the default
-bridge and the security suite fails loudly rather than passing with weaker isolation.
+The rules and the cap are kept in place by `devlaunch-guard`, a small DevLaunch container
+that Docker restarts whenever Docker itself starts. It re-applies them at once and re-checks
+every 20 seconds, so after a Docker or computer restart nothing needs re-running, on any
+engine. `./devlaunch uninstall` removes them. If the policy network is absent the runner falls back to the default bridge
+and the security suite fails loudly rather than passing with weaker isolation.
 
 ## Run it
 

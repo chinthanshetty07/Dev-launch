@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DevLaunch</title>
+<meta name="description" content="Paste a GitHub repository and run it on your own computer, in a locked-down container. Free and open source; no account.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2358a6ff'/%3E%3Cpath d='M5 4l5 4-5 4' stroke='%230d1117' stroke-width='2' fill='none'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --ink: #ffffff; --panel: #f6f8fa; --edge: #d0d7de; --fg: #1f2328; --muted: #59636e;
+    --link: #0969da; --ok: #1a7f37; --bad: #cf222e;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #0d1117; --panel: #161b22; --edge: #30363d; --fg: #c9d1d9; --muted: #8b949e;
+      --link: #58a6ff; --ok: #3fb950; --bad: #f85149;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #0d1117; --panel: #161b22; --edge: #30363d; --fg: #c9d1d9; --muted: #8b949e;
+    --link: #58a6ff; --ok: #3fb950; --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--ink); color: var(--fg); font: 15px/1.6 var(--sans); }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 72px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 44px 0 12px; }
+  p, li { color: var(--fg); }
+  .lead { color: var(--muted); font-size: 16px; max-width: 600px; }
+  .muted { color: var(--muted); }
+  a { color: var(--link); }
+  code, pre, input { font-family: var(--mono); font-size: 13px; }
+  .card { border: 1px solid var(--edge); background: var(--panel); border-radius: 8px; padding: 18px; }
+  form .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  input[type=url] {
+    flex: 1 1 260px; min-width: 0; padding: 10px 12px; border-radius: 6px;
+    border: 1px solid var(--edge); background: var(--ink); color: var(--fg); outline: none;
+  }
+  input[type=url]:focus { border-color: var(--link); }
+  input[aria-invalid=true] { border-color: var(--bad); }
+  button, .btn {
+    padding: 10px 16px; border-radius: 6px; border: 1px solid var(--link); cursor: pointer;
+    background: transparent; color: var(--link); font: 600 14px var(--sans);
+  }
+  button:hover { background: color-mix(in srgb, var(--link) 12%, transparent); }
+  .hint { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+  .error { font-size: 13px; color: var(--bad); margin: 10px 0 0; }
+  pre { position: relative; margin: 0; padding: 14px 16px; overflow-x: auto; white-space: pre; }
+  /* The copy button sits beside the command, never on top of it. */
+  .cmd { display: flex; align-items: center; gap: 8px; padding-right: 10px; }
+  .cmd pre { flex: 1 1 auto; min-width: 0; }
+  .cmd button.copy { flex: none; padding: 4px 10px; font-size: 12px; }
+  ol.steps { padding-left: 20px; }
+  ol.steps li { margin: 6px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .grid .card h3 { font-size: 14px; margin: 0 0 6px; }
+  .grid .card p { margin: 0; font-size: 14px; color: var(--muted); }
+  footer { margin-top: 56px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--edge); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Run any GitHub project on your own computer</h1>
+  <p class="lead">
+    Paste a repository. DevLaunch works out how to install and start it, runs it in a
+    locked-down container on <b>your</b> machine, and gives you a link when it answers.
+    Free and open source. No account, nothing sent to us.
+  </p>
+
+  <section class="card" aria-labelledby="run-heading">
+    <h2 id="run-heading" style="margin-top:0">Run a repository</h2>
+    <!-- A plain form: with or without JavaScript, it opens your own DevLaunch with the
+         repository filled in. DevLaunch then waits for you to press "Run it". -->
+    <form id="run" method="get" action="http://127.0.0.1:3939/" target="_blank" novalidate>
+      <div class="row">
+        <label for="repo" class="muted" style="position:absolute;left:-9999px">GitHub repository URL</label>
+        <input id="repo" name="repo" type="url" placeholder="https://github.com/owner/repo"
+               autocomplete="off" spellcheck="false" required>
+        <button type="submit">Run on my computer</button>
+      </div>
+      <p id="err" class="error" hidden>That is not a GitHub repository URL. It should look like <code>https://github.com/owner/repo</code>.</p>
+      <p class="hint">
+        This opens DevLaunch on your computer with the repository filled in. Nothing runs
+        until you press <b>Run it</b> there. Not installed yet? See below. Installed but
+        nothing opens? Start it: <code>cd ~/devlaunch &amp;&amp; ./devlaunch start</code>
+      </p>
+    </form>
+  </section>
+
+  <h2>Install once</h2>
+  <p>You need <b>Docker</b> (Docker Desktop, OrbStack or Colima on a Mac; Docker Desktop with WSL2 on Windows; Docker Engine on Linux), <b>Node 20+</b> and <b>git</b>. Then:</p>
+  <div class="card cmd" style="padding-top:0;padding-bottom:0;padding-left:0">
+    <pre id="install-cmd"><code>curl -fsSL https://raw.githubusercontent.com/chinthanshetty07/Dev-launch/main/install.sh | bash</code></pre>
+  </div>
+  <p class="hint">It checks what you have, says exactly what is missing and how to get it, and never installs Docker or changes system settings by itself. Then start it:</p>
+  <div class="card" style="padding:0"><pre><code>cd ~/devlaunch &amp;&amp; ./devlaunch start</code></pre></div>
+  <p class="hint">and open <a href="http://127.0.0.1:3939">http://127.0.0.1:3939</a>.</p>
+
+  <h2>How it works</h2>
+  <ol class="steps">
+    <li><b>Reads the repository</b> — package files, frameworks, the database it needs, its own Dockerfile.</li>
+    <li><b>Plans how to run it</b> — by rules for common stacks; optionally with an AI model (your own free Groq key) for the rest.</li>
+    <li><b>Runs it in a container</b> — installs, builds and starts it, with databases it needs beside it.</li>
+    <li><b>Checks it really works</b> — opens it the way a browser would before calling it ready, and explains plainly when something fails.</li>
+  </ol>
+
+  <h2>Safe on your machine</h2>
+  <div class="grid">
+    <div class="card"><h3>Locked-down containers</h3><p>Not root, no extra rights, no access to your files or Docker itself, limits on memory, CPU and processes.</p></div>
+    <div class="card"><h3>Kept off your network</h3><p>Code can reach package registries and the internet, but not your home network, your computer or cloud secrets.</p></div>
+    <div class="card"><h3>Only you can use it</h3><p>It listens on your computer only, and refuses requests from any website — including this one.</p></div>
+    <div class="card"><h3>Easy to remove</h3><p><code>./devlaunch uninstall</code> takes out everything it added to Docker, and nothing else.</p></div>
+  </div>
+
+  <h2>What runs</h2>
+  <p>Node (React, Vite, Next.js, Express…), Python (Flask, Django, FastAPI…), static sites, monorepos and frontend + backend projects, with Postgres, MySQL, MongoDB or Redis when they need one. Projects in other languages run from their own Dockerfile or compose file. Some repositories cannot run as they are (a missing secret key, a broken lockfile); DevLaunch says which and why.</p>
+
+  <footer>
+    DevLaunch is open source (MIT). <a href="https://github.com/chinthanshetty07/Dev-launch">Source, issues and docs on GitHub</a>.
+    This page is static: it has no server, no tracking, and never sees what you run.
+  </footer>
+</main>
+<script>
+  // Only a public GitHub repository URL is sent — DevLaunch checks again on its side.
+  const GITHUB_REPO = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(?:\.git)?\/?$/;
+  const form = document.getElementById('run');
+  const input = document.getElementById('repo');
+  const err = document.getElementById('err');
+  form.addEventListener('submit', (e) => {
+    const value = input.value.trim();
+    const ok = GITHUB_REPO.test(value);
+    err.hidden = ok;
+    input.setAttribute('aria-invalid', String(!ok));
+    if (!ok) { e.preventDefault(); return; }
+    input.value = value;
+  });
+  input.addEventListener('input', () => { err.hidden = true; input.removeAttribute('aria-invalid'); });
+
+  // A copy button on the install command.
+  const pre = document.getElementById('install-cmd');
+  if (navigator.clipboard) {
+    const b = document.createElement('button');
+    b.className = 'copy'; b.type = 'button'; b.textContent = 'Copy';
+    b.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(pre.innerText.trim()); b.textContent = 'Copied'; }
+      catch { b.textContent = 'Select and copy'; }
+      setTimeout(() => (b.textContent = 'Copy'), 1500);
+    });
+    pre.parentElement.appendChild(b);
+  }
+</script>
+</body>
+</html>

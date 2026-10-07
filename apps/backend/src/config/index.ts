@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -6,26 +7,52 @@ import { join } from 'node:path';
 /**
  * Resolve the Docker socket.
  *
- * dockerode defaults to /var/run/docker.sock, which does not exist on a Colima host —
- * Colima exposes the daemon through its own socket. Probe in order of specificity.
+ * dockerode defaults to /var/run/docker.sock, which many engines do not use: Colima, Docker
+ * Desktop on macOS and OrbStack each put theirs in the user's home. So, in order: an explicit
+ * DOCKER_HOST; the engine the `docker` command itself is using (its current context — what
+ * the person's own terminal talks to); then the usual places, first that exists.
  */
-export function resolveDockerSocket(): string {
-  const fromEnv = process.env.DOCKER_HOST;
+export function resolveDockerSocket(
+  env: NodeJS.ProcessEnv = process.env,
+  contextHost: () => string | null = currentContextHost,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  const fromEnv = env.DOCKER_HOST;
   if (fromEnv?.startsWith('unix://')) return fromEnv.slice('unix://'.length);
+
+  const fromContext = contextHost();
+  if (fromContext?.startsWith('unix://') && exists(fromContext.slice('unix://'.length))) {
+    return fromContext.slice('unix://'.length);
+  }
 
   const candidates = [
     join(homedir(), '.colima', 'default', 'docker.sock'),
     join(homedir(), '.colima', 'docker.sock'),
+    join(homedir(), '.docker', 'run', 'docker.sock'),
+    join(homedir(), '.orbstack', 'run', 'docker.sock'),
     '/var/run/docker.sock',
   ];
-  const found = candidates.find((p) => existsSync(p));
+  const found = candidates.find((p) => exists(p));
   if (!found) {
     throw new Error(
       `No Docker socket found. Tried:\n  ${candidates.join('\n  ')}\n` +
-        'Is Colima running? Try: colima start',
+        'Is Docker running? Start Docker Desktop, OrbStack or Colima (or the docker service on Linux), then try again.',
     );
   }
   return found;
+}
+
+/** The current `docker context`'s endpoint, or null when the docker command is not there. */
+function currentContextHost(): string | null {
+  try {
+    return execFileSync('docker', ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Any of the spellings a person reasonably expects to work. */
@@ -88,6 +115,11 @@ export const config = {
      * VM's process table (verifier D-2).
      */
     buildCgroup: process.env.DEVLAUNCH_BUILD_CGROUP ?? 'devlaunch-build',
+    /**
+     * The same, where Docker uses the systemd cgroup driver (most Linux machines): there the
+     * parent must be a systemd slice, whose limits the guard sets through systemd.
+     */
+    buildSlice: process.env.DEVLAUNCH_BUILD_SLICE ?? 'devlaunchbuild.slice',
     /**
      * Each run gets a network of its own, carved from this range, so two runs at once
      * cannot reach each other's databases or services by name (verifier D-8). The egress

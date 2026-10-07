@@ -1,11 +1,13 @@
 # Two jobs, split by what they need.
 #
 # `check` needs nothing but Node and runs on every push: typecheck plus the unit suites,
-# about thirty seconds. `integration` needs a Docker daemon and DevLaunch's own runner
-# images, takes about six minutes, and runs where that cost is worth paying.
+# about a minute, and a secret scan. `integration` needs a Docker daemon, takes 20–30
+# minutes, and runs where that cost is worth paying: pull requests, nightly, and by hand.
 #
-# The runner images are built in the job rather than pulled or cached, so the Dockerfiles
-# are tested too — they are the thing that broke last time Node's bundled tooling moved.
+# `integration` installs DevLaunch the way a new user does (`./devlaunch install`: runner
+# images built in the job, so the Dockerfiles are tested too, and the guard started), on a
+# fresh Linux machine running Docker Engine — so it is also the proof that DevLaunch runs
+# somewhere other than the Mac it was written on, including under the systemd cgroup driver.
 name: CI
 
 on:
@@ -14,18 +16,25 @@ on:
   schedule:
     # Nightly, so the integration suite runs even on a quiet week.
     - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check:
     name: typecheck and unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          fetch-depth: 0
+      # The pnpm version comes from package.json's packageManager.
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
+          # The oldest Node DevLaunch supports, so a newer API never slips in unnoticed.
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
@@ -36,11 +45,11 @@ jobs:
             (cd "$pkg" && ./node_modules/.bin/tsc --noEmit)
           done
 
-      - name: backend unit tests
-        run: cd apps/backend && ./node_modules/.bin/vitest run --exclude '**/integration/**'
-
-      - name: frontend tests
-        run: cd apps/frontend && ./node_modules/.bin/vitest run
+      - name: unit tests
+        run: |
+          (cd packages/shared && ./node_modules/.bin/vitest run)
+          (cd apps/frontend && ./node_modules/.bin/vitest run)
+          (cd apps/backend && ./node_modules/.bin/vitest run --exclude '**/integration/**')
 
       - name: secret scan
         # Five API keys have been pasted into chat transcripts during development, and
@@ -51,35 +60,59 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
   integration:
-    name: integration tests against real Docker
-    # Pull requests and the nightly run. Every push would spend six minutes to re-prove
-    # what the previous push proved.
+    name: install, real-Docker tests, uninstall (Linux)
+    # Pull requests, the nightly run, and by hand. Every push would spend half an hour to
+    # re-prove what the previous push proved.
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
 
-      - name: build the runner images
-        run: ./scripts/build-runner-images.sh
+      - name: Docker on this machine
+        run: docker info --format 'Docker {{.ServerVersion}}, cgroup driver {{.CgroupDriver}} v{{.CgroupVersion}}, {{.OperatingSystem}}, {{.Architecture}}'
+
+      - name: install, as a new user would
+        run: ./devlaunch install
+
+      - name: doctor
+        run: node scripts/doctor.mjs
 
       - name: full suite
+        # No GROQ_API_KEY: the live-model tests skip, as they do for anyone without one.
         run: cd apps/backend && ./node_modules/.bin/vitest run
 
       - name: nothing was left behind
         # Container residue is a real failure mode here — teardown has regressed before —
-        # and this is the cheapest check that exists for it. Volumes too, now that
-        # something reaps them.
+        # and this is the cheapest check that exists for it. Run networks too.
         run: |
           containers=$(docker ps -a --filter label=com.devlaunch.managed -q | wc -l | tr -d ' ')
           test "$containers" -eq 0 || { echo "$containers container(s) left behind"; exit 1; }
+          networks=$(docker network ls -q --filter label=com.devlaunch.runnet=true | wc -l | tr -d ' ')
+          test "$networks" -eq 0 || { echo "$networks run network(s) left behind"; exit 1; }
 
       - name: the readiness report is still accurate
         run: SKIP_TESTS=1 ./scripts/verify-readiness.sh
+
+      - name: guard log
+        if: always()
+        run: docker logs devlaunch-guard || true
+
+      - name: uninstall leaves nothing of DevLaunch's behind
+        run: |
+          ./devlaunch uninstall
+          left=$( { docker ps -aq --filter label=com.devlaunch.managed=true; \
+                    docker ps -aq --filter name=devlaunch-guard; \
+                    docker network ls -q --filter label=com.devlaunch.runnet=true; \
+                    docker network ls -q --filter name=devlaunch-net; \
+                    docker volume ls -q --filter label=com.devlaunch.workspace=true; \
+                    docker images -q 'devlaunch/*'; docker images -q 'devlaunch-built/*'; } | wc -l)
+          echo "DevLaunch items left: $left"
+          test "$left" -eq 0
+          if sudo iptables -S DOCKER-USER 2>/dev/null | grep -q DEVLAUNCH; then echo "rules left behind"; exit 1; fi
+          echo "rules removed"

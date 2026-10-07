@@ -1,3 +1,4 @@
+import { buildCapPath as backendCapPath } from '../services/docker/BuildSandbox.js';
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -17,6 +18,24 @@ describe('the doctor', () => {
   it('reads the keys of an env file, not the values', async () => {
     const { envKeys } = (await import(DOCTOR as string)) as { envKeys: (t: string) => string[] };
     expect(envKeys('# c\nGROQ_API_KEY=gsk_secret\nexport A=1\nnot a line\nB = 2\n')).toEqual(['GROQ_API_KEY', 'A', 'B']);
+  });
+
+  it('names the Docker engine and gives memory advice in that engine\'s own terms', async () => {
+    const { engineOf, moreMemory, buildCapPath } = (await import(DOCTOR as string)) as {
+      engineOf: (name: string, os: string) => string;
+      moreMemory: (engine: string) => string;
+      buildCapPath: (driver: string) => string;
+    };
+    expect(engineOf('colima', 'Ubuntu 24.04.4 LTS')).toBe('Colima');
+    expect(engineOf('docker-desktop', 'Docker Desktop')).toBe('Docker Desktop');
+    expect(engineOf('orbstack', 'OrbStack')).toBe('OrbStack');
+    expect(engineOf('my-server', 'Ubuntu 22.04.5 LTS')).toBe('Docker Engine');
+    expect(moreMemory('Colima')).toMatch(/colima start/);
+    expect(moreMemory('Docker Desktop')).toMatch(/Settings → Resources/);
+    expect(moreMemory('Docker Engine')).not.toMatch(/colima/i);
+    // Where the backend reads it (BuildSandbox.buildCapPath), for each cgroup driver.
+    expect(buildCapPath('systemd')).toBe(backendCapPath('systemd'));
+    expect(buildCapPath('cgroupfs')).toBe(backendCapPath('cgroupfs'));
   });
 
   it('never prints a value from .env', async () => {

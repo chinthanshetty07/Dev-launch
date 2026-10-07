@@ -2897,8 +2897,10 @@ describe('running out of memory under our own ceiling', () => {
         'larger memory limits (1024 → 2048 → 4096 MB) but it still exceeded the maximum available memory ' +
         '(4096 MB, the 4096 MB DevLaunch gives any one container).',
     );
-    // The machine is the limit; nothing says the repository is broken.
-    expect(s.failure?.remedy).toMatch(/Give the Docker VM more memory/);
+    // The machine is the limit; nothing says the repository is broken. Was "Give the Docker
+    // VM more memory" with a Colima command: the advice now names every engine's setting.
+    expect(s.failure?.remedy).toMatch(/Give Docker more memory/);
+    expect(s.failure?.remedy).toMatch(/Docker Desktop/);
   });
 
   it('never asks for more than the VM allows, when the next step would exceed it (test 13)', async () => {

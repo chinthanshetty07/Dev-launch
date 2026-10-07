@@ -57,10 +57,12 @@ package allowlist, which is out of scope.
 
 What *is* enforced, once `scripts/setup-network-policy.sh` has been run: RFC1918 and
 169.254.0.0/16 are blocked, and so is the VM host itself, so a container cannot reach
-the LAN, the cloud metadata endpoint, or anything listening on the Colima VM.
+the LAN, the cloud metadata endpoint, or anything listening on the Docker host.
 
-The rules live inside the Colima VM and are restored by a boot service at every VM
-start, but do **not** survive recreating that VM (`colima delete`). If the
+The rules live on the machine that runs Docker and are kept there by the `devlaunch-guard`
+container, which Docker restarts when it starts. Tested on Colima and on Docker Engine on
+Linux (CI); Docker Desktop and OrbStack use the same mechanism but are not tested here —
+`./devlaunch doctor` and the health check verify the rules by behaviour on any engine. If the
 network is absent the runner falls back to the default bridge and the security test
 fails loudly rather than passing silently — but a run started that way has weaker
 isolation than this document otherwise claims.

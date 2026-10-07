@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-10-07 — Open source, for anyone's computer
+
+DevLaunch becomes a tool anyone installs and runs on their own computer, with no login, plus
+a static website whose "Run on my computer" button opens their own DevLaunch with a
+repository filled in.
+
+**Any Docker, not only Colima.** The network rules and the build cap were installed with
+`colima ssh`, and the restore-at-boot added this morning used the Colima VM's systemd: both
+existed only on Colima. Now a small container, `devlaunch-guard` (`docker/guard`), does it on
+any engine — privileged on the engine's own network, PID and cgroup namespaces, no Docker
+socket, `--restart=always` so Docker starts it with itself. It picks whichever iptables
+(nft or legacy) holds Docker's chains, rebuilds DevLaunch's chains only when they differ,
+and sets the build cap as a cgroup or, under Docker's systemd cgroup driver (most Linux
+machines), as a systemd slice; the backend names the build's parent and reads the cap to
+match. The Colima-only VM services are gone. DevLaunch finds Docker through the `docker`
+command's own context, then Docker Desktop's, OrbStack's and Colima's usual sockets. Advice
+that said "run colima…" now names each engine; the doctor names the engine in use.
+
+**Installs simply.** `install.sh` checks git, Node 20+ and a running Docker, says exactly
+what is missing and how to get it for that system, gets pnpm, downloads and runs
+`./devlaunch install` — and never installs Docker or changes system settings itself.
+`./devlaunch uninstall` removes everything DevLaunch added to Docker and nothing else. AI
+help is optional and said so plainly (doctor, dashboard, `/api/health` → `ai`).
+
+**The website, and why it cannot make your DevLaunch do anything.** `site/` (published by
+`.github/workflows/pages.yml`) opens `http://127.0.0.1:3939/?repo=…`. The dashboard only
+fills in the form, only from a plain GitHub repository URL; starting a run stays the
+person's click, because any website can open such a link. The API now also refuses any
+request a browser marks as coming from another site (`Sec-Fetch-Site`) unless it is a plain
+page visit — covering background requests that carry no `Origin`.
+
+**Open-source basics:** MIT licence, README for newcomers, CONTRIBUTING, code of conduct, a
+security policy using GitHub's private reporting, and CI running the quick tests and the
+real-Docker suite on Linux on every push (including install → uninstall leaving nothing).
+History scanned before publishing: no key patterns in 101 commits, no `.env` or handoff
+file ever committed; `.claude/launch.json` (local paths) is no longer tracked.
+
+**Evidence:** `docs/RELEASE_REPORT.md` §14 — 1,350 backend tests passed (3 skipped), 88
+frontend, 24 shared; the guard restoring the rules after a real engine restart; a fresh copy
+installed from an empty folder and run from the website's link, with no AI key, to READY.
+Not verified here: Docker Desktop and OrbStack (not installed on this Mac); Linux is checked
+by CI once pushed. Also corrected there: the previous report's backend total was 1,341, not
+1,366 (two files counted twice).
+
 ## 2026-10-07 — The network rules come back after a VM restart
 
 The VM's iptables rules existed only in the running kernel, so after `colima stop`/`start`

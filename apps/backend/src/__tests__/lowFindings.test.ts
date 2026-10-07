@@ -12,7 +12,9 @@ describe('a thrown error, as a failure (A-17)', () => {
   it('never blames the repository for this machine\'s trouble', () => {
     const docker = failureOf(Object.assign(new Error('connect ECONNREFUSED /Users/x/.colima/default/docker.sock'), { code: 'ECONNREFUSED' }));
     expect(docker.code).toBe(FailureCode.UNKNOWN_RUNTIME_ERROR);
+    // Was only Colima: the advice now names every engine, since DevLaunch runs on any.
     expect(docker.remedy).toMatch(/Colima/);
+    expect(docker.remedy).toMatch(/Docker Desktop/);
     // It used to be the code itself, which the taxonomy did not know and filed under
     // "this repository is not supported".
     expect(describeFailure(docker).suggestedAction).not.toMatch(/not supported/i);

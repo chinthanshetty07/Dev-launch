@@ -40,6 +40,27 @@ export function envKeys(text) {
     .filter((k) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k));
 }
 
+/** Which Docker engine this is, from `docker info`'s Name and OperatingSystem. */
+export function engineOf(name = '', os = '') {
+  if (/docker desktop/i.test(os) || /^docker-desktop$/i.test(name)) return 'Docker Desktop';
+  if (/orbstack/i.test(os) || /orbstack/i.test(name)) return 'OrbStack';
+  if (/^colima/i.test(name)) return 'Colima';
+  return 'Docker Engine';
+}
+
+/** Where the build cap is, by cgroup driver: as BuildSandbox reads it. */
+export function buildCapPath(driver) {
+  return driver === 'systemd' ? '/sys/fs/cgroup/devlaunchbuild.slice/pids.max' : '/sys/fs/cgroup/devlaunch-build/pids.max';
+}
+
+/** How to give that engine more memory, in its own words. */
+export function moreMemory(engine) {
+  if (engine === 'Colima') return 'colima stop && colima start --cpu 4 --memory 8';
+  if (engine === 'Docker Desktop') return 'Docker Desktop → Settings → Resources → Memory: 6 GB or more';
+  if (engine === 'OrbStack') return 'OrbStack → Settings → System → Memory limit: 6 GB or more';
+  return 'this machine has the memory it has; close other programs, or run DevLaunch on a larger machine';
+}
+
 async function main() {
   // --- Runtimes and tools ----------------------------------------------------------
   const major = Number(process.versions.node.split('.')[0]);
@@ -55,14 +76,15 @@ async function main() {
   else bad('git not found', 'Install git (macOS: xcode-select --install).');
 
   // --- Docker ------------------------------------------------------------------------
-  const server = await cmd('docker', ['info', '--format', '{{.ServerVersion}}|{{.MemTotal}}|{{.NCPU}}|{{.Architecture}}']);
+  const server = await cmd('docker', ['info', '--format', '{{.ServerVersion}}|{{.MemTotal}}|{{.NCPU}}|{{.Architecture}}|{{.Name}}|{{.OperatingSystem}}|{{.CgroupDriver}}']);
   if (!server) {
-    bad('Docker is not reachable', 'Start it. With Colima: colima start --cpu 4 --memory 6');
+    bad('Docker is not reachable', 'Start Docker: open Docker Desktop or OrbStack, or run colima start; on Linux: sudo systemctl start docker. No Docker yet? Get Docker Desktop from docker.com.');
   } else {
-    const [version, mem, cpus, arch] = server.split('|');
+    const [version, mem, cpus, arch, name, os, driver] = server.split('|');
+    const engine = engineOf(name, os);
     const gb = Number(mem) / 1024 ** 3;
-    ok(`Docker ${version} (${cpus} CPUs, ${gb.toFixed(1)} GB, ${arch})`);
-    if (gb < 4) warn(`Docker has only ${gb.toFixed(1)} GB of memory`, 'Large installs need more. With Colima: colima stop && colima start --cpu 4 --memory 6');
+    ok(`${engine}: Docker ${version} (${cpus} CPUs, ${gb.toFixed(1)} GB, ${arch})`);
+    if (gb < 4) warn(`Docker has only ${gb.toFixed(1)} GB of memory`, `Large installs need more. ${moreMemory(engine)}`);
 
     const missing = [];
     for (const image of ['devlaunch/node:20', 'devlaunch/node:22', 'devlaunch/python:3.12']) {
@@ -73,13 +95,20 @@ async function main() {
 
     const net = await cmd('docker', ['network', 'inspect', '--format', '{{.Name}}', 'devlaunch-net']);
     if (net) ok('Protected network devlaunch-net exists');
-    else warn('Network devlaunch-net is missing', 'Containers would run without the rule that keeps them off your home network. Run: bash scripts/setup-network-policy.sh');
+    else warn('Network devlaunch-net is missing', 'Containers would run without the rule that keeps them off your home network. Run: ./devlaunch install');
+
+    // The guard keeps the network rules and the build cap in place, and puts them back
+    // after Docker restarts (see docker/guard).
+    const guard = await cmd('docker', ['inspect', '--format', '{{.State.Running}}|{{.HostConfig.RestartPolicy.Name}}', 'devlaunch-guard']);
+    if (guard === 'true|always') ok('The guard is running (keeps the network rules and build cap in place)');
+    else if (guard) warn('The guard exists but is not running', 'Run: ./devlaunch install');
+    else warn('The guard is not installed', 'Without it, containers are not kept off your home network and builds have no process cap. Run: ./devlaunch install');
 
     // The process cap a repository's own Dockerfile build runs under (see BuildSandbox).
     const pidsMax = await cmd('docker', ['run', '--rm', '--cgroupns', 'host', '--network', 'none', '--user', '1000:1000',
-      '--cap-drop', 'ALL', 'devlaunch/node:20', 'cat', '/sys/fs/cgroup/devlaunch-build/pids.max'], 30_000);
+      '--cap-drop', 'ALL', 'devlaunch/node:20', 'cat', buildCapPath(driver)], 30_000);
     if (pidsMax && /^\d+$/.test(pidsMax)) ok(`Dockerfile builds are capped at ${pidsMax} processes`);
-    else warn('Dockerfile builds have no process cap', 'A repository\'s own Dockerfile will not be built until it does. Run: bash scripts/setup-network-policy.sh');
+    else warn('Dockerfile builds have no process cap', 'A repository\'s own Dockerfile will not be built until it does. Run: ./devlaunch install');
 
     const ours = await cmd('docker', ['ps', '-aq', '--filter', 'label=com.devlaunch.managed=true']);
     const count = ours ? ours.split('\n').filter(Boolean).length : 0;
@@ -134,8 +163,11 @@ async function main() {
   } else {
     const keys = envKeys(env);
     ok(`.env sets ${keys.length} key(s)${keys.length ? `: ${keys.join(', ')}` : ''}`);
-    if (!keys.includes('GROQ_API_KEY')) warn('No GROQ_API_KEY in .env', 'Optional. Without it, repositories no rule recognises are declined instead of planned by a model.');
   }
+  // Optional: rules plan most repositories; a model plans the rest and helps repair.
+  const hasKey = Boolean(process.env.GROQ_API_KEY?.trim()) || (env !== null && envKeys(env).includes('GROQ_API_KEY'));
+  if (hasKey) ok('AI help is on (GROQ_API_KEY is set)');
+  else warn('AI help is off (optional)', 'DevLaunch works without it. To let a model plan repositories no rule recognises: get a free key at console.groq.com and add GROQ_API_KEY=... to .env');
 
   const openssl = await cmd('openssl', ['version']);
   if (openssl) ok(openssl);

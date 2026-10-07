@@ -22,7 +22,9 @@ import { config } from '../../config/index.js';
  * build here, and fails with the builder's own message.
  *
  * The classic builder also takes no process limit, so every build is placed under a VM
- * cgroup that has one (`config.docker.buildCgroup`, set up by `./devlaunch install`).
+ * cgroup that has one (`config.docker.buildCgroup`, or the systemd slice `buildSlice` where
+ * Docker uses the systemd cgroup driver; kept in place by the guard `./devlaunch install`
+ * starts).
  * Measured: a `RUN` starting 3,000 processes started all of them without it, and stopped
  * at 2,048 with "can't fork" under it. Docker creates a missing parent cgroup with *no*
  * limit rather than failing, so the cap is checked before every build, not assumed.
@@ -68,7 +70,30 @@ const OUTSIDE_DOCKERFILE = '.devlaunch.Dockerfile';
  * The options Docker's build API is given. Pure, so the sandbox can be checked without
  * Docker: the network, the limits, and that no option grants anything.
  */
-export function buildOptions(req: Omit<BuildRequest, 'onLine' | 'timeoutMs' | 'signal'>, memoryMb: number, cpus: number): Record<string, unknown> {
+/** How Docker places containers in cgroups, which decides how the build cap is named. */
+export type CgroupDriver = 'cgroupfs' | 'systemd';
+
+/** The driver `docker info` reports. Anything but `systemd` is cgroupfs (Docker's default). */
+export function cgroupDriverOf(info: { CgroupDriver?: string }): CgroupDriver {
+  return info.CgroupDriver === 'systemd' ? 'systemd' : 'cgroupfs';
+}
+
+/** The parent every build runs under: a cgroup path, or a slice for the systemd driver. */
+export function buildCgroupParent(driver: CgroupDriver): string {
+  return driver === 'systemd' ? config.docker.buildSlice : `/${config.docker.buildCgroup}`;
+}
+
+/** Where the build cap's process limit is read, under /sys/fs/cgroup. */
+export function buildCapPath(driver: CgroupDriver): string {
+  return `/sys/fs/cgroup/${driver === 'systemd' ? config.docker.buildSlice : config.docker.buildCgroup}/pids.max`;
+}
+
+export function buildOptions(
+  req: Omit<BuildRequest, 'onLine' | 'timeoutMs' | 'signal'>,
+  memoryMb: number,
+  cpus: number,
+  driver: CgroupDriver = 'cgroupfs',
+): Record<string, unknown> {
   const inside = relative(req.contextDir, req.dockerfile);
   const dockerfile = inside.startsWith('..') ? OUTSIDE_DOCKERFILE : inside;
   return {
@@ -78,7 +103,7 @@ export function buildOptions(req: Omit<BuildRequest, 'onLine' | 'timeoutMs' | 's
     version: '1',
     networkmode: config.docker.networkName,
     // Under the VM's capped cgroup: the only process limit a classic build can have.
-    cgroupparent: `/${config.docker.buildCgroup}`,
+    cgroupparent: buildCgroupParent(driver),
     memory: memoryMb * 1024 * 1024,
     memswap: memoryMb * 1024 * 1024,
     cpuperiod: 100_000,
@@ -104,7 +129,7 @@ export function buildOptions(req: Omit<BuildRequest, 'onLine' | 'timeoutMs' | 's
 export function buildCapProblem(pidsMax: string | null): string | null {
   const value = pidsMax?.trim();
   if (value && /^\d+$/.test(value) && Number(value) > 0) return null;
-  return `the Docker VM has no process limit for builds (${value ? `${config.docker.buildCgroup} pids.max is ${value}` : `no ${config.docker.buildCgroup} cgroup`}; run ./devlaunch install), so a build step could start processes until the VM stalls`;
+  return `the Docker engine has no process limit for builds (${value ? `the build cgroup's pids.max is ${value}` : 'no build cgroup'}; run ./devlaunch install, which starts the devlaunch-guard container), so a build step could start processes until the machine stalls`;
 }
 
 /**
@@ -112,10 +137,10 @@ export function buildCapProblem(pidsMax: string | null): string | null {
  * VM's cgroup tree (host cgroup namespace, mounted read-only by Docker) and nothing else:
  * no network, no capabilities, not root.
  */
-async function readBuildPidsMax(docker: Dockerode): Promise<string | null> {
+async function readBuildPidsMax(docker: Dockerode, driver: CgroupDriver): Promise<string | null> {
   const container = await docker.createContainer({
     Image: 'devlaunch/node:20',
-    Cmd: ['cat', `/sys/fs/cgroup/${config.docker.buildCgroup}/pids.max`],
+    Cmd: ['cat', buildCapPath(driver)],
     User: '1000:1000',
     Labels: { [config.docker.managedLabel]: 'true', [config.docker.instanceLabel]: config.docker.instanceId },
     HostConfig: {
@@ -153,8 +178,18 @@ export class BuildSandbox {
       cpus: config.container.cpus,
     },
     /** The build cgroup's `pids.max` as the VM has it, or null when it does not exist. */
-    private readonly readPidsMax: () => Promise<string | null> = () => readBuildPidsMax(docker),
+    private readonly readPidsMax?: () => Promise<string | null>,
   ) {}
+
+  private driverSeen?: Promise<CgroupDriver>;
+
+  /** The engine's cgroup driver, asked once. Anything but `systemd` is treated as cgroupfs. */
+  private driver(): Promise<CgroupDriver> {
+    this.driverSeen ??= Promise.resolve()
+      .then(() => this.docker.info())
+      .then(cgroupDriverOf, () => 'cgroupfs' as CgroupDriver);
+    return this.driverSeen;
+  }
 
   /**
    * The sandbox exists only on DevLaunch's network and under the capped build cgroup;
@@ -165,7 +200,8 @@ export class BuildSandbox {
     if (!nets.some((n) => n.Name === config.docker.networkName)) {
       return `the ${config.docker.networkName} network does not exist (run ./devlaunch install), so a build could not be kept off the local network`;
     }
-    const pidsMax = await this.readPidsMax().catch(() => null);
+    const read = this.readPidsMax ?? (async () => readBuildPidsMax(this.docker, await this.driver()));
+    const pidsMax = await read().catch(() => null);
     return buildCapProblem(pidsMax);
   }
 
@@ -175,7 +211,7 @@ export class BuildSandbox {
     const missing = await this.ready();
     if (missing) return { ok: false, image, error: `Not building: ${missing}.`, timedOut: false, durationMs: 0 };
 
-    const opts = buildOptions(req, this.limits.memoryMb, this.limits.cpus);
+    const opts = buildOptions(req, this.limits.memoryMb, this.limits.cpus, await this.driver());
     const inside = !relative(req.contextDir, req.dockerfile).startsWith('..');
     const context = tarFs.pack(req.contextDir, ({
       // A Dockerfile outside its context travels with it under a fixed name.

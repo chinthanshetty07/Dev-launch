@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type SessionSummary } from '../api';
+import { repoFromLink } from '../deepLink';
 
 /**
  * The first thing a person sees, and for a while the only thing.
@@ -29,7 +30,11 @@ export function LaunchView({
   onLaunch: (body: { repoUrl?: string; fixture?: string }) => void;
   onOpenSession: (id: string) => void;
 }) {
-  const [repoUrl, setRepoUrl] = useState('');
+  // From the website's "Run on my computer" link, if that is how this page was opened.
+  // Filled in only: the person still presses Run (see deepLink.ts).
+  const [fromLink] = useState(() => (typeof window === 'undefined' ? null : repoFromLink(window.location.search)));
+  const [repoUrl, setRepoUrl] = useState(fromLink ?? '');
+  const [aiOn, setAiOn] = useState<boolean | null>(null);
   const [fixture, setFixture] = useState('');
   const [fixtures, setFixtures] = useState<string[]>([]);
   const [showFixtures, setShowFixtures] = useState(false);
@@ -42,6 +47,10 @@ export function LaunchView({
         setFixtures(list);
         setFixture((f) => f || (list.includes('node-http-basic') ? 'node-http-basic' : (list[0] ?? '')));
       })
+      .catch(() => undefined);
+    api
+      .health()
+      .then((h) => setAiOn(h.ai ?? null))
       .catch(() => undefined);
     api
       .sessions()
@@ -96,11 +105,24 @@ export function LaunchView({
             {busy ? 'Starting…' : 'Run it'}
           </button>
         </div>
+        {fromLink && repoUrl.trim() === fromLink && (
+          <p className="mt-2 text-[12px] text-muted" data-testid="from-link">
+            Filled in from a link. Check it is the repository you meant, then press <b>Run it</b>.
+            Nothing runs until you do.
+          </p>
+        )}
         <ReplacesRunning running={running} />
         {malformed && (
           <p id="repo-url-error" className="mt-2 text-[12px] text-bad">
             That is not a github.com repository URL. It should look like{' '}
             <code>https://github.com/owner/repo</code>.
+          </p>
+        )}
+
+        {aiOn === false && (
+          <p className="mt-2 text-[12px] text-muted" data-testid="ai-off">
+            AI help is off. Most repositories still run; for ones no rule recognises, add a free
+            key from console.groq.com as GROQ_API_KEY in DevLaunch's .env and restart it.
           </p>
         )}
 

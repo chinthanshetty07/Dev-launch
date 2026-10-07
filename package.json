@@ -13,5 +13,6 @@
     "dev": "pnpm --filter @devlaunch/frontend dev",
     "serve": "pnpm --filter @devlaunch/backend start",
     "doctor": "node scripts/doctor.mjs"
-  }
+  },
+  "packageManager": "pnpm@12.3.4"
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { RunPlanSchema } from '@devlaunch/shared';
-import { BuildSandbox, buildCapProblem, buildOptions, builtImageTag } from '../services/docker/BuildSandbox.js';
+import { BuildSandbox, buildCapPath, buildCapProblem, buildOptions, builtImageTag, cgroupDriverOf } from '../services/docker/BuildSandbox.js';
 import { buildRepoImageHostConfig } from '../services/docker/ContainerSecurity.js';
 import { RunPlanValidator } from '../services/planning/RunPlanValidator.js';
 import { dockerProjectPlan } from '../services/docker/RepoDockerRunner.js';
@@ -35,6 +35,20 @@ describe('the build sandbox', () => {
     // Measured: a RUN starting 3,000 processes started them all without it, and stopped
     // at 2,048 with "can't fork" under it.
     expect(opts.cgroupparent).toBe(`/${config.docker.buildCgroup}`);
+  });
+
+  it('names the cap the way the engine\'s cgroup driver needs: a path, or a systemd slice', () => {
+    // Docker refuses a cgroup parent that is not a `.slice` under the systemd driver (most
+    // Linux machines), and the cap is then a slice's limits, read from its own directory.
+    const req = { sessionId: 's', service: 'a', contextDir: '/r', dockerfile: '/r/Dockerfile' };
+    expect(buildOptions(req, 1024, 1, 'systemd').cgroupparent).toBe(config.docker.buildSlice);
+    expect(config.docker.buildSlice).toMatch(/\.slice$/);
+    expect(buildOptions(req, 1024, 1, 'cgroupfs').cgroupparent).toBe(`/${config.docker.buildCgroup}`);
+    expect(buildCapPath('systemd')).toBe(`/sys/fs/cgroup/${config.docker.buildSlice}/pids.max`);
+    expect(buildCapPath('cgroupfs')).toBe(`/sys/fs/cgroup/${config.docker.buildCgroup}/pids.max`);
+    expect(cgroupDriverOf({ CgroupDriver: 'systemd' })).toBe('systemd');
+    expect(cgroupDriverOf({ CgroupDriver: 'cgroupfs' })).toBe('cgroupfs');
+    expect(cgroupDriverOf({})).toBe('cgroupfs');
   });
 
   it('carries a Dockerfile from outside its context under a fixed name', () => {

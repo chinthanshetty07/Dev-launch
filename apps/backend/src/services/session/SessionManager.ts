@@ -2427,7 +2427,7 @@ export class SessionManager extends EventEmitter {
         `${what} exceeded the ${current} MB container memory limit, which is already the maximum ` +
         `available memory (${policy.maxSource}), so there was nothing larger to retry with.`;
       remedy =
-        'Give the Docker VM more memory — `colima stop && colima start --cpu 4 --memory 8` — or ' +
+        'Give Docker more memory (Docker Desktop or OrbStack: Settings → Resources; Colima: `colima stop && colima start --cpu 4 --memory 8`) or ' +
         'raise DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB. The limit is DevLaunch\'s; nothing here ' +
         'says the repository is broken.';
     } else if (current >= policy.maxMb || raises >= policy.retryLimit) {
@@ -2436,7 +2436,7 @@ export class SessionManager extends EventEmitter {
         `memory limits${tried} but it still exceeded the maximum available memory ` +
         `(${policy.maxMb} MB, ${policy.maxSource}).`;
       remedy =
-        'Give the Docker VM more memory — `colima stop && colima start --cpu 4 --memory 8` — or ' +
+        'Give Docker more memory (Docker Desktop or OrbStack: Settings → Resources; Colima: `colima stop && colima start --cpu 4 --memory 8`) or ' +
         'raise DEVLAUNCH_CONTAINER_MEMORY_CEILING_MB. The limit is DevLaunch\'s; nothing here ' +
         'says the repository is broken.';
     } else {
@@ -3207,7 +3207,7 @@ export function failureOf(err: unknown): FailureDetail {
       code: FailureCode.UNKNOWN_RUNTIME_ERROR,
       message: `DevLaunch could not complete this run: ${message}`,
       remedy: /docker|sock|ECONNREFUSED/i.test(`${code} ${message}`)
-        ? 'Docker stopped answering. Check that Colima is running (`colima status`), then run ./devlaunch doctor.'
+        ? 'Docker stopped answering. Check that Docker is running (Docker Desktop, OrbStack or Colima; on Linux the docker service), then run ./devlaunch doctor.'
         : 'This is a problem on this machine, not in the repository. Run ./devlaunch doctor.',
       confidence: 'medium',
     };

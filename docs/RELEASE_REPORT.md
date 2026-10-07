@@ -192,8 +192,8 @@ Mutation checks: 15 deliberate breaks across the two changes, each caught by a t
 |---|---|
 | Typecheck, 3 packages | clean |
 | Backend quick tests (77 files) | 1,203 passed |
-| Backend real-Docker tests, in two batches (24 files) | 52 passed; 111 passed, 3 skipped |
-| Backend total | **1,366 passed, 3 skipped, 0 failed** (101 files) |
+| Backend real-Docker tests, in two batches (22 files) | 52 passed; 111 passed, 3 skipped |
+| Backend total | **1,341 passed, 3 skipped, 0 failed** (99 files) — first reported as 1,366, which counted the readiness and security files (25 tests) twice because they ran in both batches |
 | Frontend / shared | 83 / 24 passed |
 | Left behind afterwards | 0 containers, 0 run networks |
 
@@ -201,3 +201,28 @@ Run in two batches because a single background job is stopped at one hour; the f
 single run hung on the race above and was stopped there. Not re-run: the 40-repository
 corpus (this change touches networking and builds only; the Docker-path tests above
 cover both).
+
+## 14. Open source, for anyone's computer (2026-10-07)
+
+| Check | Result |
+|---|---|
+| Typecheck, 3 packages | clean |
+| Backend quick tests (78 files) | 1,212 passed |
+| Backend real-Docker tests (22 files, two batches, no file in both) | 27 passed; 111 passed, 3 skipped |
+| Backend total | **1,350 passed, 3 skipped, 0 failed** |
+| Frontend / shared | 88 / 24 passed |
+| Left behind afterwards | 0 containers, 0 run networks |
+| Guard on Colima | rules and cap wiped by hand → back within 20 s; real `colima stop`/`start` with the old VM services disabled → back on the fresh VM |
+| Guard remove mode | rules and cap gone; setup puts them back |
+| `install.sh` | missing Docker → named with how to get it, stopped; from an empty folder → installed, doctor ready |
+| Fresh copy, no AI key, from the website's link | form filled in, nothing started; after the click → READY, end-to-end check passed, plan by rules, on its own run network |
+| Website | bad links refused, GitHub link accepted, works at phone width and in dark mode |
+| History scan before publishing | no key patterns in 101 commits; no `.env` or handoff file ever committed |
+
+Mutation checks: 13 deliberate breaks across the cgroup driver, Docker discovery, engine-
+neutral advice, the link prefill, AI status and the cross-site rule; each caught by a test.
+
+**Not verified here:** Docker Desktop (macOS, Windows/WSL2) and OrbStack — none is installed
+on this Mac; they use the same guard mechanism, and the doctor and health check verify the
+rules by behaviour on any engine. Docker Engine on Linux, with the systemd cgroup driver, is
+verified by CI once the code is pushed.

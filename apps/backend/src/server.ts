@@ -250,6 +250,7 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     repoRoot,
     docker,
     recentErrors: recordedErrors,
+    ai: aiEnabled,
     egress: () => {
       // Reading the verdict is what schedules the next check. Nothing polls on a timer:
       // a probe runs a container, and one running every five minutes for ever on a

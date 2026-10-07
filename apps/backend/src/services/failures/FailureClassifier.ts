@@ -67,7 +67,7 @@ export class FailureClassifier {
           'The process was killed abruptly (exit 137), which in a container almost ' +
           'always means it exceeded the memory limit.',
         remedy:
-          'Raise DEVLAUNCH_CONTAINER_MEMORY_MB, or give the Colima VM more memory.',
+          'Raise DEVLAUNCH_CONTAINER_MEMORY_MB, or give Docker more memory in its settings.',
         confidence: 'medium',
         exitCode: input.exitCode,
         phase: input.phase === 'none' ? undefined : input.phase,

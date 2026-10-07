@@ -8,3 +8,6 @@ apps/frontend/dist/
 
 # Carries the Groq key for session handoff; must never reach the public remote.
 SESSION-HANDOFF.md
+
+# Local tool settings with this machine's paths.
+.claude/launch.json

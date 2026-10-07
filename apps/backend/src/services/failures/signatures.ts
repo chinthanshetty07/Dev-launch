@@ -53,8 +53,8 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       /signal SIGKILL \(Forced quit\)/i,
     ],
     remedy:
-      'Raise DEVLAUNCH_CONTAINER_MEMORY_MB, or give the Colima VM more memory with ' +
-      '`colima stop && colima start --cpu 4 --memory 6`.',
+      'Raise DEVLAUNCH_CONTAINER_MEMORY_MB, or give Docker more memory (' +
+      'Docker Desktop or OrbStack: Settings → Resources; Colima: `colima stop && colima start --cpu 4 --memory 8`).',
     describe: () => 'The process was killed for exceeding the container memory limit.',
   },
   {
@@ -102,7 +102,7 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       'Almost always the container\'s 64 MB /tmp rather than a full disk — build scratch ' +
       'belongs on the workspace volume, which TMPDIR points at. Raise it with ' +
       'DEVLAUNCH_CONTAINER_TMP_MB if a tool ignores TMPDIR, or reclaim space in the ' +
-      'Colima VM with `docker builder prune` if the VM really is full.',
+      'Docker engine with `docker builder prune` if its disk really is full.',
     describe: () => 'The container ran out of disk space.',
   },
 

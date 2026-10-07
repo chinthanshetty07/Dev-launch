@@ -17,6 +17,7 @@ Usage: ./devlaunch <command>
   stop <id>            Stop a deployment and remove its containers
   test [--all]         Typecheck and run the tests (--all adds the Docker tests, ~10 min)
   clean [--caches]     Remove DevLaunch's leftover containers and workspaces (--caches: download caches too)
+  uninstall            Remove everything DevLaunch added to Docker (rules, cap, networks, images, volumes)
 USAGE
 }
 
@@ -107,6 +108,31 @@ case "$cmd" in
       caches=$(docker volume ls -q --filter label=com.devlaunch.cache=true)
       [ -n "$caches" ] && docker volume rm $(echo $caches) >/dev/null && echo "Removed $(echo $caches | wc -w | tr -d ' ') download cache(s)." || echo "No caches to remove."
     fi
+    ;;
+  uninstall)
+    if curl -sf "$API/api/health" >/dev/null 2>&1; then
+      echo "DevLaunch is running; stop it first." >&2; exit 1
+    fi
+    docker info >/dev/null 2>&1 || { echo "Docker is not running; start it so DevLaunch's parts can be removed from it." >&2; exit 1; }
+    # Only what carries DevLaunch's labels or names. Nothing else on this machine is touched.
+    echo "==> Removing the network rules and the build cap"
+    driver=$(docker info --format '{{.CgroupDriver}}')
+    docker rm -f devlaunch-guard >/dev/null 2>&1 || true
+    if docker image inspect devlaunch/guard >/dev/null 2>&1; then
+      docker run --rm --privileged --net=host --pid=host --cgroupns=host \
+        -e DEVLAUNCH_CGROUP_DRIVER="$driver" devlaunch/guard remove | sed 's/^/    /'
+    fi
+    echo "==> Removing DevLaunch's containers, networks, volumes and images"
+    ids=$(docker ps -aq --filter label=com.devlaunch.managed=true)
+    [ -n "$ids" ] && docker rm -f $(echo $ids) >/dev/null
+    nets=$(docker network ls -q --filter label=com.devlaunch.runnet=true)
+    [ -n "$nets" ] && docker network rm $(echo $nets) >/dev/null
+    docker network rm devlaunch-net >/dev/null 2>&1 || true
+    vols=$(docker volume ls -q --filter label=com.devlaunch.workspace=true; docker volume ls -q --filter label=com.devlaunch.cache=true)
+    [ -n "$vols" ] && docker volume rm $(echo $vols) >/dev/null
+    imgs=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^devlaunch(-built)?/' || true)
+    [ -n "$imgs" ] && docker rmi -f $(echo $imgs) >/dev/null
+    echo "==> Done. Left in place: this folder, and DevLaunch's records in ${DEVLAUNCH_STATE_DIR:-$HOME/.devlaunch} (delete them yourself if you want)."
     ;;
   help|-h|--help) usage ;;
   *) echo "Unknown command: $cmd" >&2; usage; exit 2 ;;

@@ -59,6 +59,25 @@ describe('who may use the API', () => {
     expect(await call('GET', '/api/sessions', { host: `127.0.0.1:${port}`, origin: 'null' })).toBe(403);
   });
 
+  it('lets the website open the dashboard with a link, and nothing else from another site', async () => {
+    // What the DevLaunch website's "Run on my computer" button causes: a page visit.
+    const visit = { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate' };
+    expect(await call('GET', '/?repo=https://github.com/a/b', visit)).not.toBe(403);
+    // A background request from any other site — even one that sends no Origin, as a
+    // no-cors GET or an <img> does — is refused.
+    for (const mode of ['no-cors', 'cors', 'same-origin']) {
+      expect(await call('GET', '/api/sessions', { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': mode }), mode).toBe(403);
+    }
+    expect(await call('GET', '/api/sessions', { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'no-cors' })).toBe(403);
+    // A form posted at DevLaunch from another site is a navigation too, and still refused.
+    expect(await call('POST', '/api/sessions', { ...visit, 'content-type': 'application/x-www-form-urlencoded' }, 'repoUrl=https://github.com/a/b')).toBe(403);
+    // The website itself is just another site.
+    expect(await call('POST', '/api/sessions', { host: `127.0.0.1:${port}`, origin: 'https://chinthanshetty07.github.io', 'content-type': 'application/json' }, '{}')).toBe(403);
+    // The dashboard's own requests, and tools that send none of this.
+    expect(await call('GET', '/api/sessions', { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors' })).toBe(200);
+    expect(await call('GET', '/api/sessions', { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' })).toBe(200);
+  });
+
   it('refuses the log socket to a rebound page', async () => {
     const opened = (headers: Record<string, string>) =>
       new Promise<boolean>((resolve) => {

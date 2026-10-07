@@ -105,15 +105,17 @@ grep -q "installRejectionHandler" apps/backend/src/server.ts \
   && ok "unhandled rejections are recorded" || bad "unhandled rejections are recorded" "the handler is gone"
 
 echo "== F5: the egress policy is installed =="
-# Goes red after a `colima restart`, which is exactly how it was found missing.
-if command -v colima >/dev/null 2>&1 && colima status >/dev/null 2>&1; then
-  if colima ssh -- sudo iptables -S DOCKER-USER 2>/dev/null | grep -q 'DEVLAUNCH'; then
+# Went red after a `colima restart`, which is how it was found missing; the guard now puts
+# it back. Read on any engine through the guard's image, on the engine's own network.
+if docker info >/dev/null 2>&1 && docker image inspect devlaunch/guard >/dev/null 2>&1; then
+  if docker run --rm --net=host --cap-add NET_ADMIN --entrypoint sh devlaunch/guard -c \
+      'iptables-nft -S DOCKER-USER 2>/dev/null || iptables-legacy -S DOCKER-USER' 2>/dev/null | grep -q 'DEVLAUNCH'; then
     ok "DOCKER-USER carries the DevLaunch rule"
   else
-    bad "DOCKER-USER carries the DevLaunch rule" "chain is empty; run scripts/setup-network-policy.sh"
+    bad "DOCKER-USER carries the DevLaunch rule" "chain is empty; run ./devlaunch install (it starts the guard)"
   fi
 else
-  skip "egress policy" "colima not running"
+  skip "egress policy" "Docker not running, or the guard not installed"
 fi
 
 echo "== R5: intake rejects what it says it rejects =="

@@ -43,6 +43,21 @@ export function originAllowed(origin: string | undefined, allowed: ReadonlySet<s
   }
 }
 
+/**
+ * What a browser says about where a request came from (`Sec-Fetch-Site`, `Sec-Fetch-Mode`),
+ * which it sends even where it leaves `Origin` out — a no-cors GET, an <img>, a <script>.
+ *
+ * From another site, only a plain page visit is let through: that is the DevLaunch
+ * website's "Run on my computer" link opening the dashboard, which then only fills in a
+ * form. Anything else from another site — a background request, or a form posted at
+ * DevLaunch — is refused. Tools and same-origin requests are unaffected: curl sends no such
+ * header, and the dashboard's own requests say `same-origin`.
+ */
+export function fetchSiteAllowed(site: string | undefined, mode: string | undefined, method: string): boolean {
+  if (site !== 'cross-site' && site !== 'same-site') return true;
+  return (method === 'GET' || method === 'HEAD') && mode === 'navigate';
+}
+
 /** Extra names from `DEVLAUNCH_ALLOWED_HOSTS` (comma-separated) and a non-loopback bind host. */
 export function configuredHosts(env: NodeJS.ProcessEnv = process.env): string[] {
   const out = (env.DEVLAUNCH_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean);
@@ -65,7 +80,12 @@ export function hostGuard(allowed: ReadonlySet<string>) {
       });
       return;
     }
-    if (!originAllowed(req.headers.origin, allowed)) {
+    const site = req.headers['sec-fetch-site'];
+    const mode = req.headers['sec-fetch-mode'];
+    if (
+      !originAllowed(req.headers.origin, allowed) ||
+      !fetchSiteAllowed(typeof site === 'string' ? site : undefined, typeof mode === 'string' ? mode : undefined, req.method)
+    ) {
       res.status(403).json({
         error: {
           code: 'ORIGIN_NOT_ALLOWED',

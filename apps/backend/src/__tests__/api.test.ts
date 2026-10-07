@@ -265,7 +265,7 @@ describe('health that can be unhealthy', () => {
     await new Promise<void>((r) => server.listen(0, r));
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const body = (await (await fetch(`${base}/api/health`)).json()) as {
-      ok: boolean; problems?: string[]; egress?: string;
+      ok: boolean; problems?: string[]; egress?: string; ai?: boolean;
     };
     await sessions.shutdown();
     await new Promise<void>((r) => server.close(() => r()));
@@ -286,6 +286,13 @@ describe('health that can be unhealthy', () => {
     });
     expect(body.ok).toBe(false);
     expect(body.problems?.join(' ')).toMatch(/169\.254\.169\.254/);
+  });
+
+  it('says whether AI help is on, which is optional and never a problem', async () => {
+    const off = await start({ docker: { ping: async () => undefined }, ai: false });
+    expect(off.ai).toBe(false);
+    expect(off.ok).toBe(true);
+    expect((await start({ docker: { ping: async () => undefined }, ai: true })).ai).toBe(true);
   });
 
   it('is ok when nothing is wrong', async () => {

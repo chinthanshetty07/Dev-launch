@@ -294,9 +294,9 @@ Between those two states containers ran with the weaker isolation the docs warn 
 **Remediation:** check the chain at startup and refuse, or warn loudly, when it is
 missing. Correct the doc's wording either way.
 
-> **Later (2026-10-07):** the rules are now also *restored* at every VM start, by
-> `devlaunch-network-rules.service`, which the setup script installs. The probe stays as
-> the check that they are really there.
+> **Later (2026-10-07):** the rules are now also *restored* after every restart, by the
+> `devlaunch-guard` container, which Docker starts with itself. The probe stays as the
+> check that they are really there.
 
 ### F6 — MEDIUM — ✅ **CLOSED 2026-09-29** — The AI path is never exercised by the suite
 

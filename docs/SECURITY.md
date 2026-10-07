@@ -250,10 +250,12 @@ new. A repository could always name any package it liked.
 
 ## Operational notes
 
-- The egress policy lives inside the Colima VM. A boot service the setup script installs
-  (`devlaunch-network-rules.service`, run after Docker starts) restores it at every VM
-  start, so `colima stop`/`start` and a Mac reboot keep it; only **recreating** the VM
-  loses it — re-run `scripts/setup-network-policy.sh` after `colima delete`. The backend
+- The egress policy and the build cap live on the machine that runs Docker. The
+  `devlaunch-guard` container (`docker/guard`: privileged, on the host's network, PID and
+  cgroup namespaces, DevLaunch's own script only, no Docker socket, `--restart=always`) puts
+  them in place and back after every Docker or computer restart, on any engine, re-checking
+  every 20 seconds. Its privileges are the price of changing the engine's firewall without a
+  VM-specific command; it runs no repository code. The backend
   still checks the rules by behaviour and warns when they are missing (`EgressProbe`). If the policy network
   is absent the runner falls back to the default bridge and the security suite **fails
   loudly** rather than passing with weaker isolation.

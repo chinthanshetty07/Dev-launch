@@ -127,7 +127,7 @@ export interface BuildStamp {
 }
 
 export const api = {
-  health: () => fetch('/api/health').then((r) => json<{ build?: BuildStamp }>(r)),
+  health: () => fetch('/api/health').then((r) => json<{ build?: BuildStamp; ai?: boolean }>(r)),
 
   fixtures: () => fetch('/api/fixtures').then((r) => json<string[]>(r)),
 

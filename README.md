@@ -14,33 +14,55 @@ compose file, README and source. Known shapes are planned by rules; a model is c
 when no rule matches, and its plan is checked like any other. What it supports, measured on 40
 real repositories, is in [docs/SUPPORTED_STACKS.md](docs/SUPPORTED_STACKS.md).
 
-## Quick start, on a fresh Mac
+## Install
 
-Tested on Apple Silicon with Colima. You need Homebrew.
+You need **Docker**, **Node 20 or newer** and **git**. Any of these Docker setups works:
+
+| Computer | Docker |
+|---|---|
+| Mac (Apple Silicon or Intel) | [Docker Desktop](https://www.docker.com/products/docker-desktop), [OrbStack](https://orbstack.dev) or Colima (`brew install colima docker && colima start --cpu 4 --memory 6`) |
+| Windows | Docker Desktop with WSL2; run DevLaunch inside your WSL distro |
+| Linux | [Docker Engine](https://docs.docker.com/engine/install/), with your user in the `docker` group |
+
+Give Docker at least 4 GB of memory (6 GB is better). Then, in a terminal:
 
 ```bash
-brew install node git colima docker          # Node 20 or newer
-colima start --cpu 4 --memory 6              # leave macOS at least 2 GB
-git clone https://github.com/chinthanshetty07/Dev-launch.git
-cd Dev-launch
-./devlaunch install                          # dependencies, runner images, protected network
-./devlaunch doctor                           # checks everything; says how to fix what is not ready
-./devlaunch start                            # http://127.0.0.1:3939
+curl -fsSL https://raw.githubusercontent.com/chinthanshetty07/Dev-launch/main/install.sh | bash
 ```
 
-Then open <http://127.0.0.1:3939> and paste a repository URL. One runs at a time: pasting
-the next one stops the last and cleans it up. No account or login: DevLaunch only answers on
-your own computer. Or from another terminal:
+It checks what you have, says exactly what is missing and how to get it, and stops — it never
+installs Docker or changes system settings by itself. Then:
+
+```bash
+cd ~/devlaunch && ./devlaunch start          # http://127.0.0.1:3939
+```
+
+Open <http://127.0.0.1:3939> and paste a repository URL. One runs at a time: pasting the next
+one stops the last and cleans it up. No account or login: DevLaunch only answers on your own
+computer, and refuses requests from websites. Or from another terminal:
 
 ```bash
 ./devlaunch deploy https://github.com/mdn/todo-react
 ```
 
+Prefer to do it by hand? `git clone https://github.com/chinthanshetty07/Dev-launch.git`, then
+`./devlaunch install` and `./devlaunch doctor` inside it.
+
+**AI help is optional.** Rules plan most repositories. For the ones no rule recognises, add a
+free key from [console.groq.com](https://console.groq.com) as `GROQ_API_KEY=...` in a `.env`
+file in the DevLaunch folder, and restart it.
+
+## From the website
+
+The [DevLaunch website](site/index.html) has a paste box with a **Run on my computer** button.
+It opens your own DevLaunch with the repository filled in; nothing runs until you press
+**Run it** there. The website has no server and never sees what you run.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `./devlaunch install` | Install dependencies, build the runner images, set up the protected network |
+| `./devlaunch install` | Install dependencies, build the runner images, set up the protected network and the guard |
 | `./devlaunch doctor` | Check Node, pnpm, git, Docker, images, network, port, disk, `.env` — and say how to fix each problem |
 | `./devlaunch start` | Build the dashboard and start DevLaunch on port 3939 |
 | `./devlaunch deploy <url> [ref]` | Deploy a repository (optionally a branch, tag or commit) and follow it to the end |
@@ -49,6 +71,7 @@ your own computer. Or from another terminal:
 | `./devlaunch stop <id>` | Stop a deployment and remove what it started |
 | `./devlaunch test [--all]` | Typecheck and tests (`--all` adds the real-Docker tests, ~10 min) |
 | `./devlaunch clean [--caches]` | Remove leftover DevLaunch containers and workspaces (DevLaunch stopped) |
+| `./devlaunch uninstall` | Remove everything DevLaunch added to Docker — rules, build cap, networks, images, volumes — and nothing else |
 
 ## What "ready" means
 
@@ -92,7 +115,10 @@ to stop whatever is running instead of getting `409`. Errors always look like
 
 Repositories are untrusted code. Each runs in a container that is non-root, read-only,
 without capabilities, limited in memory, CPU and processes, without the Docker socket, and
-on a network that cannot reach your home network or cloud metadata. A repository's own
+on a network of its own that cannot reach your home network, your computer or cloud metadata.
+A small DevLaunch container, `devlaunch-guard`, keeps those network rules and a process cap
+for builds in place on whatever Docker you use, and puts them back after Docker restarts. A
+repository's own
 Dockerfile and compose file are used only when DevLaunch cannot run the repository its own
 way, built off your network and run with no extra privileges, no access to your files and
 no Docker socket. See [docs/SECURITY.md](docs/SECURITY.md).
@@ -114,3 +140,12 @@ no Docker socket. See [docs/SECURITY.md](docs/SECURITY.md).
 | [limitations.md](docs/limitations.md) | Deliberate boundaries, stated plainly |
 | [setup.md](docs/setup.md) | Every setting |
 | [CHANGELOG.md](CHANGELOG.md) | What changed, and the evidence for it |
+
+## Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). To report a
+security problem privately, see [.github/SECURITY.md](.github/SECURITY.md).
+
+## License
+
+[MIT](LICENSE).
