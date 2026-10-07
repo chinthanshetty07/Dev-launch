@@ -92,11 +92,11 @@
   </section>
 
   <h2>Install once</h2>
-  <p>You need <b>Docker</b> (Docker Desktop, OrbStack or Colima on a Mac; Docker Desktop with WSL2 on Windows; Docker Engine on Linux), <b>Node 20+</b> and <b>git</b>. Then:</p>
+  <p>On a Mac or Linux computer (on Windows: inside WSL2), open a terminal and run:</p>
   <div class="card cmd" style="padding-top:0;padding-bottom:0;padding-left:0">
     <pre id="install-cmd"><code>curl -fsSL https://raw.githubusercontent.com/chinthanshetty07/Dev-launch/main/install.sh | bash</code></pre>
   </div>
-  <p class="hint">It checks what you have, says exactly what is missing and how to get it, and never installs Docker or changes system settings by itself. Then start it:</p>
+  <p class="hint">That is all. It checks what your computer is missing — git, Node, Docker — tells you what it will install and asks once, installs it (your computer asks for your password for Docker and git), then starts DevLaunch and opens it. Docker Desktop or OrbStack, if you have one, is used as it is. Next time, start it with:</p>
   <div class="card" style="padding:0"><pre><code>cd ~/devlaunch &amp;&amp; ./devlaunch start</code></pre></div>
   <p class="hint">and open <a href="http://127.0.0.1:3939">http://127.0.0.1:3939</a>.</p>
 
