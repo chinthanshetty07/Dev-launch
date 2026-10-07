@@ -129,7 +129,12 @@ jobs:
       - name: make this machine bare — no Docker, no Node, no git, and not in the docker group
         run: |
           sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
-          sudo apt-get purge -y -qq 'docker-ce*' 'docker-buildx*' 'docker-compose*' 'moby-*' containerd.io git >/dev/null 2>&1 || true
+          sudo apt-get purge -y -qq 'docker-ce*' 'docker-buildx*' 'docker-compose*' 'moby-*' containerd.io >/dev/null 2>&1 || true
+          # git with its parts and the extra source this image installs it from: removing git
+          # alone left a newer git-man that Ubuntu's own git cannot install beside.
+          sudo apt-get purge -y -qq git git-man >/dev/null 2>&1 || true
+          sudo rm -f /etc/apt/sources.list.d/*git-core* && sudo apt-get update -qq
+          sudo apt-get autoremove -y -qq >/dev/null 2>&1 || true
           sudo rm -rf /var/lib/docker /etc/docker /usr/bin/docker /usr/local/bin/docker
           sudo gpasswd -d "$USER" docker 2>/dev/null || true
           export PATH=/usr/sbin:/usr/bin:/sbin:/bin

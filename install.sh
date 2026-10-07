@@ -132,9 +132,13 @@ fi
 if [ "$need_git" = 1 ]; then
   step "Installing git"
   if [ "$os" = mac ]; then brew install git
-  elif command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git curl ca-certificates xz-utils
-  elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y -q git curl xz
-  elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm git curl xz
+  elif command -v apt-get >/dev/null 2>&1; then
+    $SUDO apt-get update -qq && $SUDO apt-get install -y git curl ca-certificates \
+      || die "The package manager could not install git (its message is above). Fix that — often: sudo apt --fix-broken install — or install git yourself, then run this again."
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y git curl || die "dnf could not install git (its message is above). Install git yourself, then run this again."
+  elif command -v pacman >/dev/null 2>&1; then
+    $SUDO pacman -Sy --noconfirm git curl || die "pacman could not install git (its message is above). Install git yourself, then run this again."
   else die "Could not install git: no apt, dnf or pacman here. Install git yourself, then run this again."
   fi
 fi
