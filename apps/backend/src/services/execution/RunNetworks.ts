@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { config } from '../../config/index.js';
 import type { DockerManager } from '../docker/DockerManager.js';
 
@@ -18,9 +19,16 @@ import type { DockerManager } from '../docker/DockerManager.js';
  * before, and the log says why.
  */
 
-/** The run network's name for a session. Docker allows 64 characters; this uses 26. */
+/**
+ * The run network's name for a session: readable, and unique to it. The first 12
+ * characters alone were not — CI's test runs `corpus-node-a` and `corpus-node-b` got the
+ * same name, and the second fell back to the shared network — so a short hash of the whole
+ * id is added. Docker allows 64 characters; this uses 33.
+ */
 export function runNetworkName(sessionId: string): string {
-  return `${config.docker.runNetworkPrefix}${sessionId.slice(0, 12).toLowerCase()}`;
+  const readable = sessionId.slice(0, 12).toLowerCase().replace(/[^a-z0-9_.-]/g, '-');
+  const hash = createHash('sha256').update(sessionId).digest('hex').slice(0, 6);
+  return `${config.docker.runNetworkPrefix}${readable}-${hash}`;
 }
 
 /**

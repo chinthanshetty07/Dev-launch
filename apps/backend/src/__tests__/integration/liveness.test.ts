@@ -51,8 +51,15 @@ async function until(
   for (;;) {
     const s = sessions.get(id);
     if (s && states.includes(s.state)) return s.state;
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for ${states.join('/')}; session is ${s?.state}`);
+    // Ended somewhere else: say why at once, with the run's own last words, rather than
+    // waiting out the clock and reporting only the state's name.
+    const ended = s && ([ExecutionState.FAILED, ExecutionState.CANCELLED, ExecutionState.COMPLETED] as ExecutionState[]).includes(s.state);
+    if (ended || Date.now() > deadline) {
+      const tail = s?.logs.buffer.all().slice(-8).map((l) => l.text).join('\n');
+      throw new Error(
+        `${ended ? 'Ended' : 'Timed out'} waiting for ${states.join('/')}; session is ${s?.state}: ` +
+          `${JSON.stringify(s?.failure ?? null)}\nlast log lines:\n${tail ?? ''}`,
+      );
     }
     await new Promise((r) => setTimeout(r, 100));
   }

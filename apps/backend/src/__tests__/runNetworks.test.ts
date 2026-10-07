@@ -40,6 +40,17 @@ function fakeDocker(opts: { guarded?: boolean | null; failCreate?: string[]; sha
   return docker;
 }
 
+describe('naming a run\'s network', () => {
+  it('gives two runs whose ids start alike two different names', () => {
+    // Seen on CI: `corpus-node-…` ids shared their first 12 characters, so the second run's
+    // network "already existed" and it fell back to the shared one.
+    expect(runNetworkName('corpus-node-aaa')).not.toBe(runNetworkName('corpus-node-bbb'));
+    expect(runNetworkName('same-id')).toBe(runNetworkName('same-id'));
+    expect(runNetworkName('x'.repeat(200)).length).toBeLessThanOrEqual(64);
+    expect(runNetworkName('Weird/ID:1')).toMatch(/^[a-z0-9_.-]+$/);
+  });
+});
+
 describe('picking a subnet', () => {
   it('takes the first /24 of the pool that nothing uses', () => {
     expect(pickRunSubnet('172.31.0.0/16', new Set())).toBe('172.31.1.0/24');
