@@ -32,7 +32,7 @@ import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
 import type { ProjectPlanner } from '../planning/ProjectPlanner.js';
 import { join } from 'node:path';
-import { requiredEnvReads } from '../analysis/ServiceDiscovery.js';
+import { requiredEnvReads, selfSigningReads } from '../analysis/ServiceDiscovery.js';
 import {
   applyConfiguration,
   projectWithExampleDefaults,
@@ -615,10 +615,15 @@ export class SessionManager extends EventEmitter {
         // Each service's configuration lives beside it, so the gate reads every service
         // rather than only the repository root — which is why a backend's API key was
         // never asked for and its container started without one.
-        const missing = this.fillGeneratable(
-          session,
-          requiredConfiguration(project.plan, session.metadata.services ?? [], session.metadata.backing ?? []),
-        );
+        const declared = requiredConfiguration(project.plan, session.metadata.services ?? [], session.metadata.backing ?? []);
+        const missing = this.fillGeneratable(session, [
+          ...declared,
+          ...(await this.selfSigningMissing(
+            dir,
+            project.plan.services.map((sv) => ({ name: sv.name, dir: sv.workingDirectory, env: sv.environmentVariables })),
+            declared,
+          )),
+        ]);
         if (missing.length > 0) {
           this.awaitInput(session, { requiredEnv: missing });
           return;
@@ -804,7 +809,17 @@ export class SessionManager extends EventEmitter {
 
     // Pre-flight gate: ask for configuration before building a container that would
     // only crash for want of it.
-    const missing = this.fillGeneratable(session, requiredConfigurationForSingle(session.metadata));
+    const declared = requiredConfigurationForSingle(session.metadata);
+    const missing = this.fillGeneratable(session, [
+      ...declared,
+      ...(session.plan
+        ? await this.selfSigningMissing(
+            session.sourceDir ?? dir,
+            [{ dir: session.plan.workingDirectory ?? '.', env: session.plan.environmentVariables }],
+            declared,
+          )
+        : []),
+    ]);
     if (missing.length > 0) {
       this.awaitInput(session, { requiredEnv: missing });
       return;
@@ -2726,6 +2741,29 @@ export class SessionManager extends EventEmitter {
    * value is 32 random bytes, used only in this deployment's environment, and never logged.
    * A key to someone else's service is never generated: only its owner can get one.
    */
+  /**
+   * Self-signing secrets a service's code reads that nothing sets yet — see
+   * `selfSigningReads`. Returned as required, so `fillGeneratable` gives each a random
+   * value; never asked of a person, because only generatable names are found.
+   */
+  private async selfSigningMissing(
+    root: string,
+    services: { name?: string; dir: string; env: { key: string; value?: string | null }[] }[],
+    already: RequiredEnvVar[],
+  ): Promise<RequiredEnvVar[]> {
+    const out: RequiredEnvVar[] = [];
+    for (const service of services) {
+      const reads = await selfSigningReads(join(root, service.dir ?? '.')).catch(() => new Set<string>());
+      for (const key of reads) {
+        const set = service.env.some((v) => v.key === key && v.value !== null && v.value !== undefined && v.value !== '');
+        const listed = already.some((v) => v.key === key && (v.service === undefined || v.service === service.name));
+        const twice = out.some((v) => v.key === key && v.service === service.name);
+        if (!set && !listed && !twice) out.push({ key, hasDefault: false, ...(service.name ? { service: service.name } : {}) });
+      }
+    }
+    return out;
+  }
+
   private fillGeneratable(session: Session, missing: RequiredEnvVar[]): RequiredEnvVar[] {
     const labelled = missing.map((v) => ({ ...v, kind: classifyEnvVar(v.key, v.hasDefault) }));
     const generate = labelled.filter((v) => v.kind === 'AUTO_GENERATABLE_VALUE');
@@ -2733,6 +2771,17 @@ export class SessionManager extends EventEmitter {
     const values = Object.fromEntries(generate.map((v) => [v.key, randomBytes(32).toString('hex')]));
     if (session.project) {
       session.project = applyConfiguration(session.project, session.metadata?.services ?? [], values);
+      // A key found in a service's code goes to that service even when its own analysis
+      // did not list it (django-environ's env("X") is not one of the forms it reads).
+      session.project = {
+        ...session.project,
+        services: session.project.services.map((sv) => {
+          const own = generate.filter((v) => v.service === sv.name && !sv.environmentVariables.some((e) => e.key === v.key));
+          return own.length === 0
+            ? sv
+            : { ...sv, environmentVariables: [...sv.environmentVariables, ...own.map((v) => ({ key: v.key, value: values[v.key]!, required: true }))] };
+        }),
+      };
     } else if (session.plan) {
       session.plan = {
         ...session.plan,

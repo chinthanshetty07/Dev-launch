@@ -3255,3 +3255,58 @@ describe('whether a later attempt got past the first failure', () => {
     expect(progressedPast(f("No module named 'gradio'", 'start'), f('TypeError: x', 'build'))).toBe(false);
   });
 });
+
+describe('a self-signing secret the code reads but nothing sets', () => {
+  // Taken from a real run: `jamall-mahmoudi-dev/django-react-production-stack` reads
+  // `SECRET_KEY = os.environ.get("SECRET_KEY")` and lists it only in a root `.env-example`,
+  // a name DevLaunch does not read. The backend started with no key and died on
+  // "The SECRET_KEY setting must not be empty" — for a value any random string satisfies.
+  const repoReading = (file: string, source: string): string => {
+    const dir = cloneWith('server.js');
+    writeFileSync(join(dir, file), source);
+    return dir;
+  };
+  const planner = (env: RunPlan['environmentVariables'] = []) => ({
+    planRepository: async () => ({ plan: { ...plan(), environmentVariables: env }, detected: 'django', warnings: [] }),
+  });
+  const run = async (dir: string, env: RunPlan['environmentVariables'] = []) => {
+    let launchedWith: RunPlan['environmentVariables'] = [];
+    const exec = fakeExec(ready);
+    const launch = exec.launch.bind(exec);
+    exec.launch = async (opts: { plan: RunPlan }) => {
+      launchedWith = opts.plan.environmentVariables;
+      return launch(opts as never);
+    };
+    const mgr = new SessionManager(exec, { analyzer: { analyze: async () => ({}) } as never, planner: planner(env) as never });
+    const session = await mgr.launch({ sourceDir: dir, image: 'devlaunch/python:3.12' });
+    await until(() => session.state === ExecutionState.READY || session.state === ExecutionState.FAILED || session.state === ExecutionState.AWAITING_INPUT);
+    // Read before shutting down, which cancels whatever is running.
+    const state = session.state;
+    await mgr.shutdown();
+    return { session, state, launchedWith };
+  };
+
+  it('gives it a random value, says so without showing it, and starts', async () => {
+    const { session, state, launchedWith } = await run(repoReading('settings.py', 'import os\nSECRET_KEY = os.environ.get("SECRET_KEY")\n'));
+    expect(state).toBe(ExecutionState.READY);
+    const key = launchedWith.find((v) => v.key === 'SECRET_KEY');
+    expect(key?.value).toMatch(/^[0-9a-f]{64}$/);
+    const log = session.logs.buffer.all().map((l) => l.text).join('\n');
+    expect(log).toMatch(/Generated a random local value for SECRET_KEY/);
+    expect(log).not.toContain(key!.value!);
+  });
+
+  it('keeps a value the plan already has', async () => {
+    const { launchedWith } = await run(
+      repoReading('settings.py', 'import os\nSECRET_KEY = os.environ.get("SECRET_KEY")\n'),
+      [{ key: 'SECRET_KEY', value: 'theirs', required: false }],
+    );
+    expect(launchedWith.filter((v) => v.key === 'SECRET_KEY')).toEqual([expect.objectContaining({ value: 'theirs' })]);
+  });
+
+  it('never invents a key to someone else\'s service', async () => {
+    const { state, launchedWith } = await run(repoReading('pay.py', 'import os\nSTRIPE = os.environ.get("STRIPE_API_KEY")\n'));
+    expect(launchedWith.some((v) => v.key === 'STRIPE_API_KEY')).toBe(false);
+    expect(state).toBe(ExecutionState.READY);
+  });
+});

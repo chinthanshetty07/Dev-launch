@@ -9,6 +9,7 @@ import type {
   ServiceRunPlan,
 } from '@devlaunch/shared';
 import { wirableKeys } from '../execution/CrossServiceWiring.js';
+import { componentEnv } from '../execution/BackingServices.js';
 import { validateEnvVarKey, validateEnvVarValue } from '../security/CommandValidator.js';
 
 /**
@@ -230,5 +231,8 @@ export function provisionedKeys(backing: readonly BackingService[]): Set<string>
   for (const need of backing) {
     for (const key of need.urlEnvKeys ?? (need.urlEnvKey ? [need.urlEnvKey] : [])) keys.add(key);
   }
+  // And the separate host/user/password settings DevLaunch now gives too, so a person is
+  // never asked for a database password DevLaunch is about to supply.
+  for (const v of componentEnv(backing, 'x')) keys.add(v.key);
   return keys;
 }

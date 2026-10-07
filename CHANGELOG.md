@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-10-08 — A self-signing secret the code reads gets a value, however it is read
+
+`jamall-mahmoudi-dev/django-react-production-stack` reads `SECRET_KEY =
+os.environ.get("SECRET_KEY")` and lists it only in a root `.env-example`, a name DevLaunch
+does not read. DevLaunch already generates `SECRET_KEY`, `JWT_SECRET`, `SESSION_SECRET` and the
+like — but only for keys it had found as required, so the backend started without one and
+died on "The SECRET_KEY setting must not be empty". Now a service's code is also scanned for
+those names in every common form (`os.environ.get`, `os.getenv`, `os.environ[...]`,
+django-environ's `env()`, python-decouple's `config()`, `process.env`), and any that nothing
+sets gets a random value. Broader than the example-file rule on purpose: a random value for
+a self-signing secret is harmless locally, where filling example values once broke a real
+repository. The scan walks the whole service folder, because Django keeps settings in a
+package named after the project (`api/settings.py`), which the shared walker does not open.
+A value the plan already has is kept; a key to another service is never invented.
+
+**Evidence:** that repository now logs `ENV_GENERATED SECRET_KEY` and its backend gets past
+Django's start-up check (it then stops on its database — see "Not done"). Tests for each
+reading form, the Django layout, a kept value and a never-invented API key; 4 mutations
+caught.
+
+**And the database, as separate settings.** That backend reads its database as
+`POSTGRES_HOST` (default `db`, its compose name), `POSTGRES_USER` and the rest, while DevLaunch
+passed only `DATABASE_URL`, so it looked for a host called `db` beside a Postgres DevLaunch had
+started. A started database is now also given as separate settings with the same values as
+the URL: `POSTGRES_*` and `PG*`; `MYSQL_*`; `REDIS_HOST/PORT`; `MONGO(DB)_HOST/PORT`; and the
+generic `DB_*` / `DATABASE_*` names only when exactly one SQL database runs. A value the person
+typed still wins, and they are no longer asked for settings DevLaunch supplies. The advice on
+a database failure no longer says "V1 does not provision one".
+
+**Evidence:** the repository now runs fully — frontend and backend READY, end-to-end check
+passed. Database settings tests (4 mutations caught); real-Docker database, project, Docker-
+setup and lifecycle tests 26/26.
+
 ## 2026-10-07 — The installer installs what DevLaunch needs
 
 `install.sh` used to check for git, Node and Docker and stop when one was missing. Now it

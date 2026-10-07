@@ -238,5 +238,65 @@ export function connectionEnv(
     const keys = new Set(declared ?? [need.urlEnvKey ?? spec.defaultEnvKey]);
     for (const key of keys) out.push({ key, value: url, required: false });
   }
+  // The same database, as the separate settings many applications read instead of a URL.
+  for (const v of componentEnv(backing, database, creds)) {
+    if (!out.some((o) => o.key === v.key)) out.push({ ...v, required: false });
+  }
+  return out;
+}
+
+/** The SQL kinds, for which the generic DB_* names are unambiguous only when one is running. */
+const SQL_KINDS: readonly BackingService['kind'][] = ['postgres', 'mysql'];
+
+/**
+ * A provisioned service's connection as separate settings — host, port, user, password and
+ * database — under the names applications conventionally read.
+ *
+ * A URL alone was not enough. `jamall-mahmoudi-dev/django-react-production-stack` reads
+ * `POSTGRES_HOST` (default `db`, its compose service), `POSTGRES_USER` and the rest; DevLaunch
+ * started Postgres and passed only `DATABASE_URL`, so the backend looked for a host called
+ * `db` and failed. Same values as the URL, so the two can never disagree. The generic
+ * `DB_*` / `DATABASE_*` names are given only when exactly one SQL database runs: with two,
+ * which one they mean is a guess.
+ */
+export function componentEnv(
+  backing: readonly BackingService[],
+  database: string,
+  creds: Partial<Record<BackingService['kind'], BackingCredentials>> = {},
+): { key: string; value: string }[] {
+  const out: { key: string; value: string }[] = [];
+  const sql = backing.filter((b) => SQL_KINDS.includes(b.kind));
+  for (const need of backing) {
+    const spec = BACKING_SPECS[need.kind];
+    if (!spec) continue;
+    const host = creds[need.kind]?.host ?? spec.alias;
+    const password = creds[need.kind]?.password ?? PASSWORD;
+    const port = String(spec.port);
+    const add = (names: string[], value: string) => names.forEach((key) => out.push({ key, value }));
+    if (need.kind === 'postgres' || need.kind === 'mysql') {
+      const user = need.kind === 'postgres' ? 'postgres' : 'root';
+      const P = need.kind === 'postgres' ? 'POSTGRES' : 'MYSQL';
+      add([`${P}_HOST`], host);
+      add([`${P}_PORT`], port);
+      add([`${P}_USER`], user);
+      add([`${P}_PASSWORD`], password);
+      add([need.kind === 'postgres' ? 'POSTGRES_DB' : 'MYSQL_DATABASE'], database);
+      if (need.kind === 'postgres') {
+        add(['PGHOST'], host); add(['PGPORT'], port); add(['PGUSER'], user);
+        add(['PGPASSWORD'], password); add(['PGDATABASE'], database);
+      }
+      if (sql.length === 1) {
+        add(['DB_HOST', 'DATABASE_HOST'], host);
+        add(['DB_PORT', 'DATABASE_PORT'], port);
+        add(['DB_USER', 'DB_USERNAME', 'DATABASE_USER'], user);
+        add(['DB_PASSWORD', 'DATABASE_PASSWORD'], password);
+        add(['DB_NAME', 'DB_DATABASE', 'DATABASE_NAME'], database);
+      }
+    } else if (need.kind === 'redis') {
+      add(['REDIS_HOST'], host); add(['REDIS_PORT'], port);
+    } else if (need.kind === 'mongodb') {
+      add(['MONGO_HOST', 'MONGODB_HOST'], host); add(['MONGO_PORT', 'MONGODB_PORT'], port);
+    }
+  }
   return out;
 }

@@ -139,9 +139,15 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
       /django\.db\.utils\.OperationalError/,
       /password authentication failed for user/i,
     ],
+    // Was "V1 does not provision one", long after DevLaunch began starting Postgres, MySQL,
+    // MongoDB and Redis itself — wrong advice on exactly the runs where it had.
     remedy:
-      'This project needs an external database. V1 does not provision one — see ' +
-      'docs/limitations.md.',
+      'DevLaunch starts Postgres, MySQL, MongoDB and Redis when it detects that a project ' +
+      'uses one, and gives the address as DATABASE_URL and as separate host, port, user and ' +
+      'password settings. Check the address in the error: if it is a name from the ' +
+      'project\'s own setup (like "db"), the project reads it from a setting DevLaunch does not ' +
+      'fill — set that setting to the database DevLaunch started. If no database was started, ' +
+      'this project needs one DevLaunch did not detect, or an external service.',
     describe: () => 'The application could not reach a database or cache it depends on.',
   },
 

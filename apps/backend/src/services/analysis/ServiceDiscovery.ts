@@ -2,6 +2,7 @@ import { readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { BackingService, ServiceCandidate, ServiceRole } from '@devlaunch/shared';
 import type { EnvExampleVar } from '@devlaunch/shared';
+import { classifyEnvVar } from '@devlaunch/shared';
 import { readCapped } from './readCapped.js';
 import { detectNodeInstall, readNodeInstallFacts } from './InstallDetection.js';
 import { parseEnvExample } from './parseEnvExample.js';
@@ -541,6 +542,45 @@ export async function requiredEnvReads(base: string): Promise<Set<string>> {
   return keys;
 }
 
+/** Every way an application commonly reads one named setting, the name captured. */
+const ENV_READS = [
+  /os\.environ(?:\.get)?\s*[[(]\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g, // os.environ["X"], os.environ.get("X")
+  /os\.getenv\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g,
+  // django-environ's env("X") / env.str("X"), and python-decouple's config("X").
+  /(?<![\w.])(?:env(?:\.(?:str|bytes))?|config)\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g,
+  /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g,
+  /process\.env\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]/g,
+];
+
+/**
+ * The self-signing secrets a service's code reads — Django's `SECRET_KEY`, `JWT_SECRET`,
+ * `SESSION_SECRET` and the like (`classifyEnvVar`'s AUTO_GENERATABLE_VALUE) — in any of the
+ * forms above, with or without a fallback.
+ *
+ * Broader than `requiredEnvReads` on purpose. That one fills values from an example file,
+ * where filling too much broke a real repository; these only ever get a fresh random value,
+ * which is harmless for a local run however the code reads them. Missed before: a Django
+ * backend with `SECRET_KEY = os.environ.get("SECRET_KEY")` and its example in `.env-example`
+ * at the root (`jamall-mahmoudi-dev/django-react-production-stack`) started with no key and
+ * died on "The SECRET_KEY setting must not be empty".
+ */
+export async function selfSigningReads(base: string): Promise<Set<string>> {
+  const keys = new Set<string>();
+  // The whole service folder: Django keeps its settings in a package named after the
+  // project (`api/settings.py` in the repository above), which no source-folder name finds.
+  for (const file of await collectSourceFiles(base, 200, true)) {
+    if (!/\.(?:py|[cm]?[jt]sx?)$/.test(file)) continue;
+    const raw = await readCapped(file);
+    if (raw === null) continue;
+    for (const re of ENV_READS) {
+      for (const m of raw.matchAll(re)) {
+        if (classifyEnvVar(m[1]!, false) === 'AUTO_GENERATABLE_VALUE') keys.add(m[1]!);
+      }
+    }
+  }
+  return keys;
+}
+
 /** Match a backing service to the variable a repository actually reads it from. */
 export function backingFromEnvKeys(keys: string[]): Omit<BackingService, 'neededBy'>[] {
   const out: Omit<BackingService, 'neededBy'>[] = [];
@@ -727,7 +767,12 @@ async function findAcceptedOrigins(base: string): Promise<{ origin: string; file
   return out;
 }
 
-async function collectSourceFiles(base: string, budget = MAX_SOURCE_FILES): Promise<string[]> {
+async function collectSourceFiles(
+  base: string,
+  budget = MAX_SOURCE_FILES,
+  /** Walk every folder, not only the source-named ones — see `selfSigningReads`. */
+  wholeTree = false,
+): Promise<string[]> {
   const out: string[] = [];
 
   const walk = async (dir: string, depth: number): Promise<void> => {
@@ -769,7 +814,7 @@ async function collectSourceFiles(base: string, budget = MAX_SOURCE_FILES): Prom
   // `models/`. This walked from depth 3, one below the limit, so it read the root's own
   // files and descended into none of them — and a repository whose entire database
   // configuration lives in `config/dbConnection.js` was read as declaring nothing.
-  if (out.length === 0) await walk(base, 0);
+  if (out.length === 0 || wholeTree) await walk(base, 0);
   return [...new Set(out)];
 }
 
