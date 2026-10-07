@@ -84,9 +84,10 @@ describe('a READY session that stops being ready', () => {
     const sessions = newManager();
     const s = await sessions.launch({
       sourceDir: `${FIXTURES}/node-dies-after-ready`,
-      // Its own 2.5 s lifetime was shorter than readiness takes on a slower machine (CI),
-      // so it died before READY. Long enough to be ready first anywhere; it still dies.
-      plan: plan({ environmentVariables: [{ key: 'FIXTURE_LIFETIME_MS', value: '10000', required: false }] }),
+      // The fixture dies 3 s after the first request it answers (DevLaunch's own check, the
+      // last step before READY) — not a fixed time after starting, which raced readiness on
+      // a slower machine and died before it was ever ready.
+      plan: plan(),
       image: IMAGE,
     });
 
