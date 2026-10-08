@@ -55,7 +55,10 @@ describe('Phase 7 — classifying real fixture failures', () => {
 
     expect(result.failure?.code).toBe(FailureCode.DATABASE_REQUIRED);
     expect(result.failure?.evidence).toMatch(/5432/);
-    expect(result.failure?.remedy).toMatch(/does not provision/i);
+    // Was "V1 does not provision one" — wrong advice once DevLaunch started databases
+    // itself; it now says what DevLaunch provides and what to check.
+    expect(result.failure?.remedy).toMatch(/DevLaunch starts Postgres/);
+    expect(result.failure?.remedy).not.toMatch(/does not provision/i);
   }, 180_000);
 
   it('identifies a missing module, naming it', async () => {
