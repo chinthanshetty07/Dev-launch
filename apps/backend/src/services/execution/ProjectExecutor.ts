@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { toPublic } from '../../config/Codespaces.js';
+import { codespace, toPublic } from '../../config/Codespaces.js';
 import type Dockerode from 'dockerode';
 import {
   ExecutionState,
@@ -331,7 +331,13 @@ export class ProjectExecutor {
         callsRelativeApi: await callsRelativeApi(join(opts.sourceDir, web.workingDirectory ?? '.')).catch(() => false),
       });
       if (routing) {
-        run.gateway = await startGateway({ routes: routing.routes, fallback: routing.web, targets: urls });
+        run.gateway = await startGateway({
+          routes: routing.routes,
+          fallback: routing.web,
+          targets: urls,
+          // In a codespace, on a declared port, so the person's browser can reach it.
+          ...(codespace() ? { port: (await choosePort([], taken)).port } : {}),
+        });
         const described = routing.routes
           .map((r) => `${typeof r.match === 'string' ? r.match : r.match.source} → ${r.to}`)
           .join(', ');

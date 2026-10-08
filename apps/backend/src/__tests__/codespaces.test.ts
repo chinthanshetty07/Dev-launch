@@ -73,3 +73,34 @@ describe('the dashboard in a codespace', () => {
     await new Promise<void>((r) => server.close(() => r()));
   });
 });
+
+describe('ports apps are published on in a codespace', () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    for (const k of Object.keys(CS)) delete process.env[k];
+    Object.assign(process.env, saved);
+  });
+
+  it('are the ports the codespace setup declares, so GitHub forwards every one', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { CODESPACE_APP_PORTS } = await import('../config/Codespaces.js');
+    const raw = readFileSync(fileURLToPath(new URL('../../../../.devcontainer/devcontainer.json', import.meta.url)), 'utf8');
+    const declared = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, '')).forwardPorts as number[];
+    for (const port of CODESPACE_APP_PORTS) expect(declared, `port ${port}`).toContain(port);
+  });
+
+  it('are where a run is published in a codespace, and Docker chooses outside one', async () => {
+    const { choosePort } = await import('../services/ports/HostPorts.js');
+    const { CODESPACE_APP_PORTS } = await import('../config/Codespaces.js');
+    Object.assign(process.env, CS);
+    const taken = new Set<number>();
+    const first = await choosePort([3000], taken);
+    const second = await choosePort([8000], taken);
+    expect(CODESPACE_APP_PORTS).toContain(first.port);
+    expect(CODESPACE_APP_PORTS).toContain(second.port);
+    expect(second.port).not.toBe(first.port);
+    for (const k of Object.keys(CS)) delete process.env[k];
+    expect(CODESPACE_APP_PORTS).not.toContain((await choosePort([], new Set())).port);
+  });
+});

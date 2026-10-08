@@ -42,6 +42,14 @@ export function toLocal(url: string, cs: CodespaceEnv | null = codespace()): str
   return url.replace(host, (_m, port: string) => `http://localhost:${port}`);
 }
 
+/**
+ * The ports apps are published on in a codespace. Declared in `.devcontainer/devcontainer.json`
+ * (`forwardPorts`), so GitHub forwards them whether or not an editor is open: a port it only
+ * *notices* — Docker's random 32768 — was forwarded only while a browser editor watched, and
+ * the link DevLaunch gave answered 404 otherwise (seen in the first real codespace).
+ */
+export const CODESPACE_APP_PORTS: readonly number[] = Array.from({ length: 20 }, (_, i) => 4100 + i);
+
 /** The name the dashboard is opened by in a codespace, so the host check lets it through. */
 export function dashboardHost(port: number, cs: CodespaceEnv | null = codespace()): string | null {
   return cs ? `${cs.name}-${port}.${cs.domain}` : null;

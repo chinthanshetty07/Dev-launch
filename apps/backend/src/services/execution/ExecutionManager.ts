@@ -1,3 +1,5 @@
+import { codespace } from '../../config/Codespaces.js';
+import { choosePort } from '../ports/HostPorts.js';
 import type Dockerode from 'dockerode';
 import {
   ExecutionState,
@@ -405,6 +407,14 @@ const SIGNALS: Readonly<Record<number, string>> = {
   15: 'SIGTERM',
 };
 
+/**
+ * In a codespace, a port from the declared range for an app Docker would otherwise publish
+ * on a random one (`Codespaces`); outside one, nothing — Docker chooses, as before.
+ */
+async function codespacePort(): Promise<number | undefined> {
+  return codespace() ? (await choosePort([], new Set())).port : undefined;
+}
+
 export class ExecutionManager {
   /** Network the most recent launch used; undefined means the egress policy is absent. */
   lastNetworkUsed: string | undefined;
@@ -512,7 +522,7 @@ export class ExecutionManager {
         }),
         workingDir: workdir,
         exposePort: opts.plan.expectedPort,
-        hostPort: opts.hostPort,
+        hostPort: opts.hostPort ?? (await codespacePort()),
         // Only honoured on the user-defined network, which is also the only place the
         // egress policy applies — so a project that needs name resolution gets the
         // hardened network or neither.
@@ -669,6 +679,7 @@ export class ExecutionManager {
     const ports = plan.expectedPort !== null
       ? [plan.expectedPort, ...spec.ports.filter((p) => p !== plan.expectedPort)]
       : spec.ports;
+    const imageHostPort = opts.hostPort ?? (await codespacePort());
     const container = await this.docker.createImageContainer({
       image: opts.image,
       ...(spec.command ? { command: spec.command } : {}),
@@ -677,7 +688,7 @@ export class ExecutionManager {
       labels: buildLabels(opts.sessionId),
       aliases: networkName ? opts.networkAliases : [],
       ports,
-      ...(opts.hostPort ? { hostPort: opts.hostPort } : {}),
+      ...(imageHostPort ? { hostPort: imageHostPort } : {}),
       dataPaths: spec.dataPaths,
       hostConfig: buildRepoImageHostConfig({ memoryMb: limitMb, networkName }),
     });

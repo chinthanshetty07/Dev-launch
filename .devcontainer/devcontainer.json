@@ -5,7 +5,9 @@
   "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
   "features": {
     // DevLaunch runs each repository in Docker; this is Docker inside the codespace.
-    "ghcr.io/devcontainers/features/docker-in-docker:2": { "moby": true }
+    "ghcr.io/devcontainers/features/docker-in-docker:2": { "moby": true },
+    // So `gh codespace ssh` and `gh codespace logs` work — how a problem here gets read.
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
   // The 2-core machine (8 GB) is enough for one project at a time — DevLaunch's default.
   "hostRequirements": { "cpus": 2, "memory": "8gb" },
@@ -13,9 +15,13 @@
   "onCreateCommand": "bash .devcontainer/setup.sh",
   // Every time it starts: wait for Docker, start DevLaunch in the background.
   "postStartCommand": "bash .devcontainer/start.sh",
-  "forwardPorts": [3939],
+  // The dashboard, and the ports DevLaunch publishes apps on here (CODESPACE_APP_PORTS):
+  // declared, so GitHub forwards them whether or not an editor is open.
+  "forwardPorts": [3939, 4100, 4101, 4102, 4103, 4104, 4105, 4106, 4107, 4108, 4109,
+                   4110, 4111, 4112, 4113, 4114, 4115, 4116, 4117, 4118, 4119],
   "portsAttributes": {
-    "3939": { "label": "DevLaunch dashboard", "onAutoForward": "openBrowser" }
+    "3939": { "label": "DevLaunch dashboard", "onAutoForward": "openBrowser" },
+    "4100-4119": { "label": "App run by DevLaunch", "onAutoForward": "silent" }
   },
   // The ports of the projects DevLaunch runs: forwarded quietly; DevLaunch shows the links.
   "otherPortsAttributes": { "onAutoForward": "silent" },

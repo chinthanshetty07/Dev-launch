@@ -1,3 +1,4 @@
+import { CODESPACE_APP_PORTS, codespace as inCodespace } from '../../config/Codespaces.js';
 import { createServer } from 'node:net';
 
 /**
@@ -84,6 +85,15 @@ export async function choosePort(
   preferences: readonly (number | null | undefined)[],
   taken: Set<number>,
 ): Promise<PortChoice> {
+  // In a codespace, only the declared app ports reach the person's browser (`Codespaces`):
+  // the first free one, whatever the app would have preferred.
+  if (inCodespace()) {
+    for (const port of CODESPACE_APP_PORTS) {
+      if (taken.has(port) || !(await isPortFree(port))) continue;
+      taken.add(port);
+      return { port, substituted: false };
+    }
+  }
   const wanted = preferences.filter((p): p is number => typeof p === 'number' && p > 0);
 
   for (const port of wanted) {

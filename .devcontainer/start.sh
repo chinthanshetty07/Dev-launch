@@ -16,7 +16,9 @@ docker inspect devlaunch-guard >/dev/null 2>&1 || bash scripts/setup-network-pol
 # Already running (a reconnect, not a restart): nothing to do.
 curl -sf http://127.0.0.1:3939/api/health >/dev/null 2>&1 && exit 0
 
-nohup ./devlaunch start > /tmp/devlaunch.log 2>&1 &
+# Its own session (setsid): Codespaces stops what a start command leaves running in the
+# background when the command ends, which a plain `&` does not escape.
+setsid nohup ./devlaunch start > /tmp/devlaunch.log 2>&1 < /dev/null &
 for _ in $(seq 1 120); do
   curl -sf http://127.0.0.1:3939/api/health >/dev/null 2>&1 && { echo "DevLaunch is running. The dashboard opens in your browser."; exit 0; }
   sleep 2
