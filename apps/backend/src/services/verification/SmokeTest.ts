@@ -59,6 +59,10 @@ export interface SmokeBacking {
 export const BACKING_PORTS: Record<string, number> = { postgres: 5432, mysql: 3306, mongodb: 27017, redis: 6379 };
 
 /** One request, short; a server error or no answer at all is a failure. */
+/** How long a service is given to answer, and how long when it is connected but busy. */
+export const QUICK_ANSWER_MS = 5_000;
+export const BUSY_ANSWER_MS = 30_000;
+
 async function answers(url: string): Promise<{ ok: boolean; detail: string }> {
   let u: URL;
   try {
@@ -68,12 +72,19 @@ async function answers(url: string): Promise<{ ok: boolean; detail: string }> {
     return { ok: false, detail: `not a URL: ${url}` };
   }
   if (u.hostname !== 'localhost' && u.hostname !== '127.0.0.1') return { ok: false, detail: `${url} is not on this machine` };
-  const r = await new ReadinessChecker().waitForReady({
-    port: u.port || (u.protocol === 'https:' ? 443 : 80),
-    protocol: u.protocol === 'https:' ? 'https' : 'http',
-    healthCheck: { path: `${u.pathname}${u.search}` || '/', method: 'GET', expectedStatusCodes: [] },
-    timeoutMs: 5000,
-  });
+  const ask = (timeoutMs: number) =>
+    new ReadinessChecker().waitForReady({
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      protocol: u.protocol === 'https:' ? 'https' : 'http',
+      healthCheck: { path: `${u.pathname}${u.search}` || '/', method: 'GET', expectedStatusCodes: [] },
+      timeoutMs,
+    });
+  let r = await ask(QUICK_ANSWER_MS);
+  // Connected, but no answer yet: a dev server mid-build holds every request until the
+  // build is done (`RishiBakshii/mern-ecommerce`: React's first build outlasted 5 s, and a
+  // working page was reported broken; a moment later it answered in 1 s). That is a busy
+  // service, not a dead one, so it is given longer. Nothing listening still fails at once.
+  if (!r.ready && /timeout/i.test(r.lastError ?? '')) r = await ask(BUSY_ANSWER_MS);
   if (!r.ready) return { ok: false, detail: `no answer from ${url} (${r.lastError ?? 'nothing listening'})` };
   if ((r.status ?? 0) >= 500) return { ok: false, detail: `${url} answered ${r.status}${r.body ? `: ${r.body}` : ''}` };
   return { ok: true, detail: `${url} answered ${r.status}` };

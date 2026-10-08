@@ -22,7 +22,15 @@ PARTIALLY_READY with the frontend never installed:
 for that error only. Discovery run on the real repository finds both names and no longer the
 false origin. 6 mutations, all caught. Quick suite: 1,275 passed.
 
-**Not done:** not yet re-run end to end on that project (its run was still open on the dashboard).
+**Re-run end to end** (dashboard on `accfd16`): the frontend's install failed on ERESOLVE,
+was retried with `--legacy-peer-deps` and succeeded; both services started; the check
+"frontend → backend (REACT_APP_BASE_URL)" passed, and the backend reached its MongoDB.
+
+**One more fault it showed:** the final check failed "frontend answers" after 5 s, while
+React was still on its first build (its dev server holds every request until then); a
+moment later the page answered in 1 s. A service that accepts the connection but has not
+answered is now given 30 s more; nothing listening still fails at once. Test with a dev
+server busy for 8 s; 2 mutations caught. Quick suite: 1,276 passed.
 
 ## 2026-10-08 — Old React apps start on new Node, and their API calls reach the API
 

@@ -48,6 +48,25 @@ describe('the end-to-end smoke test', () => {
     expect(v.checks[1]!.detail).toMatch(/no answer/);
   });
 
+  it('waits for a dev server that is busy building, and still fails fast when nothing listens (RishiBakshii/mern-ecommerce)', async () => {
+    // React's dev server holds every request until its first build is done. That build
+    // outlasted the 5 s the check gave it, and a working page was reported broken.
+    const buildDoneAt = Date.now() + 8_000;
+    const s = createServer((_q, r) => {
+      setTimeout(() => r.end('<html>shop</html>'), Math.max(0, buildDoneAt - Date.now()));
+    });
+    servers.push(s);
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', r));
+    const busy = `http://localhost:${(s.address() as AddressInfo).port}/`;
+    const v = await runSmokeTest({ services: [{ name: 'frontend', url: busy, runtime: 'node', environment: [] }], backing: [] });
+    expect(v.checks[0], v.checks[0]?.detail).toMatchObject({ name: 'frontend answers', passed: true });
+
+    const started = Date.now();
+    const dead = await runSmokeTest({ services: [{ name: 'api', url: `${await deadUrl()}/`, runtime: 'node', environment: [] }], backing: [] });
+    expect(dead.passed).toBe(false);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 60_000);
+
   it('checks the API address a frontend was given, from this machine and from inside it', async () => {
     const api = await serving(200);
     const inside: string[][] = [];
