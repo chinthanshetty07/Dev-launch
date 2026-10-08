@@ -47,6 +47,7 @@
     background: transparent; color: var(--link); font: 600 14px var(--sans);
   }
   button:hover { background: color-mix(in srgb, var(--link) 12%, transparent); }
+  button.secondary { border-color: var(--edge); color: var(--fg); font-weight: 500; }
   .hint { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
   .error { font-size: 13px; color: var(--bad); margin: 10px 0 0; }
   pre { position: relative; margin: 0; padding: 14px 16px; overflow-x: auto; white-space: pre; }
@@ -80,13 +81,20 @@
         <label for="repo" class="muted" style="position:absolute;left:-9999px">GitHub repository URL</label>
         <input id="repo" name="repo" type="url" placeholder="https://github.com/owner/repo"
                autocomplete="off" spellcheck="false" required>
-        <button type="submit">Run on my computer</button>
+        <button type="button" id="cloud">Run in the cloud — nothing to install</button>
+        <button type="submit" class="secondary">Run on my computer</button>
       </div>
       <p id="err" class="error" hidden>That is not a GitHub repository URL. It should look like <code>https://github.com/owner/repo</code>.</p>
+      <p id="cloud-steps" class="hint" hidden>
+        Your link is copied. In the GitHub tab that opened, click <b>Create codespace</b>
+        (needs a free GitHub account). When the DevLaunch dashboard opens — about a minute —
+        press <b>Ctrl+V</b> (⌘V on a Mac) and <b>Run it</b>.
+      </p>
       <p class="hint">
-        This opens DevLaunch on your computer with the repository filled in. Nothing runs
-        until you press <b>Run it</b> there. Not installed yet? See below. Installed but
-        nothing opens? Start it: <code>cd ~/devlaunch &amp;&amp; ./devlaunch start</code>
+        <b>In the cloud:</b> runs in your own free GitHub Codespace — nothing installed on
+        your computer, about 60 free hours a month.
+        <b>On my computer:</b> opens DevLaunch on your computer with the repository filled in
+        (install it once — see below). Either way, nothing runs until you press <b>Run it</b>.
       </p>
     </form>
   </section>
@@ -139,6 +147,19 @@
     input.value = value;
   });
   input.addEventListener('input', () => { err.hidden = true; input.removeAttribute('aria-invalid'); });
+
+  // In the cloud: a GitHub Codespace of DevLaunch, created or reused (quickstart). GitHub's
+  // link cannot carry the repository, so it is copied, ready to paste in the dashboard.
+  const CODESPACE = 'https://codespaces.new/chinthanshetty07/Dev-launch?quickstart=1';
+  document.getElementById('cloud').addEventListener('click', async () => {
+    const value = input.value.trim();
+    const ok = value === '' || GITHUB_REPO.test(value);
+    err.hidden = ok;
+    if (!ok) return;
+    if (value) { try { await navigator.clipboard.writeText(value); } catch {} }
+    document.getElementById('cloud-steps').hidden = false;
+    window.open(CODESPACE, '_blank', 'noopener');
+  });
 
   // A copy button on the install command.
   const pre = document.getElementById('install-cmd');

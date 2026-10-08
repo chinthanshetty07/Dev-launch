@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { codespace, dashboardHost, toPublic } from '../config/Codespaces.js';
 import { readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { allowedHosts, configuredHosts, hostGuard } from '../services/security/HostGuard.js';
@@ -151,11 +152,26 @@ function present(session: Session, sessions?: Pick<SessionManager, 'installSumma
   };
 }
 
+/** The name the dashboard is opened by in a codespace, when DevLaunch runs in one. */
+function codespaceHosts(): string[] {
+  const host = dashboardHost(Number(process.env.PORT ?? 3939));
+  return host ? [host] : [];
+}
+
 export function createApp(opts: AppOptions): Express {
   const app = express();
   // First, before anything reads the request: see `HostGuard` (audit A-10).
-  app.use(hostGuard(allowedHosts(opts.allowedHosts ?? configuredHosts())));
+  app.use(hostGuard(allowedHosts([...(opts.allowedHosts ?? configuredHosts()), ...codespaceHosts()])));
   app.use(express.json({ limit: '64kb' }));
+  // In a codespace, every address in an answer is the one the person's browser can open
+  // (`Codespaces`); outside one this is the identity and is not installed.
+  if (codespace()) {
+    app.use((_req, res, next) => {
+      const json = res.json.bind(res);
+      res.json = (body: unknown) => json(body === undefined ? body : JSON.parse(toPublic(JSON.stringify(body))));
+      next();
+    });
+  }
 
   // Prefer the built frontend; fall back to the plain harness page when it has not
   // been built, so the backend is never left serving nothing.

@@ -14,6 +14,19 @@ compose file, README and source. Known shapes are planned by rules; a model is c
 when no rule matches, and its plan is checked like any other. What it supports, measured on 40
 real repositories, is in [docs/SUPPORTED_STACKS.md](docs/SUPPORTED_STACKS.md).
 
+## Run it in the cloud — nothing to install
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/chinthanshetty07/Dev-launch?quickstart=1)
+
+Click the button (a free GitHub account is all you need). GitHub starts a codespace with
+DevLaunch and Docker already set up, and the DevLaunch dashboard opens in your browser. Paste a
+repository and press **Run it**; the project runs in your codespace, and DevLaunch gives you its
+link. Free accounts get about 60 hours a month; stop the codespace when you are done.
+
+**For the maintainer — make it start in seconds:** in this repository on GitHub, *Settings →
+Codespaces → Set up prebuild* for `main`. GitHub then builds DevLaunch's images in advance, so a
+new codespace skips the ~10 minute first setup.
+
 ## Install
 
 On a Mac or Linux computer (on Windows: inside WSL2), open a terminal and run:

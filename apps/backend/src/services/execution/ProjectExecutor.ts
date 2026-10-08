@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { toPublic } from '../../config/Codespaces.js';
 import type Dockerode from 'dockerode';
 import {
   ExecutionState,
@@ -422,7 +423,8 @@ export class ProjectExecutor {
       // MONGO_URI is a decision, and overwriting it would be DevLaunch overruling it.
       const declared = new Set(base.environmentVariables.filter((v) => v.value !== null).map((v) => v.key));
       const wired = wireService(base, ordered, {
-        urls,
+        // What a page's browser reads: in a codespace, the forwarded addresses.
+        urls: Object.fromEntries(Object.entries(urls).map(([name, url]) => [name, toPublic(url)])),
         internalUrls,
         envKeys: opts.discovery?.envKeys ?? {},
       });

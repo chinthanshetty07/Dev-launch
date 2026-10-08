@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-08 — Run it in the cloud, nothing to install (GitHub Codespaces)
+
+Paste a link, get a running project, with nothing installed on the person's computer: a
+codespace of DevLaunch (`.devcontainer/`) — Docker inside, DevLaunch installed on creation,
+started on every start, its dashboard opened in the browser by itself, a welcome note, and
+the doctor's report when something fails. Each person uses their own free GitHub hours; no
+server or cost on the maintainer's side, and no strangers' code on the maintainer's accounts.
+
+Inside a codespace a `localhost` link opens nothing on the person's computer, so DevLaunch
+translates at its edges (`config/Codespaces.ts`): every address in the API, the live log and
+the values handed to frontends becomes the codespace's forwarded one; its own checks turn
+them back and keep using `localhost`; the dashboard's host check accepts its codespace name.
+The website's **Run in the cloud** copies the pasted link (GitHub's link cannot carry it) and
+opens the person's codespace, reusing one they have.
+
+**Evidence:** the dev container built from scratch here (Docker-in-Docker, all four runner
+images, the guard — on the legacy iptables, which it chose itself), the doctor "Ready",
+DevLaunch started, an app READY inside with its check passed and egress "enforced".
+Translation and host tests; 3 mutations caught. **Not yet tested:** a real GitHub codespace.
+
 ## 2026-10-08 — AI help for everyone, without sharing a key
 
 AI help needed a Groq key in each person's `.env`. Shipping the maintainer's key inside the

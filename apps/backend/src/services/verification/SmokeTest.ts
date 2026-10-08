@@ -1,3 +1,4 @@
+import { toLocal } from '../../config/Codespaces.js';
 import { ReadinessChecker } from '../readiness/ReadinessChecker.js';
 
 /**
@@ -61,7 +62,8 @@ export const BACKING_PORTS: Record<string, number> = { postgres: 5432, mysql: 33
 async function answers(url: string): Promise<{ ok: boolean; detail: string }> {
   let u: URL;
   try {
-    u = new URL(url);
+    // A forwarded codespace address is a port on this machine; checked here directly.
+    u = new URL(toLocal(url));
   } catch {
     return { ok: false, detail: `not a URL: ${url}` };
   }

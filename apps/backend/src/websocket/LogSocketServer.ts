@@ -1,4 +1,5 @@
 import type { Server as HttpServer } from 'node:http';
+import { dashboardHost, toPublic } from '../config/Codespaces.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   TERMINAL_STATES,
@@ -13,7 +14,8 @@ import type { LogEntry } from '../services/logs/LogBuffer.js';
 const PATH_PATTERN = /^\/ws\/sessions\/([^/]+)\/logs$/;
 
 function send(socket: WebSocket, message: ServerMessage): void {
-  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  // In a codespace, the addresses in the log are the ones the person's browser can open.
+  if (socket.readyState === WebSocket.OPEN) socket.send(toPublic(JSON.stringify(message)));
 }
 
 const toWire = (e: LogEntry): WireLogEntry => ({
@@ -40,7 +42,8 @@ export class LogSocketServer {
   ) {}
 
   attach(server: HttpServer): void {
-    const allowed = allowedHosts(this.extraHosts ?? configuredHosts());
+    const dashboard = dashboardHost(Number(process.env.PORT ?? 3939));
+    const allowed = allowedHosts([...(this.extraHosts ?? configuredHosts()), ...(dashboard ? [dashboard] : [])]);
     server.on('upgrade', (req, socket, head) => {
       // The same check as the HTTP API's (audit A-10): a rebound page could otherwise
       // stream any session's output.

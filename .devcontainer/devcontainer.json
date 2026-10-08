@@ -1,0 +1,25 @@
+// DevLaunch in a GitHub Codespace: open it, and the dashboard opens in your browser with
+// everything installed. Paste a GitHub repository there and it runs here, in the codespace.
+{
+  "name": "DevLaunch",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "features": {
+    // DevLaunch runs each repository in Docker; this is Docker inside the codespace.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": { "moby": true }
+  },
+  // The 2-core machine (8 GB) is enough for one project at a time — DevLaunch's default.
+  "hostRequirements": { "cpus": 2, "memory": "8gb" },
+  // Once, when the codespace is created (or prebuilt): packages, runner images, the guard.
+  "onCreateCommand": "bash .devcontainer/setup.sh",
+  // Every time it starts: wait for Docker, start DevLaunch in the background.
+  "postStartCommand": "bash .devcontainer/start.sh",
+  "forwardPorts": [3939],
+  "portsAttributes": {
+    "3939": { "label": "DevLaunch dashboard", "onAutoForward": "openBrowser" }
+  },
+  // The ports of the projects DevLaunch runs: forwarded quietly; DevLaunch shows the links.
+  "otherPortsAttributes": { "onAutoForward": "silent" },
+  "customizations": {
+    "codespaces": { "openFiles": [".devcontainer/WELCOME.md"] }
+  }
+}
