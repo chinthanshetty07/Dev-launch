@@ -119,7 +119,18 @@ function apiTargets(services: SmokeService[], self: SmokeService) {
   return out;
 }
 
-export async function runSmokeTest(input: { services: SmokeService[]; backing: SmokeBacking[] }): Promise<Verification> {
+/** A path a route sends on: its prefix, or for a pattern the first of a few usual ones it matches. */
+export function samplePath(match: string | RegExp): string | undefined {
+  if (typeof match === 'string') return `${match.replace(/\/+$/, '')}/`;
+  return ['/api/', '/api', '/admin/', '/graphql', '/ws/'].find((p) => match.test(p));
+}
+
+export async function runSmokeTest(input: {
+  services: SmokeService[];
+  backing: SmokeBacking[];
+  /** The one address DevLaunch serves the frontend and its API paths at (`Gateway`). */
+  gateway?: { url: string; routes: { match: string | RegExp; to: string }[] };
+}): Promise<Verification> {
   const startedAt = Date.now();
   const checks: SmokeCheck[] = [];
 
@@ -127,6 +138,20 @@ export async function runSmokeTest(input: { services: SmokeService[]; backing: S
     if (!s.url) continue;
     const r = await answers(s.url);
     checks.push({ name: `${s.name} answers`, kind: 'http', service: s.name, target: s.url, passed: r.ok, detail: r.detail });
+  }
+
+  // The address a person is given, and the API paths through it, as the page will call them.
+  if (input.gateway) {
+    const g = input.gateway;
+    const page = await answers(g.url);
+    checks.push({ name: 'the project address answers', kind: 'http', target: g.url, passed: page.ok, detail: page.detail });
+    for (const to of [...new Set(g.routes.map((r) => r.to))]) {
+      const path = g.routes.filter((r) => r.to === to).map((r) => samplePath(r.match)).find(Boolean);
+      if (!path) continue;
+      const target = new URL(path, g.url).toString();
+      const r = await answers(target);
+      checks.push({ name: `${to} through the project address (${path})`, kind: 'wiring', service: to, target, passed: r.ok, detail: r.detail });
+    }
   }
 
   // What the frontend was told about its API, checked the way it will be used.

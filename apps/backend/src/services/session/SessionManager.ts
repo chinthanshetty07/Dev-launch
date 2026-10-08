@@ -1127,7 +1127,7 @@ export class SessionManager extends EventEmitter {
    */
   private servingUrl(session: Session, serving: readonly ProjectRun['services'][number][]): string | undefined {
     const entry = session.run?.entry();
-    if (entry && serving.includes(entry) && entry.url) return entry.url;
+    if (entry && serving.includes(entry) && entry.url) return entryUrl(session.run!, entry);
     return serving.find((sv) => sv.url)?.url;
   }
 
@@ -2161,7 +2161,7 @@ export class SessionManager extends EventEmitter {
 
       // Some still run: the project is partly running, and says which part is not.
       const entry = run.entry();
-      session.url = entry && entry.state === ExecutionState.READY ? entry.url : alive.find((sv) => sv.url)?.url;
+      session.url = entry && entry.state === ExecutionState.READY ? entryUrl(run, entry) : alive.find((sv) => sv.url)?.url;
       if (stopped.failure) {
         session.failure = { ...stopped.failure, message: `${stopped.name}: ${stopped.failure.message}` };
       }
@@ -2863,7 +2863,12 @@ export class SessionManager extends EventEmitter {
     const backing = (session.run?.backing ?? session.backing?.runs ?? []).filter((b) => b.ready).map((b) => ({ kind: b.kind, alias: b.alias }));
 
     this.event(session, { event: 'SMOKE_TEST_STARTED', severity: 'info', phase: 'verify' });
-    const verification = await runSmokeTest({ services, backing });
+    const gateway = session.run?.gateway;
+    const verification = await runSmokeTest({
+      services,
+      backing,
+      ...(gateway ? { gateway: { url: gateway.url, routes: gateway.routes } } : {}),
+    });
     session.verification = verification;
     for (const c of verification.checks) {
       this.event(session, {
@@ -3112,6 +3117,15 @@ function discoveryByService(
     if (found.devProxy) devProxies[plan.name] = found.devProxy;
   }
   return { callsOrigins, acceptsOrigins, envKeys, devProxies };
+}
+
+/**
+ * The address to give for a project's entry service: its gateway's, when DevLaunch serves
+ * the frontend and its API paths together (`Gateway`), so the page's `/api` calls work;
+ * otherwise the service's own.
+ */
+function entryUrl(run: ProjectRun, entry: ProjectRun['services'][number]): string | undefined {
+  return run.gateway && entry.role === 'web' ? run.gateway.url : entry.url;
 }
 
 /** The repository's own name, for naming its database after it rather than after nothing. */

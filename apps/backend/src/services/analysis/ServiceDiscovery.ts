@@ -581,6 +581,21 @@ export async function selfSigningReads(base: string): Promise<Set<string>> {
   return keys;
 }
 
+/**
+ * Whether a frontend's source calls its API by a path on its own address — `"/api"`,
+ * `fetch('/api/items')`, `axios.create({ baseURL: '/api' })` — which only works when
+ * something in front (nginx, a dev-server proxy) sends that path to the backend. See
+ * `Gateway`.
+ */
+export async function callsRelativeApi(base: string): Promise<boolean> {
+  for (const file of await collectSourceFiles(base, 200, true)) {
+    if (!/\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(file)) continue;
+    const raw = await readCapped(file);
+    if (raw !== null && /["'`]\/api(?:\/|["'`])/.test(raw)) return true;
+  }
+  return false;
+}
+
 /** Match a backing service to the variable a repository actually reads it from. */
 export function backingFromEnvKeys(keys: string[]): Omit<BackingService, 'neededBy'>[] {
   const out: Omit<BackingService, 'neededBy'>[] = [];

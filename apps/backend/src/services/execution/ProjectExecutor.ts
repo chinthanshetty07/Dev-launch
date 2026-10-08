@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type Dockerode from 'dockerode';
 import {
   ExecutionState,
@@ -13,6 +14,8 @@ import { config } from '../../config/index.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { BackingProvisioner, type BackingRun } from './BackingProvisioner.js';
 import { sessionNetwork } from './RunNetworks.js';
+import { planGateway, readNginxRoutes, startGateway, type Gateway } from './Gateway.js';
+import { callsRelativeApi } from '../analysis/ServiceDiscovery.js';
 import {
   browserWiringProblems,
   preferredApiHostPort,
@@ -102,6 +105,12 @@ export interface ProjectRun {
    * could not have them. See `browserWiringProblems`.
    */
   browserProblems?: BrowserWiringProblem[];
+  /**
+   * One address for the frontend and the API paths behind it, standing in for the
+   * project's own reverse proxy (`Gateway`). When present, it is the address a person is
+   * given.
+   */
+  gateway?: Gateway;
   /** The service a person is given the URL of: the web front door, or the only one. */
   entry(): ServiceRun | undefined;
   cleanup(): Promise<{ errors: Error[] }>;
@@ -218,6 +227,8 @@ export class ProjectExecutor {
       entry: () => services.find((s) => s.role === 'web') ?? services[0],
       cleanup: async () => {
         const errors: Error[] = [];
+        await run.gateway?.close().catch(() => undefined);
+        run.gateway = undefined;
         // Every container is released even if an earlier one refuses: a half-cleaned
         // project leaves containers running with nothing tracking them.
         for (const service of services) {
@@ -304,6 +315,29 @@ export class ProjectExecutor {
           'stderr',
           `Port ${choice.preferred} is in use on this machine, so ${plan.name} is published ` +
             `on ${choice.port} instead. A hardcoded reference to ${choice.preferred} will not reach it.`,
+        );
+      }
+    }
+
+    // The project's own reverse proxy, done by DevLaunch: a frontend that calls `/api` on
+    // its own address, as it would behind the project's nginx (`Gateway`). Not when the
+    // frontend's dev server already proxies those paths itself.
+    const web = ordered.find((p) => p.role === 'web');
+    if (web && urls[web.name] && !opts.discovery?.devProxies?.[web.name]) {
+      const routing = planGateway({
+        services: ordered.map((p) => ({ name: p.name, role: p.role, port: p.expectedPort, dir: p.workingDirectory })),
+        nginx: await readNginxRoutes(opts.sourceDir).catch(() => []),
+        callsRelativeApi: await callsRelativeApi(join(opts.sourceDir, web.workingDirectory ?? '.')).catch(() => false),
+      });
+      if (routing) {
+        run.gateway = await startGateway({ routes: routing.routes, fallback: routing.web, targets: urls });
+        const described = routing.routes
+          .map((r) => `${typeof r.match === 'string' ? r.match : r.match.source} → ${r.to}`)
+          .join(', ');
+        opts.logs.write(
+          'stdout',
+          `${web.name} calls its API through its own address, as it would behind the project's ` +
+            `own reverse proxy. Serving both at ${run.gateway.url} (${described}; everything else → ${web.name}).`,
         );
       }
     }
@@ -661,7 +695,10 @@ export class ProjectExecutor {
     }
 
     void outcomes;
-    return { state: ExecutionState.READY, url: run.entry()?.url };
+    // The gateway's address when there is one: it is the one at which the page's own
+    // `/api` calls work (`Gateway`).
+    const entry = run.entry();
+    return { state: ExecutionState.READY, url: run.gateway && entry?.role === 'web' ? run.gateway.url : entry?.url };
   }
 }
 

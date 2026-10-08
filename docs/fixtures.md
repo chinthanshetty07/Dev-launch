@@ -46,6 +46,7 @@ They are deliberately not in the automated suite.
 | `node-missing-env` | `MISSING_ENV`, with the variable named in the evidence |
 | `node-needs-database` | `DATABASE_REQUIRED` from a refused connection on :5432 |
 | `node-module-missing` | `START_COMMAND_FAILED`, naming the missing module |
+| `project-behind-nginx` | A frontend that calls `/api` only on its own address, a backend, and the nginx that joins them. DevLaunch must serve both at one address (`Gateway`) |
 | `node-dies-after-ready` | `APPLICATION_EXITED` — serves a real request, then exits 3, three seconds after its first request. The one failure readiness alone cannot see |
 | `python-slow-install` | An install that outlasts the readiness budget, then a normal start. Readiness must wait for the application, not the container |
 | `node-bad-manifest` | `package.json` with a trailing comma: `INVALID_MANIFEST` before anything starts, with the parser's words; no model asked |

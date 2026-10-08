@@ -123,3 +123,27 @@ services:
     expect(summarise('version: "3"')).toBeNull();
   });
 });
+
+describe('a reverse proxy in front', () => {
+  // `jamall-mahmoudi-dev/django-react-production-stack`, as its compose file has it: nginx
+  // depends on the React app it serves, which made the React app look like something other
+  // services call — an API — and its page was never treated as the page.
+  const BEHIND_NGINX = `
+services:
+  django:
+    build: ./backend
+    ports: ["8000:8000"]
+  react:
+    build: ./frontend
+    ports: ["3000:3000"]
+  nginx:
+    build: ./nginx
+    ports: ["8080:80"]
+    depends_on: [django, react]
+`;
+  it('does not make the services it fronts look like APIs', () => {
+    const c = summarise(BEHIND_NGINX)!;
+    expect(c.services.find((s) => s.name === 'react')!.role).toBe('web');
+    expect(c.services.find((s) => s.name === 'django')!.role).toBe('api');
+  });
+});

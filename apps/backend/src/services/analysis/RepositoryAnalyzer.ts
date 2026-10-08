@@ -939,7 +939,12 @@ function composeOverlay(
       // The author's name for the service, which is what their own documentation and
       // their sibling services refer to it by.
       name: declared.name,
-      role: declared.role,
+      // Compose says nothing about roles, so its role is a guess (`assignRoles`); a role
+      // read from the service's own dependencies is evidence, and evidence wins. The guess
+      // overruled it: `jamall-mahmoudi-dev/django-react-production-stack`'s React app is
+      // depended on by its nginx, so compose called it an API, and the page was never
+      // treated as the page.
+      role: candidate.evidence?.startsWith('depends on') ? candidate.role : declared.role,
       // A compose port below 1024 describes the *production* image — nginx on 80 in
       // front of a built bundle — not the dev server DevLaunch runs, and our non-root
       // runtime could not bind it anyway. Adopting it hands vite `--port 80` and a

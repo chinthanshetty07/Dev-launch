@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-10-08 — One address for a frontend and the API behind its nginx
+
+`jamall-mahmoudi-dev/django-react-production-stack` reached READY, and its Save button did
+nothing: the page posts to `/api/create_post/` on its own address, written for life behind
+the project's nginx, which sends `/api`, `/admin` and `/ws` to Django. DevLaunch runs the
+frontend and the backend without that nginx, so the call reached the React dev server and
+answered "Cannot POST". The end-to-end check passed because it only asked each service
+whether it answered.
+
+Now DevLaunch does the nginx's job (`Gateway`). It reads the project's nginx `location`
+blocks — each target matched to a service by port or name — or, with no nginx but a page that
+calls `/api` on its own address, uses that one rule; and serves the frontend and those paths
+at one address on this machine, websockets included. That address is the one a person is
+given; the services' own addresses are still listed. The repository is not changed. The
+end-to-end check now also asks the address and an API path through it.
+
+**Found on the way:** the React app was planned as an *API*. The project's compose file has
+nginx depend on it, and compose's role guess read "something depends on it" as "it is called
+over HTTP" — and overruled discovery's "depends on react". Now a role read from a service's own
+dependencies wins over compose's guess, and a reverse proxy's `depends_on` no longer counts.
+
+**Evidence:** a fixture of that shape (`project-behind-nginx`) on real Docker: one address,
+the page there, a POST with its body reaching the backend through it, the same POST at the
+frontend's own address still 404, the address gone after stopping (breaking the address line
+fails the test). Router tests on real sockets (routing, POST bodies, websockets, closing open
+connections, a dead service answering 502) and role tests; 7 mutations caught.
+
 ## 2026-10-08 — A self-signing secret the code reads gets a value, however it is read
 
 `jamall-mahmoudi-dev/django-react-production-stack` reads `SECRET_KEY =

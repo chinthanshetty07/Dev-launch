@@ -137,7 +137,13 @@ export function summarise(raw: string): ComposeSummary | null {
  * browser-ish host port, depended on by nothing, is the front door.
  */
 function assignRoles(services: ComposeService[]): ComposeService[] {
-  const dependedOn = new Set(services.flatMap((s) => s.dependsOn));
+  // A reverse proxy in front (nginx, Traefik, Caddy) depends on the very services it
+  // fronts — the page above all — so its dependencies say nothing about who is an API.
+  const isProxy = (s: ComposeService) =>
+    /(?:^|\/)(?:nginx|traefik|caddy|haproxy|envoy)(?::|$)/i.test(s.image ?? '') ||
+    /^(?:nginx|proxy|traefik|caddy|gateway)$/i.test(s.name) ||
+    /(?:^|\/)(?:nginx|proxy)$/i.test(s.dir ?? '');
+  const dependedOn = new Set(services.filter((s) => !isProxy(s)).flatMap((s) => s.dependsOn));
   return services.map((s) => {
     const webName = /^(frontend|web|ui|client|app)$/i.test(s.name);
     const webPort = s.containerPort === 80 || s.containerPort === 3000 || s.containerPort === 5173;
