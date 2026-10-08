@@ -32,6 +32,7 @@ import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
 import type { ProjectPlanner } from '../planning/ProjectPlanner.js';
 import { join } from 'node:path';
+import { missingSettingsFromCrash } from '../failures/MissingSettings.js';
 import { requiredEnvReads, selfSigningReads } from '../analysis/ServiceDiscovery.js';
 import {
   applyConfiguration,
@@ -78,12 +79,45 @@ import {
  * a model call to arrive at the same answer.
  */
 
+/**
+ * Values asked for after a crash, set on the service that stopped (`askForCrashSettings`).
+ * Blank answers are left out: a person going without a setting has not set it to ''.
+ */
+export function withCrashAnswers(
+  project: ProjectPlan,
+  pending: PendingInput | undefined,
+  env: Record<string, string>,
+): ProjectPlan {
+  if (!pending?.crash) return project;
+  const answers = pending.requiredEnv.filter((v) => v.service && (env[v.key] ?? '') !== '');
+  if (answers.length === 0) return project;
+  return {
+    ...project,
+    services: project.services.map((service) => {
+      const mine = answers.filter((v) => v.service === service.name);
+      if (mine.length === 0) return service;
+      return {
+        ...service,
+        environmentVariables: [
+          ...service.environmentVariables.filter((v) => !mine.some((m) => m.key === v.key)),
+          ...mine.map((m) => ({ key: m.key, value: env[m.key]!, required: true })),
+        ],
+      };
+    }),
+  };
+}
+
 /** What a session is blocked on while in AWAITING_INPUT. */
 export interface PendingInput {
   /** Variables declared without a default in .env.example. */
   requiredEnv: RequiredEnvVar[];
   /** Runnable packages, when a monorepo offers more than one. */
   choices?: WorkspacePackage[];
+  /**
+   * Set when the question comes from a crash rather than from `.env.example`: where the
+   * project stopped, and the error it printed (`missingSettingsFromCrash`).
+   */
+  crash?: { file: string; line: number; error: string };
 }
 
 export interface Session {
@@ -95,6 +129,8 @@ export interface Session {
   events?: DeploymentEvent[];
   /** When the current state began, for each state's duration. */
   stateSince?: number;
+  /** Settings already asked for after a crash, so the same question is not asked twice. */
+  askedSettings?: string[];
   /** How many of `repairs` already appear in `events`. */
   repairsRecorded?: number;
   /** The end-to-end check run before READY was declared (`SmokeTest`). */
@@ -835,6 +871,14 @@ export class SessionManager extends EventEmitter {
   }
 
   private async continueAfterInput(session: Session, input: ResolveInput): Promise<void> {
+    if (session.pending?.crash) {
+      // A fresh start, not the end of the old one: the time spent waiting on a person is
+      // not start-up time, and the diagnosis that led here has been answered.
+      const bound = this.startupBounds.get(session.id);
+      if (bound) clearTimeout(bound);
+      this.armStartupBound(session);
+      session.failure = undefined;
+    }
     try {
       if (input.workspaceDir && session.sourceDir) {
         // The user picked a package; plan that directory specifically.
@@ -852,6 +896,9 @@ export class SessionManager extends EventEmitter {
             session.metadata?.services ?? [],
             input.env,
           );
+          // Asked after a crash: the service that stopped reads these, whether or not its
+          // scanned settings list them, so they go to it by name.
+          session.project = withCrashAnswers(session.project, session.pending, input.env);
         }
         session.pending = undefined;
         await this.startProject(session, session.sourceDir, {});
@@ -1081,6 +1128,21 @@ export class SessionManager extends EventEmitter {
     if (progressedPast(session.failure, latest)) session.failure = latest;
     const original = (session.failure ??= latest);
 
+    if (
+      failing &&
+      (await this.askForCrashSettings(session, failing.failure ?? outcome.failure, failing.plan, sourceDir, {
+        logs: failing.logs.buffer.all().map((l) => l.text).join('\n'),
+        service: failing.name,
+        // The whole project starts again with the answer, as it does after the gate
+        // before a run: its siblings were told about each other at launch.
+        stop: async () => {
+          await session.run?.cleanup();
+          session.run = undefined;
+        },
+      }))
+    ) {
+      return;
+    }
     if (await this.tryRepairService(session, executor, sourceDir, req)) return;
 
     const attempts = session.repairAttempts?.length ?? 0;
@@ -1461,6 +1523,17 @@ export class SessionManager extends EventEmitter {
     if (progressedPast(session.failure, latest)) session.failure = latest;
     const original = (session.failure ??= latest);
 
+    if (
+      await this.askForCrashSettings(session, outcome.failure, resolved, sourceDir, {
+        logs: session.logs.buffer.all().map((l) => l.text).join('\n'),
+        stop: async () => {
+          await session.handle?.cleanup();
+          session.handle = undefined;
+        },
+      })
+    ) {
+      return;
+    }
     if (await this.tryRepair(session, outcome.failure, sourceDir, req)) return;
 
     if (session.repairAttempts?.length && outcome.failure?.code !== original?.code) {
@@ -1885,6 +1958,65 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+
+  /**
+   * A start that crashed on a setting nobody gave it: ask for that setting, and start again
+   * with it (`missingSettingsFromCrash`). Asked once per setting: a crash on the same names
+   * after the person answered — or chose to go without — is reported as it is.
+   */
+  private async askForCrashSettings(
+    session: Session,
+    failure: FailureDetail | undefined,
+    ran: RunPlan,
+    sourceDir: string,
+    how: { logs: string; service?: string; stop: () => Promise<void> },
+  ): Promise<boolean> {
+    if (!failure || failure.phase === 'install' || failure.code === FailureCode.OUT_OF_MEMORY) return false;
+    const given = new Set([
+      'PORT', 'HOST', 'NODE_ENV',
+      ...ran.environmentVariables.filter((v) => v.value !== null && v.value !== '').map((v) => v.key),
+    ]);
+    const asked = new Set(session.askedSettings ?? []);
+    const found = await missingSettingsFromCrash({
+      logs: how.logs,
+      dirs: [...new Set([join(sourceDir, ran.workingDirectory ?? '.'), sourceDir])],
+      isSet: (key) => given.has(key) || asked.has(key),
+    });
+    if (!found) return false;
+
+    session.askedSettings = [...asked, ...found.keys];
+    session.failure = {
+      code: FailureCode.MISSING_ENV,
+      message: `The application stopped because ${found.keys.join(' and ')} ${found.keys.length === 1 ? 'is' : 'are'} not set.`,
+      evidence: found.error || failure.evidence,
+      remedy:
+        `${found.file} line ${found.line} reads ${found.keys.join(', ')}, and nothing set ` +
+        `${found.keys.length === 1 ? 'it' : 'them'}. Enter the value${found.keys.length === 1 ? '' : 's'} ` +
+        'to start again with them.',
+      confidence: 'high',
+      phase: 'start',
+    };
+    session.logs.buffer.push(
+      'stderr',
+      `${how.service ? `${how.service}: s` : 'S'}topped at ${found.file} line ${found.line}, which reads ` +
+        `${found.keys.join(', ')}: not set for this run. Asking for them, then starting again.`,
+    );
+    try {
+      await how.stop();
+    } catch {
+      /* a container that will not go away must not stop the question being asked */
+    }
+    this.awaitInput(session, {
+      requiredEnv: found.keys.map((key) => ({
+        key,
+        hasDefault: false,
+        kind: classifyEnvVar(key),
+        ...(how.service ? { service: how.service } : {}),
+      })),
+      crash: { file: found.file, line: found.line, error: found.error },
+    });
+    return true;
+  }
 
   private awaitInput(session: Session, pending: PendingInput): void {
     session.pending = pending;

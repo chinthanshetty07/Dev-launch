@@ -48,6 +48,10 @@ export function InputGate({
 
   if (pending.requiredEnv.length === 0) return null;
 
+  if (pending.crash) {
+    return <CrashQuestion pending={pending} crash={pending.crash} busy={busy} onSubmitEnv={onSubmitEnv} />;
+  }
+
   return (
     <section className="m-4 rounded-lg border border-warn/60 bg-panel p-4">
       <h2 className="mb-1 text-[13px] text-warn">Configuration required</h2>
@@ -99,6 +103,100 @@ export function InputGate({
         >
           {Object.values(values).some((v) => v.trim() !== '') ? 'Continue' : 'Continue without these'}
         </button>
+      </form>
+    </section>
+  );
+}
+
+/**
+ * A stand-in for a setting the person does not have. Enough for an app that only checks
+ * that a key exists before starting (a payment client built when the file loads); the
+ * feature that uses it fails when used, which is what "start without it" means.
+ */
+export const STAND_IN = 'not-set-devlaunch-placeholder';
+
+/**
+ * The question after a crash: the app stopped on settings nobody gave it. Not "continue
+ * without these" with blanks — that is the crash again — but the values, or stand-ins.
+ */
+export function CrashQuestion({
+  pending,
+  crash,
+  busy,
+  onSubmitEnv,
+}: {
+  pending: PendingInput;
+  crash: NonNullable<PendingInput['crash']>;
+  busy: boolean;
+  onSubmitEnv: (env: Record<string, string>) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const keys = pending.requiredEnv.map((v) => v.key);
+  const one = keys.length === 1;
+  const filled = keys.every((k) => (values[k] ?? '').trim() !== '');
+
+  return (
+    <section className="m-4 rounded-lg border border-warn/60 bg-panel p-4">
+      <h2 className="mb-1 text-[13px] text-warn">The app needs {one ? 'a setting' : 'some settings'} to start</h2>
+      <p className="mb-2 text-[13px] text-muted">
+        It stopped at <code>{crash.file}</code> line {crash.line}, which reads{' '}
+        {keys.map((k, i) => (
+          <span key={k}>
+            {i > 0 && (i === keys.length - 1 ? ' and ' : ', ')}
+            <code>{k}</code>
+          </span>
+        ))}
+        . Nothing set {one ? 'it' : 'them'}, and DevLaunch cannot make up your own keys.
+      </p>
+      {crash.error && <p className="mb-3 break-words font-mono text-[12px] text-bad">{crash.error}</p>}
+      <p className="mb-3 text-[13px] text-muted">
+        Enter {one ? 'it' : 'them'} to start again. Values stay in memory for this run only and are never
+        written to disk. No {one ? 'key' : 'keys'}? Start without: DevLaunch fills in a stand-in so the app
+        can start, and only the part that uses {one ? 'it' : 'them'} will not work.
+      </p>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmitEnv(values);
+        }}
+        className="space-y-2"
+      >
+        {pending.requiredEnv.map((v) => (
+          <label key={`${v.service ?? ''}:${v.key}`} className="flex items-center gap-3 text-[13px]">
+            <span className="w-44 shrink-0 text-muted">
+              {v.key}
+              {v.service && <span className="ml-2 text-[11px] opacity-60">{v.service}</span>}
+              {v.kind && <span className="block text-[11px] opacity-70">{KIND_LABEL[v.kind]}</span>}
+            </span>
+            <input
+              type={v.kind === 'REQUIRED_SECRET' || v.kind === 'EXTERNAL_SERVICE_REQUIRED' ? 'password' : 'text'}
+              autoComplete="off"
+              value={values[v.key] ?? ''}
+              onChange={(e) => setValues((p) => ({ ...p, [v.key]: e.target.value }))}
+              className="w-80 rounded-md border border-edge bg-ink px-2 py-1 outline-none focus:border-link"
+            />
+          </label>
+        ))}
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="submit"
+            disabled={busy || !filled}
+            className="rounded-md border border-edge px-3 py-1.5 text-[13px] hover:border-link hover:text-link disabled:opacity-50"
+          >
+            Start with {one ? 'it' : 'these'}
+          </button>
+          {!filled && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onSubmitEnv(Object.fromEntries(keys.map((k) => [k, (values[k] ?? '').trim() || STAND_IN])))}
+              className="rounded-md border border-edge px-3 py-1.5 text-[13px] text-muted hover:border-link hover:text-link disabled:opacity-50"
+            >
+              Start without {one ? 'it' : 'the missing ones'}
+            </button>
+          )}
+        </div>
       </form>
     </section>
   );

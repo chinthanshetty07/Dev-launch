@@ -3334,3 +3334,77 @@ describe('AI help switched off or on without a restart', () => {
     await mgr.shutdown();
   });
 });
+
+describe('a crash on a setting nobody gave the app (fullstack-superdev/MERN-ECommerce-Project)', () => {
+  // Its payment controller builds a Razorpay client from RAZORPAY_API_KEY when the file
+  // loads; with no .env.example nothing asked for the key, and the run ended on the crash.
+  const CRASH = [
+    'Error: `key_id` is mandatory',
+    '    at new Razorpay (/workspace/node_modules/razorpay/dist/razorpay.js:33:13)',
+    '    at Object.<anonymous> (/workspace/controller/paymentController.js:3:18)',
+  ];
+  const source = () => {
+    const dir = cloneWith();
+    mkdirSync(join(dir, 'controller'));
+    writeFileSync(
+      join(dir, 'controller/paymentController.js'),
+      "const Razorpay = require('razorpay');\n\nconst instance = new Razorpay({\n  key_id: process.env.RAZORPAY_API_KEY,\n});\n",
+    );
+    return dir;
+  };
+
+  /** Crashes until RAZORPAY_API_KEY is set, recording what each launch was given. */
+  function crashingExec(launched: RunPlan[]): ExecutionManager {
+    return {
+      async launch(o: { logs?: LogManager; plan: RunPlan }) {
+        launched.push(o.plan);
+        const logs = o.logs ?? new LogManager();
+        const given = o.plan.environmentVariables.find((v) => v.key === 'RAZORPAY_API_KEY')?.value;
+        if (!given) for (const line of CRASH) logs.buffer.push('stderr', line);
+        return {
+          logs,
+          waitForReady: async (): Promise<ReadyOutcome> =>
+            given
+              ? ready()
+              : {
+                  state: ExecutionState.FAILED,
+                  hostPort: null,
+                  readiness: { ready: false, attempts: 1, elapsedMs: 1 },
+                  failure: { code: FailureCode.START_COMMAND_FAILED, message: 'Start command exited with code 1.', phase: 'start' },
+                },
+          clearStartupBudget: () => {},
+          cleanup: async () => ({ errors: [] }),
+        } as unknown as LaunchHandle;
+      },
+    } as unknown as ExecutionManager;
+  }
+
+  it('asks for the setting where it stopped, and starts again with the answer', async () => {
+    const launched: RunPlan[] = [];
+    const mgr = new SessionManager(crashingExec(launched));
+    const s = await mgr.launch({ plan: plan(), sourceDir: source(), image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.AWAITING_INPUT);
+    expect(s.pending?.requiredEnv.map((v) => v.key)).toEqual(['RAZORPAY_API_KEY']);
+    expect(s.pending?.crash).toEqual({ file: 'controller/paymentController.js', line: 3, error: 'Error: `key_id` is mandatory' });
+    expect(s.failure?.code).toBe(FailureCode.MISSING_ENV);
+
+    await mgr.resolve(s.id, { env: { RAZORPAY_API_KEY: 'rzp_test_key' } });
+    await until(() => s.state === ExecutionState.READY);
+    expect(launched).toHaveLength(2);
+    expect(launched[1]!.environmentVariables).toContainEqual({ key: 'RAZORPAY_API_KEY', value: 'rzp_test_key', required: true });
+    expect(s.failure).toBeUndefined();
+    await mgr.shutdown();
+  });
+
+  it('asks once: going without, and crashing the same way, is reported as it is', async () => {
+    const launched: RunPlan[] = [];
+    const mgr = new SessionManager(crashingExec(launched));
+    const s = await mgr.launch({ plan: plan(), sourceDir: source(), image: 'devlaunch/node:20' });
+    await until(() => s.state === ExecutionState.AWAITING_INPUT);
+    await mgr.resolve(s.id, { env: {} });
+    await until(() => TERMINAL_STATES.includes(s.state));
+    expect(s.state).toBe(ExecutionState.FAILED);
+    expect(launched.length).toBeGreaterThanOrEqual(2);
+    await mgr.shutdown();
+  });
+});

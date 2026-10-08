@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-08 — A crash on a missing setting asks for it, instead of just failing
+
+`fullstack-superdev/MERN-ECommerce-Project` builds a Razorpay client from
+`RAZORPAY_API_KEY` the moment its payment file loads. It ships no `.env.example`, so
+DevLaunch asked for nothing, and the run ended FAILED on a stack trace into the payment
+library ("`key_id` is mandatory").
+
+Now, when a start crashes, DevLaunch reads the project's own frames in the stack trace
+(Node and Python; library code skipped), looks at the lines there, and finds the settings
+they read that were never set (`MissingSettings.ts`). If there are any, the run pauses
+and asks for those settings by name, with the file, line and error, then starts again
+with the answers: single-service and multi-service runs, answers going to the service that
+stopped. "Start without the missing ones" fills in a stand-in value, so an app that only
+checks a key exists can start; only the part using it fails. Each setting is asked once:
+the same crash after an answer is reported as usual. Time spent waiting does not count
+against the start-up limit.
+
+**Evidence:** on the real repository, the run paused asking for exactly
+`RAZORPAY_API_KEY` and `RAZORPAY_API_SECRET` (`controller/paymentController.js` line
+14); "Start without the missing ones" then reached READY, the API answering and its
+MongoDB reached. Tests use that run's stack trace and file, the whole ask-and-resume flow,
+and the dashboard form; 6 mutations, all caught. Quick suite: 1,284 passed.
+
+**Known limits:** only settings read within a few lines of the project's first three
+stack frames are found; a key read in one file and used to crash in another is not.
+
 ## 2026-10-08 — Peer-dependency conflicts retried, and two more setting names wired
 
 From `RishiBakshii/mern-ecommerce` (React frontend, Express backend), which ended

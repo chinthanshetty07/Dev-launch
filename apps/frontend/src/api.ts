@@ -33,6 +33,8 @@ export interface BrowserWiringProblem {
 export interface PendingInput {
   requiredEnv: RequiredEnvVar[];
   choices?: WorkspacePackage[];
+  /** Set when the app crashed on these settings, rather than a file declaring them. */
+  crash?: { file: string; line: number; error: string };
 }
 
 /** The end-to-end check READY waited for (backend `SmokeTest`). */
