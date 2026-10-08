@@ -33,10 +33,16 @@ pick_iptables() {
 
 # The rules, as `iptables -S` prints them, so "already right" is a plain text comparison and
 # the chains are only rebuilt when something differs — never emptied while they are correct.
+# Whether this kernel can tell bridged traffic apart (xt_physdev): set by build_forward.
+PHYSDEV=0
+
 expected_forward() {
   cat <<RULES
 -N DEVLAUNCH
 -A DEVLAUNCH -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+RULES
+  [ "$PHYSDEV" = 1 ] && echo "-A DEVLAUNCH -m physdev --physdev-is-bridged -j RETURN"
+  cat <<RULES
 -A DEVLAUNCH -d 10.0.0.0/8 -j DROP
 -A DEVLAUNCH -d 172.16.0.0/12 -j DROP
 -A DEVLAUNCH -d 192.168.0.0/16 -j DROP
@@ -56,6 +62,12 @@ build_forward() {
   $IPT -N DEVLAUNCH 2>/dev/null || $IPT -F DEVLAUNCH
   # Replies to connections opened from outside (published ports) must pass.
   $IPT -A DEVLAUNCH -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  # Traffic that stays on one Docker network — an app and its own database — passes. Where
+  # the kernel sends bridged traffic through iptables (bridge-nf-call-iptables=1, as in a
+  # GitHub Codespace), the private-range drops below caught it: a backend could not reach
+  # the Postgres beside it. Traffic between two runs' networks is routed, not bridged, and
+  # is still dropped. Left out where the kernel has no physdev match.
+  [ "$PHYSDEV" = 1 ] && $IPT -A DEVLAUNCH -m physdev --physdev-is-bridged -j RETURN
   # The local network, and link-local, where cloud metadata lives.
   $IPT -A DEVLAUNCH -d 10.0.0.0/8 -j DROP
   $IPT -A DEVLAUNCH -d 172.16.0.0/12 -j DROP
@@ -72,8 +84,20 @@ build_input() {
   $IPT -A DEVLAUNCH-IN -j DROP
 }
 
+# Once: whether this kernel has the physdev match, tried on a scratch chain so the real one
+# is never touched by the test.
+probe_physdev() {
+  [ -n "${PHYSDEV_PROBED:-}" ] && return 0
+  PHYSDEV_PROBED=1
+  $IPT -N DEVLAUNCH-PROBE 2>/dev/null || $IPT -F DEVLAUNCH-PROBE
+  if $IPT -A DEVLAUNCH-PROBE -m physdev --physdev-is-bridged -j RETURN 2>/dev/null; then PHYSDEV=1; fi
+  $IPT -F DEVLAUNCH-PROBE 2>/dev/null; $IPT -X DEVLAUNCH-PROBE 2>/dev/null
+  log "bridged traffic within one network: $([ "$PHYSDEV" = 1 ] && echo passed by its own rule || echo not filtered here, no rule needed)"
+}
+
 apply_rules() {
   IPT=$(pick_iptables) || { log "waiting: Docker's DOCKER-USER chain is not there yet"; return 1; }
+  probe_physdev
   changed=""
   if [ "$($IPT -S DEVLAUNCH 2>/dev/null)" != "$(expected_forward)" ]; then build_forward; changed="$changed forward"; fi
   if [ "$($IPT -S DEVLAUNCH-IN 2>/dev/null)" != "$(expected_input)" ]; then build_input; changed="$changed input"; fi
