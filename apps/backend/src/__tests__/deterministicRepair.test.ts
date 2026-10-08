@@ -549,3 +549,18 @@ describe('a runtime that is too new', () => {
     expect(repair?.plan.runtime.version).toBe('22');
   });
 });
+
+describe('webpack 4 on Node 17+ (ERR_OSSL_EVP_UNSUPPORTED)', () => {
+  const logs = "Error: error:0308010C:digital envelope routines::unsupported\n  code: 'ERR_OSSL_EVP_UNSUPPORTED'\n";
+  it('retries with OpenSSL\'s legacy algorithms, keeping the Node version', () => {
+    const out = attempt({ code: FailureCode.WRONG_RUNTIME_VERSION, logs });
+    expect(out?.plan.legacyOpenssl).toBe(true);
+    expect(out?.plan.runtime.version).toBe(plan().runtime.version);
+  });
+  it('only once, only for Node, and only for that error', () => {
+    // Already on: this rule proposes nothing (another rule may, keeping the flag as it is).
+    expect(attempt({ code: FailureCode.WRONG_RUNTIME_VERSION, logs, plan: plan({ legacyOpenssl: true }) })?.record.after).not.toEqual({ legacyOpenssl: true });
+    expect(attempt({ code: FailureCode.WRONG_RUNTIME_VERSION, logs, plan: RunPlanSchema.parse({ ...plan(), runtime: { language: 'python', version: '3.12' } }) })?.plan.legacyOpenssl).toBeUndefined();
+    expect(attempt({ code: FailureCode.WRONG_RUNTIME_VERSION, logs: "No such built-in module: node:sqlite" })?.plan.legacyOpenssl).toBeUndefined();
+  });
+});

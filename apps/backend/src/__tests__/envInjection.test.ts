@@ -72,3 +72,24 @@ describe('ts-node variables that load code by name', () => {
     expect(validateEnvVarKey('TS_NODE_TRANSPILE_ONLY')).toBe('TS_NODE_TRANSPILE_ONLY');
   });
 });
+
+describe('OpenSSL\'s legacy algorithms for webpack 4', () => {
+  // `necelentano/mern-ecommerce`'s client (react-scripts 4) stopped on
+  // ERR_OSSL_EVP_UNSUPPORTED. The plan says yes or no; DevLaunch writes the one flag.
+  it('becomes exactly --openssl-legacy-provider, beside a heap size when there is one', () => {
+    expect(buildWrapperEnv(plan(), '/workspace', undefined, { legacyOpenssl: true })).toContain('NODE_OPTIONS=--openssl-legacy-provider');
+    expect(buildWrapperEnv(plan(), '/workspace', undefined, { legacyOpenssl: true, nodeHeapMb: 3072 }))
+      .toContain('NODE_OPTIONS=--max-old-space-size=3072 --openssl-legacy-provider');
+    expect(buildWrapperEnv(plan(), '/workspace').some((e) => e.startsWith('NODE_OPTIONS='))).toBe(false);
+  });
+
+  it('cannot carry anything else in with it from a plan', () => {
+    const env = buildWrapperEnv(
+      plan({ environmentVariables: [{ key: 'NODE_OPTIONS', value: '--require=/workspace/evil.js', required: true }] }),
+      '/workspace',
+      undefined,
+      { legacyOpenssl: true },
+    );
+    expect(env.filter((e) => e.startsWith('NODE_OPTIONS='))).toEqual(['NODE_OPTIONS=--openssl-legacy-provider']);
+  });
+});

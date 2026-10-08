@@ -15,7 +15,7 @@ import { config } from '../../config/index.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { BackingProvisioner, type BackingRun } from './BackingProvisioner.js';
 import { sessionNetwork } from './RunNetworks.js';
-import { planGateway, readNginxRoutes, startGateway, type Gateway } from './Gateway.js';
+import { describeRoute, planGateway, readDevProxy, readNginxRoutes, startGateway, type Gateway } from './Gateway.js';
 import { callsRelativeApi } from '../analysis/ServiceDiscovery.js';
 import {
   browserWiringProblems,
@@ -320,33 +320,29 @@ export class ProjectExecutor {
       }
     }
 
-    // The project's own reverse proxy, done by DevLaunch: a frontend that calls `/api` on
-    // its own address, as it would behind the project's nginx (`Gateway`). Not when the
-    // frontend's dev server already proxies those paths itself.
+    // The project's own reverse proxy, or its frontend's dev-server proxy, done by
+    // DevLaunch (`planRunGateway`).
     const web = ordered.find((p) => p.role === 'web');
-    if (web && urls[web.name] && !opts.discovery?.devProxies?.[web.name]) {
-      const routing = planGateway({
-        services: ordered.map((p) => ({ name: p.name, role: p.role, port: p.expectedPort, dir: p.workingDirectory })),
-        nginx: await readNginxRoutes(opts.sourceDir).catch(() => []),
-        callsRelativeApi: await callsRelativeApi(join(opts.sourceDir, web.workingDirectory ?? '.')).catch(() => false),
+    const routing = await planRunGateway({
+      services: ordered,
+      sourceDir: opts.sourceDir,
+      devProxies: opts.discovery?.devProxies ?? {},
+      repointingProxies: config.rewriteSource && opts.mayRewriteSource === true,
+    });
+    if (web && urls[web.name] && routing) {
+      run.gateway = await startGateway({
+        routes: routing.routes,
+        fallback: routing.web,
+        targets: urls,
+        // In a codespace, on a declared port, so the person's browser can reach it.
+        ...(codespace() ? { port: (await choosePort([], taken)).port } : {}),
       });
-      if (routing) {
-        run.gateway = await startGateway({
-          routes: routing.routes,
-          fallback: routing.web,
-          targets: urls,
-          // In a codespace, on a declared port, so the person's browser can reach it.
-          ...(codespace() ? { port: (await choosePort([], taken)).port } : {}),
-        });
-        const described = routing.routes
-          .map((r) => `${typeof r.match === 'string' ? r.match : r.match.source} → ${r.to}`)
-          .join(', ');
-        opts.logs.write(
-          'stdout',
-          `${web.name} calls its API through its own address, as it would behind the project's ` +
-            `own reverse proxy. Serving both at ${run.gateway.url} (${described}; everything else → ${web.name}).`,
-        );
-      }
+      const described = routing.routes.map(describeRoute).join(', ');
+      opts.logs.write(
+        'stdout',
+        `${web.name} calls its API through its own address, as it would behind the project's ` +
+          `own reverse proxy. Serving both at ${run.gateway.url} (${described}; everything else → ${web.name}).`,
+      );
     }
 
     /**
@@ -856,6 +852,34 @@ export function waitForInstall(
         // A rejecting predicate must not become an unhandled rejection inside a timer.
         .catch(() => undefined);
     }, 500);
+  });
+}
+
+/**
+ * The gateway a run needs, if any (`Gateway`): the project's nginx routes, a page calling
+ * `/api` on its own address, or a frontend dev server's proxy aimed at `localhost` — inside
+ * its container that is the frontend itself, so every API call failed
+ * (`necelentano/mern-ecommerce`: CRA's `"proxy": "http://localhost:8000"`). The gateway
+ * forwards what that proxy would have, without editing the project. Not when DevLaunch is
+ * repointing that proxy in its clone (DEVLAUNCH_REWRITE_SOURCE): the dev server's own works.
+ */
+export async function planRunGateway(input: {
+  services: readonly ServiceRunPlan[];
+  sourceDir: string;
+  devProxies: Record<string, { file: string; target: string }>;
+  repointingProxies: boolean;
+}): Promise<ReturnType<typeof planGateway>> {
+  const web = input.services.find((p) => p.role === 'web');
+  if (!web) return null;
+  const webDir = join(input.sourceDir, web.workingDirectory ?? '.');
+  const devProxy = input.devProxies[web.name];
+  if (devProxy && input.repointingProxies) return null;
+  const read = devProxy ? await readDevProxy(webDir, devProxy).catch(() => undefined) : undefined;
+  return planGateway({
+    services: input.services.map((p) => ({ name: p.name, role: p.role, port: p.expectedPort, dir: p.workingDirectory })),
+    nginx: await readNginxRoutes(input.sourceDir).catch(() => []),
+    callsRelativeApi: await callsRelativeApi(webDir).catch(() => false),
+    ...(read ? { devProxy: read } : {}),
   });
 }
 

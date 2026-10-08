@@ -511,7 +511,11 @@ export class ExecutionManager {
           opts.plan.installDirectory
             ? joinWorkspace(config.container.workspacePath, opts.plan.installDirectory)
             : undefined,
-          { ...(opts.nodeHeapMb ? { nodeHeapMb: opts.nodeHeapMb } : {}), installReused: workspace.reused },
+          {
+            ...(opts.nodeHeapMb ? { nodeHeapMb: opts.nodeHeapMb } : {}),
+            installReused: workspace.reused,
+            ...(opts.plan.legacyOpenssl === true ? { legacyOpenssl: true } : {}),
+          },
         ),
         labels: buildLabels(opts.sessionId),
         hostConfig: buildHostConfig({

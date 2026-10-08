@@ -91,6 +91,14 @@ export const RunPlanSchema = z.object({
    * and useless.
    */
   protocol: z.enum(['http', 'https']).optional(),
+  /**
+   * Run Node with OpenSSL's legacy algorithms (`--openssl-legacy-provider`), which webpack 4
+   * — react-scripts 4 and earlier — needs on Node 17+, or it stops on
+   * `ERR_OSSL_EVP_UNSUPPORTED`. A flag rather than an environment variable: plans may never
+   * set NODE_OPTIONS (`--require` in it runs code first), so DevLaunch writes this one value
+   * itself (`buildWrapperEnv`).
+   */
+  legacyOpenssl: z.boolean().optional(),
   docker: DockerSpecSchema.optional(),
 });
 

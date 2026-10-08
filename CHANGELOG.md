@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-10-08 — Old React apps start on new Node, and their API calls reach the API
+
+Two faults, both from `necelentano/mern-ecommerce` (a React client and an Express server):
+
+- **The page did not build.** react-scripts 4 bundles with webpack 4, which hashes with MD4.
+  OpenSSL 3 (Node 17 and later) turned MD4 off, so the dev server died with
+  `ERR_OSSL_EVP_UNSUPPORTED`. DevLaunch now runs such a project with Node's
+  `--openssl-legacy-provider`: from the plan when react-scripts or webpack is older than 5,
+  and as a repair, once, when the error appears anyway. Plans still never set
+  `NODE_OPTIONS`; a new `legacyOpenssl` switch is all a plan can ask for, and DevLaunch
+  writes the flag itself (beside its own memory setting when both apply). The repair is
+  part of a plan's fingerprint, so it is not mistaken for one already tried.
+- **The page's API calls went nowhere.** The client's package.json says
+  `"proxy": "http://localhost:8000"`. The dev server forwards from inside its own container,
+  where `localhost` is the frontend, so every call failed. DevLaunch only warned about this
+  before (or edited its clone, with `DEVLAUNCH_REWRITE_SOURCE`). Now its gateway does the
+  proxy's job, without editing the project: for a Create React App `proxy`, by the dev
+  server's own rule (any non-GET, and any GET not asking for a page, except the bundle, hot
+  updates, `public/` files and the live-reload socket); for a Vite or webpack `proxy` block,
+  by its paths. It goes to the API on the proxy's port, or the only API; with two and no
+  match it does not guess. The link DevLaunch gives is the gateway's.
+
+**Evidence:** tests for the flag in the container (alone, with the memory setting, and a
+plan's own `NODE_OPTIONS` never surviving), the repair (once, Node only, that error only),
+the version check, the routing rule, Vite paths, `public/` files, the run's choice, and a
+real-socket run (a POST with its body to the API, a page to the frontend). 9 mutations, all
+caught. Quick suite: 1,271 passed.
+
+**Not done:** mern-ecommerce still needs settings it does not ship — `REACT_APP_API` (the
+page's API address; with the proxy it is meant to be `/api`), Firebase, Cloudinary, Stripe
+and a MongoDB `DATABASE` URL. DevLaunch cannot invent those.
+
 ## 2026-10-08 — Run it in the cloud, nothing to install (GitHub Codespaces)
 
 Paste a link, get a running project, with nothing installed on the person's computer: a

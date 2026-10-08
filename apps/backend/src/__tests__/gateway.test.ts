@@ -4,9 +4,21 @@ import { connect, type AddressInfo } from 'node:net';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { parseNginxRoutes, planGateway, readNginxRoutes, routeFor, startGateway, type Gateway } from '../services/execution/Gateway.js';
+import {
+  createReactAppProxyRoute,
+  parseDevProxyPaths,
+  parseNginxRoutes,
+  planGateway,
+  readDevProxy,
+  readNginxRoutes,
+  routeFor,
+  startGateway,
+  type Gateway,
+} from '../services/execution/Gateway.js';
 import { callsRelativeApi } from '../services/analysis/ServiceDiscovery.js';
 import { samplePath } from '../services/verification/SmokeTest.js';
+import { planRunGateway } from '../services/execution/ProjectExecutor.js';
+import type { ServiceRunPlan } from '@devlaunch/shared';
 
 /**
  * One address for a frontend and the API paths behind it — the project's own nginx, done by
@@ -89,6 +101,111 @@ describe('reading the project\'s own routing', () => {
   });
 });
 
+/**
+ * A frontend dev server's own proxy, aimed at `localhost`. Inside the frontend's container that
+ * is the frontend, so the dev server could forward nothing (`necelentano/mern-ecommerce`:
+ * package.json `"proxy": "http://localhost:8000"`, every API call failed). The gateway forwards
+ * what that proxy would have, by the dev server's own rule, without editing the project.
+ */
+describe('standing in for a dev server\'s proxy', () => {
+  const shop = [
+    { name: 'client', role: 'web', port: 3000, dir: 'client' },
+    { name: 'server', role: 'api', port: 8000, dir: 'server' },
+  ];
+  const JSON_ACCEPT = 'application/json, text/plain, */*';
+
+  it('forwards what Create React App\'s proxy forwards, and leaves the page and its own files to the frontend', () => {
+    const routes = [createReactAppProxyRoute('server', ['favicon.ico', 'manifest.json', 'images/logo.png'])];
+    const to = (path: string, method: string, accept: string) => routeFor(path, routes, 'client', { method, accept });
+    // The page's API calls: any method that is not GET, and a GET that does not ask for a page.
+    expect(to('/api/categories', 'GET', JSON_ACCEPT)).toBe('server');
+    expect(to('/api/cart', 'POST', JSON_ACCEPT)).toBe('server');
+    expect(to('/api/product/1', 'DELETE', '')).toBe('server');
+    expect(to('/products?page=2', 'GET', 'application/json')).toBe('server');
+    // A page, by what it asks for, on any path: the app's own routing answers it.
+    expect(to('/', 'GET', 'text/html,application/xhtml+xml')).toBe('client');
+    expect(to('/admin/dashboard', 'GET', 'text/html')).toBe('client');
+    // The bundle, hot updates, files in public/ and the live-reload socket are the dev server's.
+    expect(to('/static/js/bundle.js', 'GET', '*/*')).toBe('client');
+    expect(to('/main.4f2a.hot-update.json', 'GET', '*/*')).toBe('client');
+    expect(to('/manifest.json', 'GET', '*/*')).toBe('client');
+    expect(to('/images/logo.png', 'GET', 'image/*')).toBe('client');
+    expect(to('/sockjs-node/info', 'GET', '*/*')).toBe('client');
+    expect(to('/sockjs-node/123/abc/xhr_send', 'POST', '*/*')).toBe('client');
+    // No Accept header at all: CRA does not forward that GET, so neither does this.
+    expect(to('/api/categories', 'GET', '')).toBe('client');
+  });
+
+  it('aims at the API on the proxy\'s port, and reads a Vite block\'s paths', () => {
+    const cra = planGateway({
+      services: [...shop, { name: 'worker-api', role: 'api', port: 9000, dir: 'w' }],
+      nginx: [],
+      callsRelativeApi: false,
+      devProxy: { target: 'http://localhost:8000', createReactApp: { publicFiles: [] } },
+    });
+    expect(cra?.web).toBe('client');
+    expect(routeFor('/api/x', cra!.routes, cra!.web, { method: 'POST' })).toBe('server');
+
+    const vite = planGateway({ services: shop, nginx: [], callsRelativeApi: false, devProxy: { target: 'http://localhost:8000', paths: ['/api', '/auth'] } });
+    expect(routeFor('/auth/login', vite!.routes, vite!.web)).toBe('server');
+    expect(routeFor('/about', vite!.routes, vite!.web)).toBe('client');
+
+    // Two APIs, neither on the proxy's port: which one it meant is not guessed.
+    expect(planGateway({
+      services: [...shop.slice(0, 1), { name: 'a', role: 'api', port: 5000 }, { name: 'b', role: 'api', port: 5001 }],
+      nginx: [],
+      callsRelativeApi: false,
+      devProxy: { target: 'http://localhost:8000', createReactApp: { publicFiles: [] } },
+    })).toBeNull();
+  });
+
+  it('reads the paths a proxy block forwards, and not the options inside each', () => {
+    const conf = `export default defineConfig({
+      server: {
+        port: 3000,
+        proxy: {
+          '/api': { target: 'http://localhost:8000', changeOrigin: true, rewrite: (p) => p.replace(/^\\/api/, '') },
+          "/socket.io": { target: 'ws://localhost:8000', ws: true },
+          '/uploads': 'http://localhost:8000',
+          '^/fallback/.*': { target: 'http://localhost:8000' },
+        },
+      },
+    });`;
+    expect(parseDevProxyPaths(conf)).toEqual(['/api', '/socket.io', '/uploads']);
+    expect(parseDevProxyPaths('export default {}')).toEqual([]);
+  });
+
+  it('reads the files a Create React App leaves to itself, from public/', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'devlaunch-cra-'));
+    mkdirSync(join(root, 'public/images'), { recursive: true });
+    writeFileSync(join(root, 'public/manifest.json'), '{}');
+    writeFileSync(join(root, 'public/images/logo.png'), '');
+    const read = await readDevProxy(root, { file: 'package.json', target: 'http://localhost:8000' });
+    expect([...(read?.createReactApp?.publicFiles ?? [])].sort()).toEqual(['images/logo.png', 'manifest.json']);
+    writeFileSync(join(root, 'vite.config.js'), "export default { server: { proxy: { '/api': 'http://localhost:8000' } } }");
+    expect(await readDevProxy(root, { file: 'vite.config.js', target: 'http://localhost:8000' })).toEqual({ target: 'http://localhost:8000', paths: ['/api'] });
+  });
+  it('is what a run starts with for that project, unless DevLaunch is repointing the proxy in its clone', async () => {
+    // mern-ecommerce's shape: client/ (CRA, "proxy": "http://localhost:8000") and server/.
+    const root = mkdtempSync(join(tmpdir(), 'devlaunch-mern-'));
+    mkdirSync(join(root, 'client/public'), { recursive: true });
+    writeFileSync(join(root, 'client/package.json'), JSON.stringify({ proxy: 'http://localhost:8000' }));
+    const services = [
+      { name: 'client', role: 'web', workingDirectory: 'client', expectedPort: 3000 },
+      { name: 'server', role: 'api', workingDirectory: 'server', expectedPort: 8000 },
+    ] as unknown as ServiceRunPlan[];
+    const devProxies = { client: { file: 'package.json', target: 'http://localhost:8000' } };
+
+    const routing = await planRunGateway({ services, sourceDir: root, devProxies, repointingProxies: false });
+    expect(routing?.web).toBe('client');
+    expect(routeFor('/api/categories', routing!.routes, routing!.web, { accept: 'application/json' })).toBe('server');
+
+    expect(await planRunGateway({ services, sourceDir: root, devProxies, repointingProxies: true })).toBeNull();
+    // No proxy, no nginx, no relative /api: nothing to route.
+    expect(await planRunGateway({ services, sourceDir: root, devProxies: {}, repointingProxies: false })).toBeNull();
+  });
+});
+
 describe('the gateway, on real sockets', () => {
   const servers: Server[] = [];
   const sockets: import('node:net').Socket[] = [];
@@ -142,6 +259,24 @@ describe('the gateway, on real sockets', () => {
     expect(post.fwd).toBe(new URL(gateway.url).host);
 
     expect(await call(new URL('/static/js/bundle.js', gateway.url).toString())).toMatchObject({ from: 'frontend' });
+  });
+
+  it('forwards a Create React App page\'s API calls by what they ask for, as its dev server would', async () => {
+    const targets = { client: await serve('client'), server: await serve('server') };
+    gateway = await startGateway({ routes: [createReactAppProxyRoute('server')], fallback: 'client', targets });
+    const ask = (path: string, method: string, accept: string, body?: string) =>
+      new Promise<Record<string, string>>((resolve, reject) => {
+        const req = request({ host: '127.0.0.1', port: new URL(gateway!.url).port, path, method, agent: false, headers: { accept } }, (res) => {
+          let d = '';
+          res.on('data', (c) => (d += c));
+          res.on('end', () => resolve(JSON.parse(d)));
+        });
+        req.on('error', reject);
+        req.end(body);
+      });
+    expect(await ask('/api/cart', 'POST', 'application/json', '{"items":[]}')).toMatchObject({ from: 'server', path: '/api/cart', body: '{"items":[]}' });
+    expect(await ask('/api/categories', 'GET', 'application/json, text/plain, */*')).toMatchObject({ from: 'server' });
+    expect(await ask('/shop', 'GET', 'text/html')).toMatchObject({ from: 'client' });
   });
 
   it('passes a websocket through to the service its path goes to', async () => {

@@ -122,8 +122,11 @@ function apiTargets(services: SmokeService[], self: SmokeService) {
 }
 
 /** A path a route sends on: its prefix, or for a pattern the first of a few usual ones it matches. */
-export function samplePath(match: string | RegExp): string | undefined {
+export function samplePath(match: string | RegExp | ((req: never) => boolean)): string | undefined {
   if (typeof match === 'string') return `${match.replace(/\/+$/, '')}/`;
+  // A rule that goes by the request, not the path (a Create React App proxy): no one path
+  // stands for it, so only the address itself is checked.
+  if (typeof match === 'function') return undefined;
   return ['/api/', '/api', '/admin/', '/graphql', '/ws/'].find((p) => match.test(p));
 }
 
@@ -131,7 +134,7 @@ export async function runSmokeTest(input: {
   services: SmokeService[];
   backing: SmokeBacking[];
   /** The one address DevLaunch serves the frontend and its API paths at (`Gateway`). */
-  gateway?: { url: string; routes: { match: string | RegExp; to: string }[] };
+  gateway?: { url: string; routes: { match: string | RegExp | ((req: never) => boolean); to: string }[] };
 }): Promise<Verification> {
   const startedAt = Date.now();
   const checks: SmokeCheck[] = [];

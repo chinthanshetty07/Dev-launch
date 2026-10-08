@@ -229,10 +229,9 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     detail: { runtimeDirection: 'older' },
     remedy:
       'The build tool hashes with an algorithm OpenSSL 3 removed — typically webpack 4, as ' +
-      'in react-scripts 4 and earlier. Upgrade it (react-scripts 5, webpack 5), or run the ' +
-      'project on Node 16. DevLaunch approves Node 20 and 22 only, and will not set the ' +
-      'usual workaround, NODE_OPTIONS=--openssl-legacy-provider: a variable that changes ' +
-      'what Node loads before the start command runs is refused from every plan.',
+      'in react-scripts 4 and earlier. DevLaunch retries it once with Node\'s ' +
+      '--openssl-legacy-provider, which it sets itself; if it still fails, upgrade the tool ' +
+      '(react-scripts 5, webpack 5) or run the project on Node 16.',
     describe: () =>
       'The build tool uses a hash OpenSSL 3 no longer provides, so it cannot run on Node 17 ' +
       'or newer — and DevLaunch has no older Node.',

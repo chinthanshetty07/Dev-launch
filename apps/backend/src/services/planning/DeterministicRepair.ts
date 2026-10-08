@@ -52,6 +52,8 @@ function signature(plan: RunPlan): string {
     plan.runtime,
     plan.healthCheck.path,
     [...plan.environmentVariables].sort((a, b) => a.key.localeCompare(b.key)),
+    // Part of what runs: Node with or without OpenSSL's legacy algorithms.
+    plan.legacyOpenssl === true,
   ]);
 }
 
@@ -398,6 +400,37 @@ const RULES: readonly Rule[] = [
           evidence: [
             evidence ? evidence.match(notFound)![0].slice(0, 160) : `exit code 127: ${first} is not on PATH`,
             `${first} is installed as a module and runs as python -m ${first}`,
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
+
+  // --- webpack 4 on Node 17+: OpenSSL's legacy algorithms ---------------------------------
+  //
+  // `ERR_OSSL_EVP_UNSUPPORTED` from react-scripts 4 and anything else on webpack 4: it
+  // hashes with MD4, which OpenSSL 3 dropped. DevLaunch has no Node old enough (16), and
+  // the runtime rule below must not move it newer. Node's own answer is to turn the
+  // legacy algorithms back on — `--openssl-legacy-provider` — which DevLaunch sets itself
+  // from the plan's flag (`RunPlan.legacyOpenssl`), never as a NODE_OPTIONS a plan writes.
+  // `necelentano/mern-ecommerce`'s client stopped here every time.
+  {
+    applies: (c) => c === FailureCode.WRONG_RUNTIME_VERSION,
+    propose: ({ plan, failure, logs }) => {
+      if (plan.runtime.language !== 'node' || plan.legacyOpenssl === true) return null;
+      if (!/ERR_OSSL_EVP_UNSUPPORTED/.test(`${failure.evidence ?? ''}\n${logs.slice(-8000)}`)) return null;
+      return {
+        plan: { ...plan, legacyOpenssl: true },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: FailureCode.WRONG_RUNTIME_VERSION,
+          before: { legacyOpenssl: false },
+          after: { legacyOpenssl: true },
+          evidence: [
+            'ERR_OSSL_EVP_UNSUPPORTED: the build tool (webpack 4) hashes with an algorithm OpenSSL 3 removed',
+            'Node runs it with --openssl-legacy-provider',
           ],
           confidence: 'high',
         },

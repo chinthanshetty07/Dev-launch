@@ -21,24 +21,102 @@ import { readCapped } from '../analysis/readCapped.js';
  */
 
 export interface GatewayRoute {
-  /** A path prefix (`/api`), or a pattern read from an nginx `location ~` block. */
-  match: string | RegExp;
+  /**
+   * A path prefix (`/api`), a pattern read from an nginx `location ~` block, or a rule that
+   * also looks at the request — Create React App's `proxy`, which goes by what was asked for.
+   */
+  match: string | RegExp | ((req: GatewayRequest) => boolean);
   /** The service the matching requests go to. */
   to: string;
+  /** How the route is described in the log, for a rule that is not a path. */
+  label?: string;
 }
 
-/** Where a request goes: the first route that matches its path, or the fallback. */
-export function routeFor(path: string, routes: readonly GatewayRoute[], fallback: string): string {
+/** What a route may look at: the path, without its query, and two headers' worth of intent. */
+export interface GatewayRequest {
+  path: string;
+  method: string;
+  /** The Accept header, or '' when there is none. */
+  accept: string;
+}
+
+/** Where a request goes: the first route that matches it, or the fallback. */
+export function routeFor(
+  path: string,
+  routes: readonly GatewayRoute[],
+  fallback: string,
+  req: { method?: string; accept?: string } = {},
+): string {
   const p = path.split('?')[0] ?? '/';
   for (const r of routes) {
     if (typeof r.match === 'string') {
       const prefix = r.match.replace(/\/+$/, '');
       if (p === prefix || p.startsWith(`${prefix}/`)) return r.to;
-    } else if (r.match.test(p)) {
+    } else if (r.match instanceof RegExp) {
+      if (r.match.test(p)) return r.to;
+    } else if (r.match({ path: p, method: (req.method ?? 'GET').toUpperCase(), accept: req.accept ?? '' })) {
       return r.to;
     }
   }
   return fallback;
+}
+
+/** A route as the log describes it. */
+export function describeRoute(r: GatewayRoute): string {
+  const what = r.label ?? (typeof r.match === 'string' ? r.match : r.match instanceof RegExp ? r.match.source : 'rule');
+  return `${what} → ${r.to}`;
+}
+
+/**
+ * Create React App's `"proxy": "http://localhost:8000"`, done by the gateway.
+ *
+ * The dev server would forward these itself, but it does so from inside its own container,
+ * where `localhost:8000` is the frontend and nothing answers. The rule is the dev server's
+ * own (react-dev-utils `prepareProxy`): every request that is not a GET, and every GET that
+ * does not ask for a page — `Accept` without `text/html` — unless it is for a file in
+ * `public/` or the dev server's live-reload socket. The bundle (`/static/...`) and hot
+ * updates are the dev server's own files, which it serves before its proxy is asked.
+ */
+export function createReactAppProxyRoute(to: string, publicFiles: readonly string[] = []): GatewayRoute {
+  const isPublic = new Set(publicFiles.map((f) => `/${f.replace(/^\/+/, '')}`));
+  return {
+    to,
+    label: 'everything that is not a page or the app\'s own files (the project\'s "proxy")',
+    match: ({ path, method, accept }) => {
+      if (/^\/(?:sockjs-node|ws)(?:\/|$)/.test(path)) return false;
+      if (method !== 'GET') return true;
+      if (path.startsWith('/static/') || /\.hot-update\./.test(path) || isPublic.has(path)) return false;
+      return accept !== '' && !accept.includes('text/html');
+    },
+  };
+}
+
+/**
+ * The paths a Vite (or webpack dev server) `proxy: { '/api': ... }` block forwards. Only plain
+ * path keys; a `^`-pattern key is skipped rather than guessed at.
+ */
+export function parseDevProxyPaths(config: string): string[] {
+  const start = /proxy\s*:\s*\{/.exec(config);
+  if (!start) return [];
+  let depth = 1;
+  let i = start.index + start[0].length;
+  const top: string[] = [];
+  let chunk = '';
+  for (; i < config.length && depth > 0; i++) {
+    const ch = config[i]!;
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+    // Only text at the block's own level holds its keys.
+    if (depth === 1 && ch !== '}') chunk += ch;
+    else if (chunk) {
+      top.push(chunk);
+      chunk = '';
+    }
+  }
+  if (chunk) top.push(chunk);
+  const paths = new Set<string>();
+  for (const m of top.join('\n').matchAll(/['"`](\/[^'"`\s]*)['"`]\s*:/g)) paths.add(m[1]!);
+  return [...paths];
 }
 
 /** A `location` that proxies somewhere, as read from an nginx configuration. */
@@ -128,12 +206,30 @@ export function planGateway(input: {
   nginx: readonly NginxRoute[];
   /** Whether the frontend's source calls a relative `/api` path. */
   callsRelativeApi: boolean;
+  /**
+   * The frontend dev server's own proxy, aimed at `localhost` — which inside its container
+   * is the frontend itself. `paths` are a Vite block's keys; `createReactApp` is a
+   * package.json `proxy`, which forwards by what is asked for rather than by path.
+   */
+  devProxy?: { target: string; paths?: readonly string[]; createReactApp?: { publicFiles: readonly string[] } };
 }): { web: string; routes: GatewayRoute[] } | null {
   const web = input.services.find((s) => s.role === 'web');
   const apis = input.services.filter((s) => s.role === 'api');
   if (!web || apis.length === 0) return null;
 
   const routes: GatewayRoute[] = [];
+  if (input.devProxy) {
+    // The API the proxy meant: the one on its port, or the only one.
+    const port = Number(/:(\d{2,5})\/?$/.exec(input.devProxy.target)?.[1] ?? NaN);
+    const api = apis.find((s) => s.port === port) ?? (apis.length === 1 ? apis[0] : undefined);
+    if (api) {
+      if (input.devProxy.createReactApp) {
+        routes.push(createReactAppProxyRoute(api.name, input.devProxy.createReactApp.publicFiles));
+      } else {
+        for (const path of input.devProxy.paths ?? []) routes.push({ match: path, to: api.name });
+      }
+    }
+  }
   for (const r of input.nginx) {
     const target =
       input.services.find((s) => r.port !== undefined && s.port === r.port) ??
@@ -144,6 +240,33 @@ export function planGateway(input: {
     routes.push({ match: '/api', to: apis[0]!.name });
   }
   return routes.length > 0 ? { web: web.name, routes } : null;
+}
+
+/**
+ * What a frontend's dev-server proxy forwards, read from its configuration: a package.json
+ * `proxy` (Create React App), with the files in `public/` it leaves alone; or the path keys
+ * of a Vite or webpack `proxy` block. Undefined when nothing can be read.
+ */
+export async function readDevProxy(
+  webDir: string,
+  proxy: { file: string; target: string },
+): Promise<NonNullable<Parameters<typeof planGateway>[0]['devProxy']> | undefined> {
+  if (basename(proxy.file) === 'package.json') {
+    const publicFiles: string[] = [];
+    const walk = async (dir: string, rel: string, depth: number): Promise<void> => {
+      if (depth > 3 || publicFiles.length >= 500) return;
+      for (const e of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+        const path = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) await walk(join(dir, e.name), path, depth + 1);
+        else publicFiles.push(path);
+      }
+    };
+    await walk(join(webDir, 'public'), '', 0);
+    return { target: proxy.target, createReactApp: { publicFiles } };
+  }
+  const text = await readCapped(join(webDir, proxy.file));
+  const paths = text ? parseDevProxyPaths(text) : [];
+  return paths.length > 0 ? { target: proxy.target, paths } : undefined;
 }
 
 /** Read a project's nginx routes, from every configuration it ships. */
@@ -172,8 +295,12 @@ export async function startGateway(opts: {
   targets: Record<string, string>;
   port?: number;
 }): Promise<Gateway> {
-  const target = (path: string): URL | undefined => {
-    const name = routeFor(path, opts.routes, opts.fallback);
+  const target = (req: IncomingMessage): URL | undefined => {
+    const accept = req.headers.accept;
+    const name = routeFor(req.url ?? '/', opts.routes, opts.fallback, {
+      method: req.method ?? 'GET',
+      accept: Array.isArray(accept) ? accept.join(',') : (accept ?? ''),
+    });
     const url = opts.targets[name];
     return url ? new URL(url) : undefined;
   };
@@ -189,7 +316,7 @@ export async function startGateway(opts: {
   });
 
   const server: Server = createServer((req, res) => {
-    const to = target(req.url ?? '/');
+    const to = target(req);
     if (!to) {
       res.writeHead(502, { 'content-type': 'text/plain' });
       res.end('DevLaunch gateway: no service for this path.');
@@ -217,7 +344,7 @@ export async function startGateway(opts: {
   server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
     upgraded.add(socket);
     socket.on('close', () => upgraded.delete(socket));
-    const to = target(req.url ?? '/');
+    const to = target(req);
     if (!to) {
       socket.destroy();
       return;

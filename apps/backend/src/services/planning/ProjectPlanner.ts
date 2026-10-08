@@ -75,14 +75,11 @@ export class ProjectPlanner {
         continue;
       }
 
-      // Named before the run, because it is the one way a project can reach READY and
-      // still answer nothing. The dev server resolves this target itself, inside this
+      // Named before the run. The dev server resolves this target itself, inside this
       // service's own container, so `localhost` is this service — not the API beside it.
-      //
-      // Named either way. With DEVLAUNCH_REWRITE_SOURCE off — the default — this is all
-      // DevLaunch does about it, and saying which line to change is the honest answer.
-      // With it on the line is changed in the clone, and saying so is still the honest
-      // answer: a tool that edits code silently is one you cannot trust the output of.
+      // DevLaunch does something about it either way, and says what: by default its
+      // gateway forwards what the proxy would have (the project is not edited); with
+      // DEVLAUNCH_REWRITE_SOURCE on, the line is changed in its own clone instead.
       if (candidate.devProxy) {
         const api = candidates.find((c) => c.role === 'api' && c !== candidate);
         const suggestion = api
@@ -91,13 +88,13 @@ export class ProjectPlanner {
         warnings.push(
           `${candidate.name}: ${candidate.devProxy.file} proxies to ` +
             `${candidate.devProxy.target}, which inside this container is this service ` +
-            `itself — every request the page makes will fail. Point it at ${suggestion} ` +
-            'instead; services reach each other by name here. ' +
+            'itself, so the dev server cannot forward the page\'s API calls. ' +
             (config.rewriteSource
-              ? 'DEVLAUNCH_REWRITE_SOURCE is set, so DevLaunch will make that change in ' +
-                'its own clone before starting; your checkout is untouched.'
-              : 'Set DEVLAUNCH_REWRITE_SOURCE=1 to have DevLaunch make that change in its ' +
-                'own clone before starting; your checkout is untouched.'),
+              ? `DEVLAUNCH_REWRITE_SOURCE is set, so DevLaunch will point it at ${suggestion} ` +
+                'in its own clone before starting; your checkout is untouched.'
+              : 'DevLaunch forwards those calls to the API itself, from the address it gives ' +
+                'you; the project is not changed. Open that address rather than the ' +
+                `frontend's own port. (To fix it in the project, point it at ${suggestion}.)`),
         );
       }
 

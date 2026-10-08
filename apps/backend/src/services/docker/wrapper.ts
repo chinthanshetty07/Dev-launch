@@ -82,7 +82,7 @@ export function buildWrapperEnv(
   plan: RunPlan,
   workdir: string,
   installDir?: string,
-  control: { nodeHeapMb?: number; installReused?: boolean } = {},
+  control: { nodeHeapMb?: number; installReused?: boolean; legacyOpenssl?: boolean } = {},
 ): string[] {
   const env: Record<string, string> = {};
 
@@ -118,9 +118,15 @@ export function buildWrapperEnv(
   // refuses NODE_OPTIONS from every plan, because `--require` in it runs code before the
   // start command. This composes one flag from one integer, and is assigned here, with
   // the other control variables, so nothing a plan carries can replace it.
+  //
+  // And OpenSSL's legacy algorithms, for webpack 4 (`RunPlan.legacyOpenssl`): one fixed flag,
+  // composed here the same way — a plan says yes or no, never what goes in.
+  const nodeOptions: string[] = [];
   if (control.nodeHeapMb !== undefined && Number.isInteger(control.nodeHeapMb) && control.nodeHeapMb > 0) {
-    env.NODE_OPTIONS = `--max-old-space-size=${control.nodeHeapMb}`;
+    nodeOptions.push(`--max-old-space-size=${control.nodeHeapMb}`);
   }
+  if (control.legacyOpenssl === true) nodeOptions.push('--openssl-legacy-provider');
+  if (nodeOptions.length > 0) env.NODE_OPTIONS = nodeOptions.join(' ');
 
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
 }

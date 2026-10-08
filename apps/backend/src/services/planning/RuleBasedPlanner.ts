@@ -193,6 +193,23 @@ export function nodeVersionFor(meta: RepositoryMetadata): string {
   return match ?? NODE_IMAGE_VERSION;
 }
 
+/**
+ * The dependency that brings webpack 4 — react-scripts 4 or earlier, or webpack 4 itself —
+ * which hashes with MD4 and stops on Node 17+ with `ERR_OSSL_EVP_UNSUPPORTED`. Null when
+ * there is none, or the version cannot be read.
+ */
+export function needsLegacyOpenssl(deps: Record<string, string>): string | null {
+  const major = (range: string | undefined) => {
+    const m = /(\d+)/.exec(range ?? '');
+    return m ? Number(m[1]) : null;
+  };
+  const rs = major(deps['react-scripts']);
+  if (rs !== null && rs < 5) return `react-scripts ${deps['react-scripts']}`;
+  const wp = major(deps.webpack);
+  if (wp !== null && wp < 5) return `webpack ${deps.webpack}`;
+  return null;
+}
+
 /** Whether a script body invokes `bun` or `bunx` as a command. */
 export function runsBun(body: string): boolean {
   return /(?:^|&&|\|\||;|\s)bunx?(?=\s|$)/.test(body);
@@ -431,6 +448,12 @@ export class RuleBasedPlanner {
     const nodeVersion = nodeVersionFor(meta);
     const versionWarning = nodeVersionWarning(pkg.engineNode, nodeVersion);
     if (versionWarning) warnings.push(versionWarning);
+    // webpack 4 cannot hash on Node 17+ without OpenSSL's legacy algorithms; known from the
+    // manifest, so set before the first attempt rather than learned from a failed one.
+    const legacyOpenssl = needsLegacyOpenssl(pkg.dependencies);
+    if (legacyOpenssl) {
+      warnings.push(`${legacyOpenssl} needs OpenSSL's legacy algorithms on Node ${nodeVersion}; running Node with --openssl-legacy-provider.`);
+    }
 
     // Said when it is not the default, because it is a decision rather than a detail:
     // the dependency tree resolves against whichever Node runs, and a project pinned to
@@ -527,6 +550,7 @@ export class RuleBasedPlanner {
         warnings,
         plan: RunPlanSchema.parse({
           runtime: { language: 'node', version: nodeVersion },
+          ...(legacyOpenssl ? { legacyOpenssl: true } : {}),
           packageManager: pm,
           installCommand: install.installCommand,
           buildCommand: null,
@@ -577,6 +601,7 @@ export class RuleBasedPlanner {
       warnings,
       plan: RunPlanSchema.parse({
         runtime: { language: 'node', version: nodeVersion },
+        ...(legacyOpenssl ? { legacyOpenssl: true } : {}),
         packageManager: pm,
         installCommand: install.installCommand,
         // Dev servers build on the fly; a separate build step would only slow start-up.
