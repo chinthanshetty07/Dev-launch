@@ -79,8 +79,15 @@ describe('an install that needs more than the initial memory limit', () => {
       expect(s.failure?.remedy).toMatch(/colima start --cpu 4 --memory 8/);
       // One attempt: nothing larger to try, so nothing was retried.
       expect(s.launchAttempts?.map((a) => [a.memoryMb, a.result])).toEqual([[1024, FailureCode.OUT_OF_MEMORY]]);
-      // Released by the failure itself, not by a later shutdown.
-      const left = (await docker.listManaged('all')).filter((c) => c.Labels?.[config.docker.sessionLabel] === s.id);
+      // Released by the failure itself, not by a later shutdown. The run is marked FAILED and
+      // then torn down, so on a slower machine (CI) the container can still be going when
+      // FAILED is first seen: waited for, briefly — no shutdown happens in between.
+      const ours = async () => (await docker.listManaged('all')).filter((c) => c.Labels?.[config.docker.sessionLabel] === s.id);
+      let left = await ours();
+      for (let i = 0; i < 60 && left.length > 0; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        left = await ours();
+      }
       expect(left).toEqual([]);
       expect(exec.memory.heldMb()).toBe(0);
     } finally {
