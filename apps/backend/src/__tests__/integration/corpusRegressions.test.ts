@@ -194,7 +194,17 @@ describe('failures the real-world corpus found', () => {
     expect(outcome.failure?.code, JSON.stringify(outcome.failure)).toBe(FailureCode.WRONG_RUNTIME_VERSION);
     expect(outcome.failure?.confidence).toBe('high');
     expect(outcome.failure?.runtimeDirection).toBe('older');
-    expect(outcome.failure?.remedy).toMatch(/NODE_OPTIONS=--openssl-legacy-provider/);
+    // The remedy changed when DevLaunch began setting the flag itself (a plan's
+    // `legacyOpenssl`): it no longer asks the person to set NODE_OPTIONS.
+    expect(outcome.failure?.remedy).toMatch(/retries it once with Node's --openssl-legacy-provider/);
+  }, 300_000);
+
+  it('starts the same build once DevLaunch turns on the legacy algorithms (ahfarmer/calculator)', async () => {
+    // What the planner asks for when react-scripts or webpack is older than 5, and what the
+    // repair asks for after the error above: the flag reaches Node, and md4 works again.
+    const plan = await planFixture('node-openssl-legacy');
+    const outcome = await runFixture('node-openssl-legacy', { ...plan, legacyOpenssl: true }, 30_000);
+    expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
   }, 300_000);
 
   it('reports a planned dev server that exits 0 as stopped, not completed (ahfarmer/calculator)', async () => {
