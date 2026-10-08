@@ -267,7 +267,10 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     code: FailureCode.DEPENDENCY_INSTALL_FAILED,
     phases: ['install'],
     patterns: [/ERESOLVE (?:unable to resolve|could not resolve)/i, /peer dep(?:endency)? missing/i],
-    remedy: 'The repository has conflicting peer dependencies; it may need --legacy-peer-deps.',
+    remedy:
+      'The repository has conflicting peer dependencies. DevLaunch retries an npm install once ' +
+      'with --legacy-peer-deps (how npm 6 installed it); if it still fails, the versions ' +
+      'in package.json need to agree.',
     describe: () => 'npm could not resolve a consistent dependency tree.',
   },
   {

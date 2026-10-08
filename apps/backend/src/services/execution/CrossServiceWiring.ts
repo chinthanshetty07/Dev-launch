@@ -25,6 +25,8 @@ const API_BASE_KEYS = [
   'VITE_BACKEND_URL',
   'REACT_APP_API_URL',
   'REACT_APP_API_BASE_URL',
+  // RishiBakshii/mern-ecommerce's frontend reads this one.
+  'REACT_APP_BASE_URL',
   'NEXT_PUBLIC_API_URL',
   'NEXT_PUBLIC_API_BASE_URL',
   'VUE_APP_API_URL',
@@ -52,6 +54,8 @@ const ORIGIN_KEYS = [
   'APP_URL',
   'APP_ORIGIN',
   'WEB_ORIGIN',
+  // Bare, as RishiBakshii/mern-ecommerce's backend reads it: `cors({ origin: process.env.ORIGIN })`.
+  'ORIGIN',
 ];
 
 export interface WiringInput {

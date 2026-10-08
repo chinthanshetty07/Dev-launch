@@ -564,3 +564,46 @@ describe('webpack 4 on Node 17+ (ERR_OSSL_EVP_UNSUPPORTED)', () => {
     expect(attempt({ code: FailureCode.WRONG_RUNTIME_VERSION, logs: "No such built-in module: node:sqlite" })?.plan.legacyOpenssl).toBeUndefined();
   });
 });
+
+describe('npm refusing a peer-dependency conflict (ERESOLVE)', () => {
+  // As RishiBakshii/mern-ecommerce's frontend printed it: react-swipeable-views wants React up
+  // to 17, and the project has 18.
+  const logs = [
+    'npm error code ERESOLVE',
+    'npm error ERESOLVE could not resolve',
+    'npm error While resolving: react-swipeable-views@0.14.0',
+    'npm error Found: react@18.2.0',
+    'npm error Could not resolve dependency:',
+    'npm error peer react@"^15.3.0 || ^16.0.0 || ^17.0.0" from react-swipeable-views@0.14.0',
+    'npm error this command with --force or --legacy-peer-deps',
+  ].join('\n');
+
+  it('retries the same install with --legacy-peer-deps, as npm 6 installed it', () => {
+    const out = attempt({
+      code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+      evidence: 'npm error ERESOLVE could not resolve',
+      logs,
+      plan: plan({ installCommand: 'npm ci --no-audit --no-fund' }),
+    });
+    expect(out?.plan.installCommand).toBe('npm ci --no-audit --no-fund --legacy-peer-deps');
+    expect(out?.record.evidence[0]).toMatch(/ERESOLVE could not resolve/);
+  });
+
+  it('only once, only for npm, and only for that error', () => {
+    // Already tried: nothing more to relax.
+    expect(attempt({
+      code: FailureCode.DEPENDENCY_INSTALL_FAILED, logs,
+      plan: plan({ installCommand: 'npm install --legacy-peer-deps' }),
+    })?.record.after).not.toEqual({ installCommand: 'npm install --legacy-peer-deps --legacy-peer-deps' });
+    // Another manager's install is not npm's to relax.
+    expect(attempt({
+      code: FailureCode.DEPENDENCY_INSTALL_FAILED, logs,
+      plan: plan({ packageManager: 'yarn', installCommand: 'yarn install' }),
+    })?.plan.installCommand ?? '').not.toMatch(/legacy-peer-deps/);
+    // Another install failure: retrying it this way would hide the real cause.
+    expect(attempt({
+      code: FailureCode.DEPENDENCY_INSTALL_FAILED,
+      logs: 'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/not-a-package',
+    })?.plan.installCommand ?? '').not.toMatch(/legacy-peer-deps/);
+  });
+});

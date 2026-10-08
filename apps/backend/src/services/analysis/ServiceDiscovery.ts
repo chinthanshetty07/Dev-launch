@@ -316,7 +316,11 @@ async function inspectDir(
     // this scan ran for `web` only, so an API's own CORS allowlist — the thing that
     // decides whether the page's requests are answered — was never read at all.
     if (role === 'api') {
-      const accepted = await findAcceptedOrigins(base);
+      // Its own address is not a browser origin it accepts: that is the "listening on
+      // http://localhost:8000" line (RishiBakshii/mern-ecommerce), and read as an allowlist
+      // it raised a CORS warning about a frontend the API never mentions.
+      const own = candidate.declaredPort;
+      const accepted = (await findAcceptedOrigins(base)).filter((a) => own === undefined || Number(new URL(a.origin).port) !== own);
       if (accepted.length) candidate.acceptsOrigins = accepted;
     }
     return { candidate, backing: backingFor(Object.keys(manifest.dependencies), envKeys) };

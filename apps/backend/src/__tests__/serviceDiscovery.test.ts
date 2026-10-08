@@ -839,3 +839,27 @@ describe('frameworks a project is made of', () => {
     expect(services.map((s) => `${s.role}:${s.dir}`).sort()).toEqual(['api:edge', 'web:marketing']);
   });
 });
+
+describe('origins an API accepts', () => {
+  it('does not read the API\'s own "listening on" address as one (RishiBakshii/mern-ecommerce)', async () => {
+    // Read as an allowlist, the start-up line raised "backend accepts browser requests only
+    // from http://localhost:8000" — a frontend the API never mentions.
+    const root = await repo({
+      'frontend/package.json': pkg('frontend', { start: 'react-scripts start' }, { react: '18', 'react-scripts': '5' }),
+      'frontend/src/config.js': 'export const BASE_URL = process.env.REACT_APP_BASE_URL;\n',
+      'backend/package.json': pkg('backend', { start: 'node index.js' }, { express: '4', cors: '2' }),
+      'backend/index.js': [
+        "server.use(cors({ origin: process.env.ORIGIN, credentials: true }));",
+        "server.listen(8000, () => console.log('server [STARTED] ~ http://localhost:8000'));",
+        "// An origin it really names stays one.",
+        "const extra = ['http://localhost:3000'];",
+      ].join('\n'),
+    });
+    const found = await discoverServices(root);
+    const backend = found.candidates.find((c) => c.name === 'backend')!;
+    expect(backend.declaredPort).toBe(8000);
+    expect(backend.acceptsOrigins?.map((a) => a.origin)).toEqual(['http://localhost:3000']);
+    expect(backend.envKeys).toContain('ORIGIN');
+    expect(found.candidates.find((c) => c.name === 'frontend')!.envKeys).toContain('REACT_APP_BASE_URL');
+  });
+});

@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-10-08 — Peer-dependency conflicts retried, and two more setting names wired
+
+From `RishiBakshii/mern-ecommerce` (React frontend, Express backend), which ended
+PARTIALLY_READY with the frontend never installed:
+
+- **npm refused the install** (`ERESOLVE`: react-swipeable-views allows React up to 17, the
+  project has 18). DevLaunch named `--legacy-peer-deps` and stopped there. Now it retries
+  an npm install once with that flag (how npm 6 installed such trees, and what npm itself
+  suggests), only for that error.
+- **The frontend and backend were never told about each other.** The frontend reads its API
+  address from `REACT_APP_BASE_URL` and the backend its allowed page from `ORIGIN`; neither
+  name was on DevLaunch's lists, so neither was filled in. Both are now.
+- **A false CORS warning.** Every `http://localhost:PORT` in an API's code was read as an
+  origin it accepts, including its own start-up line (`server [STARTED] ~
+  http://localhost:8000`). An API's own port is no longer counted.
+
+(The "port 8000 is in use" note was correct: a program of the user's own held it.)
+
+**Evidence:** the repair test uses that run's real npm output; it fires once, for npm only,
+for that error only. Discovery run on the real repository finds both names and no longer the
+false origin. 6 mutations, all caught. Quick suite: 1,275 passed.
+
+**Not done:** not yet re-run end to end on that project (its run was still open on the dashboard).
+
 ## 2026-10-08 — Old React apps start on new Node, and their API calls reach the API
 
 Two faults, both from `necelentano/mern-ecommerce` (a React client and an Express server):

@@ -28,6 +28,15 @@ const api = service({ name: 'backend', role: 'api', expectedPort: 5000 });
 const urls = { frontend: 'http://localhost:5173/', backend: 'http://localhost:5001/' };
 
 describe('cross-service wiring', () => {
+  it('wires the bare names RishiBakshii/mern-ecommerce reads: REACT_APP_BASE_URL and ORIGIN', () => {
+    expect(wireService(web, [web, api], { urls, envKeys: { frontend: ['REACT_APP_BASE_URL'] } })).toEqual([
+      { key: 'REACT_APP_BASE_URL', value: 'http://localhost:5001', reason: 'backend is published here' },
+    ]);
+    expect(wireService(api, [web, api], { urls, envKeys: { backend: ['ORIGIN'] } })).toEqual([
+      { key: 'ORIGIN', value: 'http://localhost:5173', reason: 'frontend is served from here' },
+    ]);
+  });
+
   it('tells a frontend where its API is published, under the name it reads', () => {
     // The browser resolves this URL, not Docker: no alias, network or correct
     // orchestration can satisfy a page fetching a host address.

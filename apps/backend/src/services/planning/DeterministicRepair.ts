@@ -181,6 +181,39 @@ const RULES: readonly Rule[] = [
       };
     },
   },
+  // --- npm refused a peer-dependency conflict ----------------------------------
+  //
+  // npm 7 and later refuse a tree where a package's declared peer range excludes the
+  // version installed (`RishiBakshii/mern-ecommerce`: react-swipeable-views wants React
+  // up to 17, the project has 18). npm 6 installed such trees with a warning, and the
+  // project was written and run that way; `--legacy-peer-deps` is that behaviour, and is
+  // what npm's own message suggests. Only for that error, and once.
+  {
+    applies: (c) => c === FailureCode.DEPENDENCY_INSTALL_FAILED,
+    propose: ({ plan, failure, logs }) => {
+      const install = (plan.installCommand ?? '').trim();
+      if (!/^npm (?:ci|install|i)\b/.test(install) || /--legacy-peer-deps\b/.test(install)) return null;
+      const text = `${failure.evidence ?? ''}\n${failure.message}\n${logs.slice(-8000)}`;
+      const refusal = /ERESOLVE (?:unable to resolve|could not resolve)[^\n]*/i.exec(text);
+      if (!refusal) return null;
+      const installCommand = `${install} --legacy-peer-deps`;
+      return {
+        plan: { ...plan, installCommand },
+        record: {
+          source: 'deterministic',
+          type: 'START_COMMAND_CORRECTION',
+          failureCode: FailureCode.DEPENDENCY_INSTALL_FAILED,
+          before: { installCommand: plan.installCommand },
+          after: { installCommand },
+          evidence: [
+            refusal[0].slice(0, 160),
+            'a package\'s peer range excludes an installed version; npm 6 installed this with a warning, as --legacy-peer-deps does',
+          ],
+          confidence: 'high',
+        },
+      };
+    },
+  },
   // --- the start script does not exist, and another does ------------------------
   {
     applies: (c) => c === FailureCode.START_COMMAND_FAILED,
