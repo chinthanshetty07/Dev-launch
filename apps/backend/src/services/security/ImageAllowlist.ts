@@ -34,6 +34,10 @@ export const APPROVED_IMAGES: Readonly<Record<string, ApprovedImage>> = Object.f
   // runs on the version its author most likely used.
   'devlaunch/node:22': { language: 'node', version: '22' },
   'devlaunch/python:3.12': { language: 'python', version: '3.12' },
+  // 3.13 for a project that requires it: `robstermarinho/django-react-docker-stack` declares
+  // `requires-python = ">=3.13"` and marks every requirement `python_version >= "3.13"`, so
+  // on 3.12 pip skipped all of them and Django was never installed. 3.12 stays the default.
+  'devlaunch/python:3.13': { language: 'python', version: '3.13' },
 });
 
 export function isImageApproved(image: string): boolean {

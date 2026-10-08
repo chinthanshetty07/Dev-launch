@@ -461,3 +461,11 @@ describe('a build tool that needs a hash OpenSSL 3 removed', () => {
     expect(classify('npm error code EBADENGINE').runtimeDirection).toBeUndefined();
   });
 });
+
+describe('a standard-library module a newer Python removed', () => {
+  it('says the runtime is too new, so no repair moves it to an even newer one', () => {
+    const out = classify("Traceback (most recent call last):\nModuleNotFoundError: No module named 'imp'\n", 'start');
+    expect(out.code).toBe(FailureCode.WRONG_RUNTIME_VERSION);
+    expect(out.runtimeDirection).toBe('older');
+  });
+});

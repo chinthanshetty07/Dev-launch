@@ -87,10 +87,10 @@ async function main() {
     if (gb < 4) warn(`Docker has only ${gb.toFixed(1)} GB of memory`, `Large installs need more. ${moreMemory(engine)}`);
 
     const missing = [];
-    for (const image of ['devlaunch/node:20', 'devlaunch/node:22', 'devlaunch/python:3.12']) {
+    for (const image of ['devlaunch/node:20', 'devlaunch/node:22', 'devlaunch/python:3.12', 'devlaunch/python:3.13']) {
       if ((await cmd('docker', ['image', 'inspect', '--format', '{{.Id}}', image])) === null) missing.push(image);
     }
-    if (missing.length === 0) ok('Runner images built (node:20, node:22, python:3.12)');
+    if (missing.length === 0) ok('Runner images built (node:20, node:22, python:3.12, python:3.13)');
     else bad(`Runner images missing: ${missing.join(', ')}`, 'Run: ./devlaunch install   (or: bash scripts/build-runner-images.sh)');
 
     const net = await cmd('docker', ['network', 'inspect', '--format', '{{.Name}}', 'devlaunch-net']);

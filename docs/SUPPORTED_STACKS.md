@@ -9,7 +9,8 @@ and on the fixtures in `fixtures/`. "Supported" means a rule plans it — no mod
 |---|---|---|
 | Node 20 | `devlaunch/node:20` | default for JavaScript/TypeScript |
 | Node 22 | `devlaunch/node:22` | `engines.node` needs it, or a `node:` built-in only 22 has |
-| Python 3.12 | `devlaunch/python:3.12` | any Python project |
+| Python 3.12 | `devlaunch/python:3.12` | any Python project (the default) |
+| Python 3.13 | `devlaunch/python:3.13` | a project that requires it: `requires-python`, `.python-version`, `runtime.txt`, requirement markers or its Dockerfile |
 
 **Not supported yet:** Java (Maven, Gradle), Go, Rust, PHP, Ruby, .NET, Elixir, Deno, Bun.
 A repository whose only manifest is one of theirs is declined at once, naming the runtime —

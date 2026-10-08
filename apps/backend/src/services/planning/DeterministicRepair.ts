@@ -418,6 +418,9 @@ const RULES: readonly Rule[] = [
     propose: ({ plan, failure, logs }) => {
       // A newer image is the answer to a runtime that is too old, and only to that.
       if (failure.runtimeDirection === 'older') return null;
+      // Python's removed modules say the same whatever the failure was labelled: newer
+      // Pythons do not have them either. Only reachable now that 3.13 is approved.
+      if (plan.runtime.language === 'python' && REMOVED_STDLIB.test(`${failure.evidence ?? ''}\n${logs.slice(-4000)}`)) return null;
       const next = nextApprovedVersion(plan.runtime.language, plan.runtime.version);
       if (!next) return null;
 
@@ -675,6 +678,9 @@ function missingDistribution(text: string): { distribution: string; quote: strin
   const dist = distributionForModule(imported[1]!);
   return dist ? { distribution: dist, quote: imported[0]!.slice(0, 160) } : null;
 }
+
+/** Standard-library modules Python removed (3.12: imp, distutils, asynchat, asyncore, smtpd; 3.13: cgi, cgitb). */
+const REMOVED_STDLIB = /No module named '(?:imp|distutils|asynchat|asyncore|smtpd|cgi|cgitb)'/;
 
 /**
  * The next approved image version for a language, above the one a plan is using.

@@ -192,6 +192,12 @@ export interface PackageJsonSummary {
 export interface PythonSummary {
   requirements: string[];
   /**
+   * The lowest Python version the project says it needs, and where it said so
+   * (`requires-python`, `.python-version`, `runtime.txt`, requirement markers, its
+   * Dockerfile). The planner runs a version at least this new when it has one.
+   */
+  pythonFloor?: { version: string; evidence: string };
+  /**
    * Third-party distributions the entry files import, in import order.
    *
    * The last resort for a project that declares nothing. A lone `app.py` with no

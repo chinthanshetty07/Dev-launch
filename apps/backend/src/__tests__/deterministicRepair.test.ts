@@ -483,7 +483,9 @@ describe('a runtime too old for what the application imports', () => {
     expect(out).toBeNull();
   });
 
-  it('does not move a language with only one approved version', () => {
+  // Was "a language with only one approved version": Python now has 3.12 and 3.13. The
+  // point stands — a removed module is not brought back by a newer Python.
+  it('does not move Python up for a module newer Pythons removed', () => {
     const out = attempt({
       plan: RunPlanSchema.parse({ ...plan(), runtime: { language: 'python', version: '3.12' } }),
       code: FailureCode.WRONG_RUNTIME_VERSION,
@@ -518,7 +520,9 @@ describe('choosing the next approved runtime', () => {
     const { nextApprovedVersion } = await import('../services/planning/DeterministicRepair.js');
     expect(nextApprovedVersion('node', '24', four)).toBeNull();
     expect(nextApprovedVersion('node', '22')).toBeNull();
-    expect(nextApprovedVersion('python', '3.12')).toBeNull();
+    // 3.12 was the highest Python until 3.13 was approved for projects that require it.
+    expect(nextApprovedVersion('python', '3.13')).toBeNull();
+    expect(nextApprovedVersion('python', '3.12')).toBe('3.13');
   });
 
   it('returns nothing for a language it does not ship', async () => {

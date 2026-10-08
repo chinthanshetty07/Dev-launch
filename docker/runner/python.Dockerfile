@@ -4,7 +4,11 @@
 # non-root user (an anonymous volume inherits ownership from the image path it shadows,
 # and a volume over a missing path mounts root-owned), plus a compiler toolchain so
 # packages without an arm64 wheel can build from source instead of failing outright.
-FROM python:3.12-slim
+# One Dockerfile, two versions (3.12 and 3.13), as the Node runner does: a project declaring
+# `requires-python = ">=3.13"` gets nothing at all from pip on 3.12 — every requirement
+# carries that marker and is skipped — so it needs the newer one, not a repair.
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

@@ -30,6 +30,7 @@ import {
   pyprojectDepsBySection,
 } from './ServiceDiscovery.js';
 import { readCompose, type ComposeService, type ComposeSummary } from './ComposeFile.js';
+import { pythonVersionFloor } from './pythonVersion.js';
 import {
   driversForConnectionUrls,
   hardcodedDatabaseUrl,
@@ -646,8 +647,17 @@ export class RepositoryAnalyzer {
       }
     }
 
+    const pythonFloor = pythonVersionFloor({
+      pyproject,
+      pythonVersionFile: fileNames.includes('.python-version') ? await readCapped(join(base, '.python-version')) : null,
+      runtimeTxt: fileNames.includes('runtime.txt') ? await readCapped(join(base, 'runtime.txt')) : null,
+      requirementsTxt: hasRequirements ? await readCapped(join(base, 'requirements.txt')) : null,
+      dockerfile: fileNames.includes('Dockerfile') ? await readCapped(join(base, 'Dockerfile')) : null,
+    });
+
     return {
       requirements,
+      ...(pythonFloor ? { pythonFloor } : {}),
       ...(imported.length ? { imports: imported } : {}),
       ...(extras.length ? { impliedRequirements: extras } : {}),
       ...(hardcodedDb ? { hardcodedDatabaseUrl: hardcodedDb } : {}),

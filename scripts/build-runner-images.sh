@@ -15,8 +15,12 @@ for v in 20 22; do
   docker build --build-arg "NODE_VERSION=$v" -f docker/runner/node.Dockerfile -t "devlaunch/node:$v" docker/runner
 done
 
-echo "==> Building devlaunch/python:3.12"
-docker build -f docker/runner/python312.Dockerfile -t devlaunch/python:3.12 docker/runner
+# Two Python versions, for the same reason: a project that requires 3.13 cannot install a
+# single dependency on 3.12.
+for v in 3.12 3.13; do
+  echo "==> Building devlaunch/python:$v"
+  docker build --build-arg "PYTHON_VERSION=$v" -f docker/runner/python.Dockerfile -t "devlaunch/python:$v" docker/runner
+done
 
 echo "==> Done"
 docker images --format '    {{.Repository}}:{{.Tag}}  {{.Size}}' \

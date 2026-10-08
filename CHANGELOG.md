@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-08 — Python 3.13 for projects that require it
+
+`robstermarinho/django-react-docker-stack` requires Python 3.13 — `requires-python =
+">=3.13"`, `FROM python:3.13-slim`, and every line of its exported `requirements.txt` marked
+`; python_version >= "3.13"`. DevLaunch had only 3.12, so pip printed "Ignoring django:
+markers ... don't match your environment" for every requirement, installed nothing, and the
+backend died on `No module named 'django'` — which no repair could reach.
+
+DevLaunch now builds `devlaunch/python:3.13` beside 3.12 (one Dockerfile, as the Node images
+are), reads the floor a project states (`requires-python`, Poetry's `python`,
+`.python-version`, `runtime.txt`, markers on *every* requirement line, its Dockerfile), and
+runs the lowest image that meets it, saying why. 3.12 stays the default.
+
+**Found on the way:** with a second Python approved, the "move to the next runtime" repair
+would have answered `No module named 'imp'` — a module removed from 3.12 on — by moving to
+3.13, where it is just as gone. That signature now says the runtime is too new, and the rule
+never moves Python up for a removed module.
+
+**Evidence:** that repository now plans on 3.13, installs, migrates and reaches READY (it
+asked for its two email settings, which only its owner has). Python-version tests, the
+repair and classifier tests; 6 mutations caught. Two older tests that stated "Python has one
+version" were rewritten with that fact named.
+
 ## 2026-10-08 — One address for a frontend and the API behind its nginx
 
 `jamall-mahmoudi-dev/django-react-production-stack` reached READY, and its Save button did

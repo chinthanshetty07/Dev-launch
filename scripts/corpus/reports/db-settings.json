@@ -1,0 +1,400 @@
+{
+  "name": "db-settings",
+  "startedAt": "2026-10-08T05:58:07.155Z",
+  "backend": {
+    "running": "700773358ec6fa5111e441c3c9764d7a1f4ff13a",
+    "stale": false,
+    "egress": "enforced"
+  },
+  "results": [
+    {
+      "repo": "danielfsousa/express-rest-boilerplate",
+      "category": "express",
+      "exercises": "Express + MongoDB, yarn",
+      "pinnedSha": "b8bed6d7cfce3cf2ef89ec1b5e47b52dfc50e874",
+      "ref": null,
+      "remoteTip": "b8bed6d7cfce3cf2ef89ec1b5e47b52dfc50e874",
+      "sessionId": "8af9210d-bb2d-4829-a5e5-25e505bacce1",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "express",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "node 20",
+        "install": "yarn install --frozen-lockfile",
+        "start": "yarn run dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "PORT_NOT_LISTENING",
+      "failureService": null,
+      "stage": "start",
+      "message": "Nothing is listening on port 3000. Sockets observed: 127.0.0.11:43479.",
+      "evidence": "missing: [",
+      "confidence": "low",
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": [
+        "EMAIL_PORT",
+        "EMAIL_HOST",
+        "EMAIL_USERNAME",
+        "EMAIL_PASSWORD"
+      ],
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "AWAITING_INPUT",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 16
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 36
+        },
+        {
+          "state": "STARTING",
+          "atS": 39
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 41
+        },
+        {
+          "state": "FAILED",
+          "atS": 42
+        }
+      ],
+      "durationS": 42
+    },
+    {
+      "repo": "fastify/demo",
+      "category": "fastify",
+      "exercises": "Fastify TS, MySQL",
+      "pinnedSha": "5cd560125b3c2f0d42192bc7f493e8e3b9e75e52",
+      "ref": null,
+      "remoteTip": "5cd560125b3c2f0d42192bc7f493e8e3b9e75e52",
+      "sessionId": "b66d3dab-e33b-45d6-9ce0-2013ba118908",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "fastify",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm install --no-audit --no-fund",
+        "start": "npm run dev",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "MISSING_ENV",
+      "failureService": null,
+      "stage": "start",
+      "message": "The start script loads .env with --env-file, and the repository has no such file.",
+      "evidence": "node: .env: not found",
+      "confidence": "high",
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Fastify binds 127.0.0.1 unless the application reads HOST."
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "ANALYZING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 22
+        },
+        {
+          "state": "FAILED",
+          "atS": 72
+        }
+      ],
+      "durationS": 72
+    },
+    {
+      "repo": "gothinkster/node-express-realworld-example-app",
+      "category": "ts-node",
+      "exercises": "Express TS under Nx, Prisma Postgres",
+      "pinnedSha": "30b68e1e881462b2f4164ea09ab4c4f5699c7b0b",
+      "ref": null,
+      "remoteTip": "30b68e1e881462b2f4164ea09ab4c4f5699c7b0b",
+      "sessionId": "45960c6e-a5ac-4870-9833-84c3384fd58e",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "express",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run start",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:32889/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 7
+        },
+        {
+          "state": "READY",
+          "atS": 26
+        }
+      ],
+      "durationS": 26
+    },
+    {
+      "repo": "sahat/hackathon-starter",
+      "category": "express",
+      "exercises": "Express + MongoDB, engines >=24.18",
+      "pinnedSha": "64679404b2e95349f3d3f2a0b5cdf5a12b1cf4cc",
+      "ref": null,
+      "remoteTip": "d74a27bb1ea68fd0ca5fc71074d460aab3862772",
+      "sessionId": "55b7867e-1f33-4ecf-888e-1bb587f04680",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "express",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "node 20",
+        "install": "npm ci --no-audit --no-fund",
+        "start": "npm run start",
+        "port": 3000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [],
+      "pending": null,
+      "gateSkipped": [
+        "SMTP_USER",
+        "SMTP_PASSWORD",
+        "GIPHY_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_RECAPTCHA_SITE_KEY",
+        "GROQ_API_KEY",
+        "OPENAI_API_KEY",
+        "STRIPE_SKEY",
+        "STRIPE_PKEY"
+      ],
+      "warnings": [],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:32890/",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "CLONING",
+          "atS": 2
+        },
+        {
+          "state": "AWAITING_INPUT",
+          "atS": 3
+        },
+        {
+          "state": "STARTING",
+          "atS": 4
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 7
+        },
+        {
+          "state": "READY",
+          "atS": 36
+        }
+      ],
+      "durationS": 36
+    },
+    {
+      "repo": "testdrivenio/fastapi-crud-sync",
+      "category": "fastapi",
+      "exercises": "FastAPI in src/, compose, Postgres",
+      "pinnedSha": "d0e0b644bd914b63da95600c81a29c18825295ec",
+      "ref": null,
+      "remoteTip": "d0e0b644bd914b63da95600c81a29c18825295ec",
+      "sessionId": "086f4f96-3717-402f-b965-11273747cb3a",
+      "outcome": "PASS",
+      "finalState": "READY",
+      "detected": "fastapi",
+      "planSource": "rule-based",
+      "plan": {
+        "runtime": "python 3.12",
+        "install": "pip install psycopg2-binary SQLAlchemy==1.4.41 fastapi==0.87.0 uvicorn==0.20.0 pytest==7.2.0 httpx==0.23.1",
+        "start": "uvicorn app.main:app --host 0.0.0.0 --port 8000",
+        "port": 8000,
+        "dir": "src"
+      },
+      "services": [],
+      "failureCode": null,
+      "failureService": null,
+      "stage": null,
+      "message": null,
+      "evidence": null,
+      "confidence": null,
+      "repairs": [
+        "deterministic:START_COMMAND_CORRECTION"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Nothing runnable at the repository root; running src instead (docker-compose declares web)."
+      ],
+      "browserProblems": [],
+      "checks": [
+        {
+          "service": null,
+          "url": "http://localhost:32892/ping",
+          "status": 200
+        }
+      ],
+      "transitions": [
+        {
+          "state": "ANALYZING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 8
+        },
+        {
+          "state": "STARTING",
+          "atS": 20
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 21
+        },
+        {
+          "state": "READY",
+          "atS": 28
+        }
+      ],
+      "durationS": 28
+    },
+    {
+      "repo": "nsidnev/fastapi-realworld-example-app",
+      "category": "poetry",
+      "exercises": "FastAPI, Poetry, Postgres",
+      "pinnedSha": "029eb7781c60d5f563ee8990a0cbfb79b244538c",
+      "ref": null,
+      "remoteTip": "029eb7781c60d5f563ee8990a0cbfb79b244538c",
+      "sessionId": "885d7124-3da3-47fa-b2f7-d2960a363be4",
+      "outcome": "FAIL",
+      "finalState": "FAILED",
+      "detected": "fastapi",
+      "planSource": "ai-fallback",
+      "plan": {
+        "runtime": "python 3.11",
+        "install": "pip install -r /workspace/.devlaunch/requirements.txt",
+        "start": "uvicorn app.main:application --host 0.0.0.0 --port 8000",
+        "port": 8000,
+        "dir": "."
+      },
+      "services": [],
+      "failureCode": "DEPENDENCY_INSTALL_FAILED",
+      "failureService": null,
+      "stage": "install",
+      "message": "Dependency installation failed.",
+      "evidence": "ERROR: Failed to build installable wheels for some pyproject.toml based projects (asyncpg)",
+      "confidence": "low",
+      "repairs": [
+        "ai:PLAN_REWRITE"
+      ],
+      "pending": null,
+      "gateSkipped": null,
+      "warnings": [
+        "Installing 14 declared dependencies with the version ranges pyproject.toml gives them: this project has several top-level directories and no package configuration, so `pip install .` cannot build it. DevLaunch writes the ranges into /worksp"
+      ],
+      "browserProblems": [],
+      "checks": [],
+      "transitions": [
+        {
+          "state": "ANALYZING",
+          "atS": 2
+        },
+        {
+          "state": "STARTING",
+          "atS": 3
+        },
+        {
+          "state": "WAITING_FOR_READY",
+          "atS": 6
+        },
+        {
+          "state": "REPAIRING",
+          "atS": 15
+        },
+        {
+          "state": "FAILED",
+          "atS": 18
+        }
+      ],
+      "durationS": 18
+    }
+  ]
+}

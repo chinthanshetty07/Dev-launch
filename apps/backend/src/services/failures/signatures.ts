@@ -336,9 +336,12 @@ export const SIGNATURES: readonly Signature[] = Object.freeze([
     patterns: [
       /ModuleNotFoundError: No module named '(?:imp|distutils|asynchat|asyncore|smtpd|cgi|cgitb)'/,
     ],
+    // The runtime is too *new*: these modules are gone from 3.12 on, so a newer Python can
+    // never bring them back. Said, so the repair never "fixes" this by moving to 3.13.
+    detail: { runtimeDirection: 'older' },
     remedy:
-      'A dependency imports a module the standard library removed in Python 3.12, which ' +
-      'is the only Python DevLaunch provides. Upgrade that dependency to a version that ' +
+      'A dependency imports a module the standard library removed in Python 3.12, and ' +
+      'DevLaunch has no Python older than 3.12. Upgrade that dependency to a version that ' +
       'supports 3.12, or run this project on an older Python.',
     describe: (e) =>
       `A dependency uses a standard-library module removed in Python 3.12: ${e.trim().slice(0, 160)}`,

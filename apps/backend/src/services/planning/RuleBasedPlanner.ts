@@ -7,6 +7,7 @@ import type {
   RunPlan,
   WorkspacePackage,
 } from '@devlaunch/shared';
+import { pythonImageVersion } from '../analysis/pythonVersion.js';
 import { RunPlanSchema } from '@devlaunch/shared';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import { workspaceInstall } from '../analysis/ServiceDiscovery.js';
@@ -57,6 +58,8 @@ export interface PlanningOutcome {
 const NODE_IMAGE_VERSIONS = ['20', '22'] as const;
 const NODE_IMAGE_VERSION = NODE_IMAGE_VERSIONS[0];
 const PYTHON_IMAGE_VERSION = '3.12';
+/** Python images DevLaunch has; 3.13 exists for projects that cannot install on 3.12. */
+const PYTHON_IMAGE_VERSIONS = ['3.12', '3.13'] as const;
 /** `http.server`'s own default, which is what a person running it by hand would see. */
 const STATIC_PORT = 8000;
 
@@ -806,11 +809,19 @@ export class RuleBasedPlanner {
       env.push({ key: v.key, value: null, required: true });
     }
 
+    // The version the project asks for, when it asks for a newer one (`pythonVersionFloor`).
+    const pythonVersion = pythonImageVersion(py.pythonFloor, PYTHON_IMAGE_VERSIONS, PYTHON_IMAGE_VERSION);
+    if (py.pythonFloor && pythonVersion !== PYTHON_IMAGE_VERSION) {
+      warnings.push(`Running Python ${pythonVersion} rather than ${PYTHON_IMAGE_VERSION}: ${py.pythonFloor.evidence}.`);
+    } else if (py.pythonFloor && pythonVersion !== py.pythonFloor.version && !PYTHON_IMAGE_VERSIONS.some((v) => v === py.pythonFloor!.version)) {
+      warnings.push(`This project asks for Python ${py.pythonFloor.version} (${py.pythonFloor.evidence}); DevLaunch has ${PYTHON_IMAGE_VERSIONS.join(' and ')}, so it runs on ${pythonVersion}.`);
+    }
+
     return {
       detected: fw.id,
       warnings,
       plan: RunPlanSchema.parse({
-        runtime: { language: 'python', version: PYTHON_IMAGE_VERSION },
+        runtime: { language: 'python', version: pythonVersion },
         packageManager: 'pip',
         installCommand: install,
         // A schema script the author named beats the framework's own step: it is

@@ -44,7 +44,7 @@ page rather than serving nothing.
 ./scripts/build-runner-images.sh
 ```
 
-Builds `devlaunch/node:20` and `devlaunch/python:3.12`. These are DevLaunch's own images,
+Builds `devlaunch/node:20`, `devlaunch/node:22`, `devlaunch/python:3.12` and `devlaunch/python:3.13`. These are DevLaunch's own images,
 not stock upstream ones, for two reasons found by testing:
 
 - `/workspace` must exist **and be owned by the non-root user**. An anonymous volume
