@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type SessionSummary } from '../api';
 import { repoFromLink } from '../deepLink';
+import { AiHelp } from './AiHelp';
 
 /**
  * The first thing a person sees, and for a while the only thing.
@@ -34,7 +35,6 @@ export function LaunchView({
   // Filled in only: the person still presses Run (see deepLink.ts).
   const [fromLink] = useState(() => (typeof window === 'undefined' ? null : repoFromLink(window.location.search)));
   const [repoUrl, setRepoUrl] = useState(fromLink ?? '');
-  const [aiOn, setAiOn] = useState<boolean | null>(null);
   const [fixture, setFixture] = useState('');
   const [fixtures, setFixtures] = useState<string[]>([]);
   const [showFixtures, setShowFixtures] = useState(false);
@@ -47,10 +47,6 @@ export function LaunchView({
         setFixtures(list);
         setFixture((f) => f || (list.includes('node-http-basic') ? 'node-http-basic' : (list[0] ?? '')));
       })
-      .catch(() => undefined);
-    api
-      .health()
-      .then((h) => setAiOn(h.ai ?? null))
       .catch(() => undefined);
     api
       .sessions()
@@ -119,12 +115,6 @@ export function LaunchView({
           </p>
         )}
 
-        {aiOn === false && (
-          <p className="mt-2 text-[12px] text-muted" data-testid="ai-off">
-            AI help is off. Most repositories still run; for ones no rule recognises, add a free
-            key from console.groq.com as GROQ_API_KEY in DevLaunch's .env and restart it.
-          </p>
-        )}
 
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px]">
           <span className="text-muted">Try one:</span>
@@ -140,6 +130,7 @@ export function LaunchView({
           ))}
         </div>
       </form>
+      <AiHelp />
 
       {recent.length > 0 && (
         <div className="mt-10">

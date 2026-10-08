@@ -109,6 +109,15 @@ async function json<T>(res: Response): Promise<T> {
   return body;
 }
 
+/** `own-key`: the person's Groq key. `relay`: DevLaunch's shared one, limited daily. */
+export type AiSource = 'own-key' | 'relay' | 'off';
+export interface AiStatus {
+  source: AiSource;
+  /** A key added here, which can be removed here (one in .env cannot). */
+  ownKeyRemovable: boolean;
+  relay: boolean;
+}
+
 export interface SessionSummary {
   id: string;
   state: ExecutionState;
@@ -127,7 +136,17 @@ export interface BuildStamp {
 }
 
 export const api = {
-  health: () => fetch('/api/health').then((r) => json<{ build?: BuildStamp; ai?: boolean }>(r)),
+  health: () => fetch('/api/health').then((r) => json<{ build?: BuildStamp; ai?: boolean; aiSource?: AiSource }>(r)),
+
+  // Where AI help comes from, and a person's own Groq key (kept on this machine only).
+  aiStatus: () => fetch('/api/ai').then((r) => json<AiStatus>(r)),
+  saveAiKey: (key: string) =>
+    fetch('/api/ai/key', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key }),
+    }).then((r) => json<AiStatus>(r)),
+  removeAiKey: () => fetch('/api/ai/key', { method: 'DELETE' }).then((r) => json<AiStatus>(r)),
 
   fixtures: () => fetch('/api/fixtures').then((r) => json<string[]>(r)),
 

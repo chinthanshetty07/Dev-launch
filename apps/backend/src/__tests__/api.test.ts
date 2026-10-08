@@ -494,3 +494,42 @@ describe('project controls over HTTP', () => {
     expect((await fetch(`${base}/api/sessions/nope/stats`)).status).toBe(404);
   });
 });
+
+/**
+ * A person's own Groq key, added from the dashboard: checked with Groq, kept on this
+ * machine, and never sent back by any route.
+ */
+describe('adding your own AI key from the dashboard', () => {
+  it('reports where AI help comes from, takes a key Groq accepts, refuses one it does not, and never returns it', async () => {
+    const { AISettings } = await import('../services/ai/AISettings.js');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const good = 'gsk_' + 'G'.repeat(40);
+    const groq = (async (_u: string, init: RequestInit) =>
+      new Response('{}', { status: (init.headers as Record<string, string>).authorization === `Bearer ${good}` ? 200 : 401 })) as typeof fetch;
+    const ai = new AISettings({ env: {}, keyFile: join(mkdtempSync(join(tmpdir(), 'devlaunch-k-')), 'groq-key'), relayUrl: 'https://relay.example/v1/chat/completions', fetchImpl: groq });
+
+    const sessions = new SessionManager(stubExec(failed), { analyzer: stubAnalyzer, planner: stubPlanner });
+    const server = createServer(createApp({ sessions, fixturesDir: FIXTURES, staticDirs: [], ai }));
+    await new Promise<void>((r) => server.listen(0, r));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const post = (key: string) => fetch(`${base}/api/ai/key`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) });
+
+    expect(await (await fetch(`${base}/api/health`)).json()).toMatchObject({ ai: true, aiSource: 'relay' });
+    const bad = await post('gsk_' + 'B'.repeat(40));
+    expect(bad.status).toBe(400);
+    expect(await bad.text()).toMatch(/did not accept/);
+    const ok = await post(good);
+    const okText = await ok.text();
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(okText)).toMatchObject({ source: 'own-key', ownKeyRemovable: true });
+    // The key is in no answer: not the one that saved it, not status, not health.
+    const everything = okText + (await (await fetch(`${base}/api/ai`)).text()) + (await (await fetch(`${base}/api/health`)).text());
+    expect(everything).not.toContain(good);
+    expect(await (await fetch(`${base}/api/ai/key`, { method: 'DELETE' })).json()).toMatchObject({ source: 'relay' });
+
+    await sessions.shutdown();
+    await new Promise<void>((r) => server.close(() => r()));
+  });
+});

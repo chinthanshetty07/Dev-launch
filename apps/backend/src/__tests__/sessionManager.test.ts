@@ -3310,3 +3310,27 @@ describe('a self-signing secret the code reads but nothing sets', () => {
     expect(state).toBe(ExecutionState.READY);
   });
 });
+
+describe('AI help switched off or on without a restart', () => {
+  // No own key and no relay: the model is never asked. A key added from the dashboard
+  // turns it on for the next run, with no restart (`AISettings`).
+  it('asks the model only while AI help is available', async () => {
+    let asked = 0;
+    let available = false;
+    const mgr = new SessionManager(fakeExec(ready), {
+      analyzer: { analyze: async () => ({ envExample: [], warnings: [] }) } as never,
+      planner: { planRepository: async () => ({ plan: null, detected: null, warnings: [] }) } as never,
+      aiPlanner: { plan: async () => { asked++; throw new Error('no plan'); } } as never,
+      aiAvailable: () => available,
+    });
+    const first = await mgr.launch({ sourceDir: '/tmp' });
+    await until(() => first.state === ExecutionState.FAILED);
+    expect(asked).toBe(0);
+
+    available = true;
+    const second = await mgr.launch({ sourceDir: '/tmp' });
+    await until(() => second.state === ExecutionState.FAILED);
+    expect(asked).toBe(1);
+    await mgr.shutdown();
+  });
+});

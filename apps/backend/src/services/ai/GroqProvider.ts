@@ -2,6 +2,7 @@ import { FailureCode } from '@devlaunch/shared';
 import { SecurityRejection } from '../security/ImageAllowlist.js';
 import type { AIProvider, PlanRequest, RepairRequest } from './AIProvider.js';
 import { planPrompt, repairPrompt, systemPrompt } from './prompts.js';
+import type { AISettings } from './AISettings.js';
 
 const ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 /**
@@ -20,6 +21,11 @@ export interface GroqOptions {
   /** Injectable for tests, so no network is required to exercise the parsing path. */
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Where each request goes — the person's own key, or the DevLaunch relay (`AISettings`).
+   * Without it, the key comes from GROQ_API_KEY as it always did.
+   */
+  settings?: AISettings;
 }
 
 /**
@@ -85,8 +91,16 @@ export class GroqProvider implements AIProvider {
     );
   }
 
+  /** The endpoint and key for this request: the settings' route, or GROQ_API_KEY as before. */
+  private route(): { url: string; key?: string; relay: boolean } {
+    if (!this.opts.settings) return { url: ENDPOINT, key: this.key(), relay: false };
+    const r = this.opts.settings.route();
+    if (!r) throw new AIUnavailable('AI help is off: no Groq key, and no DevLaunch relay configured.');
+    return { url: r.url, ...(r.key ? { key: r.key } : {}), relay: r.source === 'relay' };
+  }
+
   private async complete(userPrompt: string): Promise<unknown> {
-    const key = this.key();
+    const route = this.route();
     const model = this.opts.model ?? process.env.GROQ_MODEL ?? DEFAULT_MODEL;
     const doFetch = this.opts.fetchImpl ?? fetch;
 
@@ -97,7 +111,18 @@ export class GroqProvider implements AIProvider {
     const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
     for (let attempt = 0; ; attempt++) {
-      const res = await this.request(doFetch, key, model, userPrompt);
+      const res = await this.request(doFetch, route, model, userPrompt);
+
+      // The relay's own daily limit is a "no" for today, not a "wait": retrying would only
+      // spend the attempts. Said plainly, with what to do about it.
+      if (res.status === 429 && route.relay && res.headers.get('x-devlaunch-limit')) {
+        const body = await res.text().catch(() => '');
+        const said = /"message"\s*:\s*"([^"]+)"/.exec(body)?.[1];
+        throw new AIUnavailable(
+          said ??
+            "DevLaunch's shared AI help has reached today's limit. Add your own free Groq key in the dashboard to keep going.",
+        );
+      }
 
       // A rate limit is a "wait", not a "no". Groq states how long to wait, so the
       // delay comes from the server rather than from a guess.
@@ -113,16 +138,17 @@ export class GroqProvider implements AIProvider {
 
   private async request(
     doFetch: typeof fetch,
-    key: string,
+    route: { url: string; key?: string; relay: boolean },
     model: string,
     userPrompt: string,
   ): Promise<Response> {
     try {
-      return await doFetch(ENDPOINT, {
+      return await doFetch(route.url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: `Bearer ${key}`,
+          // The relay adds its own key; a person's own key goes straight to Groq.
+          ...(route.key ? { authorization: `Bearer ${route.key}` } : {}),
         },
         body: JSON.stringify({
           model,
@@ -141,7 +167,7 @@ export class GroqProvider implements AIProvider {
       });
     } catch (err) {
       throw new AIUnavailable(
-        `Could not reach Groq: ${err instanceof Error ? err.message : String(err)}`,
+        `Could not reach ${route.relay ? "DevLaunch's AI relay" : 'Groq'}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

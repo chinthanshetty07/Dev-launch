@@ -1,0 +1,20 @@
+# The DevLaunch AI relay. Deploy steps: relay/README.md.
+name = "devlaunch-ai-relay"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Requests a day, per person (by internet address) and for everyone together.
+PER_PERSON_DAILY = "40"
+EVERYONE_DAILY = "2000"
+MODEL = "openai/gpt-oss-120b"
+
+[[durable_objects.bindings]]
+name = "COUNTER"
+class_name = "DailyCounter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DailyCounter"]
+
+# GROQ_API_KEY and SALT are secrets, set with `wrangler secret put` — never written here.

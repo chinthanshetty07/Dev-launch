@@ -307,6 +307,12 @@ export interface SessionManagerDeps {
   aiPlanner?: AIPlanner;
   /** Bounded repair. Absent in a no-AI deployment. */
   aiRepair?: AIRepair;
+  /**
+   * Whether AI help is available right now — a key, or the relay (`AISettings`). Asked at
+   * each use, so a key pasted into the dashboard counts at once. Absent means available
+   * whenever the planners are given.
+   */
+  aiAvailable?: () => boolean;
   /** Overridable so the unanswered-input timeout can be tested without waiting minutes. */
   awaitingInputMs?: number;
   /** Overridable so the liveness watch can be tested without waiting seconds. */
@@ -741,7 +747,7 @@ export class SessionManager extends EventEmitter {
       // a diagnosis about the invention rather than about the repository.
       // Not a model call for a run somebody already stopped (audit A-19).
       this.throwIfStopped(session);
-      if (this.deps.aiPlanner && !outcome.unrunnable) {
+      if (this.deps.aiPlanner && this.deps.aiAvailable?.() !== false && !outcome.unrunnable) {
         session.logs.buffer.push(
           'stdout',
           `No known pattern matched (${reason}) — asking the fallback planner.`,
@@ -1770,7 +1776,7 @@ export class SessionManager extends EventEmitter {
     // Attempt: one model call, within this failure class's budget.
     const repair = this.deps.aiRepair;
     const used = session.aiRepairCalls ?? 0;
-    if (!repair) return false;
+    if (!repair || this.deps.aiAvailable?.() === false) return false;
     if (used >= policy.aiCalls) {
       session.logs.buffer.push('stdout', `Not asking the model again for ${failure.code}: its budget of ${policy.aiCalls} call(s) is spent.`);
       return false;

@@ -204,6 +204,12 @@ export const config = {
      * that stop the guessing being necessary.
      */
     maxRepairAttempts: intEnv('DEVLAUNCH_MAX_REPAIR_ATTEMPTS', 2),
+    /**
+     * The DevLaunch AI relay (`relay/`): AI help for people with no Groq key of their own,
+     * through the maintainer's key, which stays on the relay. Empty until one is deployed;
+     * DEVLAUNCH_AI_RELAY_URL overrides it, and `off` turns it off (`AISettings`).
+     */
+    relayUrl: '',
   },
 
   /**

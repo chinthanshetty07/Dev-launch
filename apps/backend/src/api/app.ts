@@ -9,6 +9,7 @@ import { assertSafeRelativePath } from '../services/security/PathValidator.js';
 import { SecurityRejection } from '../services/security/ImageAllowlist.js';
 import { TERMINAL_STATES, type BackingView, type ServiceView } from '@devlaunch/shared';
 import { buildStamp } from '../services/build/BuildStamp.js';
+import type { AISettings } from '../services/ai/AISettings.js';
 import { normaliseRef, normaliseRepoUrl, splitRepoInput } from '../services/git/GitManager.js';
 import { registerDeploymentRoutes } from './deployments.js';
 
@@ -22,10 +23,11 @@ export interface AppOptions {
   /** Pinged for health. Absent in tests that do not care whether Docker is reachable. */
   docker?: { ping(): Promise<unknown> };
   /**
-   * Whether a model is available to plan what no rule recognises (a GROQ_API_KEY is set).
-   * Optional for the person running DevLaunch; the dashboard says so when it is off.
+   * Whether a model is available to plan what no rule recognises — a fixed answer, or the
+   * live settings (`AISettings`: own key, the DevLaunch relay, or off), which also give the
+   * dashboard its routes for adding and removing a key.
    */
-  ai?: boolean;
+  ai?: boolean | AISettings;
   /** The egress probe's latest verdict. See `EgressProbe`. */
   egress?: () => { verdict: 'enforced' | 'absent' | 'unknown'; detail: string };
   /** Host names besides this machine's that may address the API. See `HostGuard`. */
@@ -205,7 +207,8 @@ export function createApp(opts: AppOptions): Express {
       ...(problems.length > 0 ? { problems } : {}),
       sessions: opts.sessions.list().length,
       ...(egress ? { egress: egress.verdict } : {}),
-      ...(opts.ai !== undefined ? { ai: opts.ai } : {}),
+      ...(typeof opts.ai === 'boolean' ? { ai: opts.ai } : {}),
+      ...(opts.ai && typeof opts.ai === 'object' ? { ai: opts.ai.source() !== 'off', aiSource: opts.ai.source() } : {}),
       ...(errors.length > 0 ? { recentErrors: errors.slice(-5) } : {}),
       build: await buildStamp(opts.repoRoot ?? process.cwd()),
     });
@@ -218,6 +221,31 @@ export function createApp(opts: AppOptions): Express {
    * — a page reload is enough — could neither see the running session nor stop it, and
    * the only way past "a session is already running" was to restart the backend.
    */
+  /**
+   * Where AI help comes from, and a person's own Groq key: added here from the dashboard,
+   * checked with Groq, kept on this machine only, never sent back. See `AISettings`.
+   */
+  const ai = opts.ai && typeof opts.ai === 'object' ? opts.ai : undefined;
+  if (ai) {
+    const status = () => ({ source: ai.source(), ownKeyRemovable: ai.hasSavedKey(), relay: Boolean(ai.relayUrl) });
+    app.get('/api/ai', (_req, res) => res.json(status()));
+    app.post('/api/ai/key', async (req, res) => {
+      const key = typeof req.body?.key === 'string' ? req.body.key : '';
+      const saved = await ai.saveKey(key);
+      if (!saved.ok) {
+        res.status(400).json({
+          error: { code: 'INVALID_AI_KEY', category: 'VALIDATION_ERROR', message: saved.reason, retryable: true, suggestedAction: 'Get a free key at console.groq.com, then paste it again.' },
+        });
+        return;
+      }
+      res.json(status());
+    });
+    app.delete('/api/ai/key', async (_req, res) => {
+      await ai.removeKey();
+      res.json(status());
+    });
+  }
+
   app.get('/api/sessions', (_req, res) => {
     res.json(
       opts.sessions

@@ -17,6 +17,7 @@ import { RepositoryAnalyzer } from './services/analysis/RepositoryAnalyzer.js';
 import { RuleBasedPlanner } from './services/planning/RuleBasedPlanner.js';
 import { ProjectPlanner } from './services/planning/ProjectPlanner.js';
 import { GroqProvider } from './services/ai/GroqProvider.js';
+import { AISettings } from './services/ai/AISettings.js';
 import { AIPlanner } from './services/ai/AIPlanner.js';
 import { AIRepair } from './services/ai/AIRepair.js';
 import { LogSocketServer } from './websocket/LogSocketServer.js';
@@ -159,13 +160,20 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
   // AI is opt-in. Without a key DevLaunch plans deterministically and reports
   // UNSUPPORTED_PROJECT for anything its detectors do not recognise — which is the
   // shipped v1 behaviour, not a degraded mode.
-  const aiEnabled = opts.ai !== false && GroqProvider.isConfigured();
-  const provider = aiEnabled ? new GroqProvider() : undefined;
-  if (aiEnabled) {
-    console.log(`AI fallback enabled via ${provider!.name} (${process.env.GROQ_MODEL ?? 'default model'})`);
-  } else {
-    console.log('AI fallback disabled (no GROQ_API_KEY); planning is fully deterministic.');
-  }
+  // Own key, else the DevLaunch relay, else off — decided at each use (`AISettings`), so a
+  // key pasted into the dashboard works without a restart.
+  const aiSettings = new AISettings({ relayUrl: config.ai.relayUrl });
+  await aiSettings.load();
+  const provider = opts.ai !== false ? new GroqProvider({ settings: aiSettings }) : undefined;
+  const aiAvailable = () => opts.ai !== false && aiSettings.source() !== 'off';
+  const source = opts.ai === false ? 'off' : aiSettings.source();
+  console.log(
+    source === 'own-key'
+      ? `AI fallback enabled with your own Groq key (${process.env.GROQ_MODEL ?? 'default model'})`
+      : source === 'relay'
+        ? "AI fallback enabled through DevLaunch's shared relay (limited per day; add your own key for more)"
+        : 'AI fallback disabled (no Groq key, no relay); planning is fully deterministic.',
+  );
 
   const planner = new RuleBasedPlanner(analyzer);
   const sessions = new SessionManager(exec, {
@@ -175,6 +183,7 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     projectPlanner: new ProjectPlanner(analyzer, planner),
     aiPlanner: provider ? new AIPlanner(provider) : undefined,
     aiRepair: provider ? new AIRepair(provider) : undefined,
+    aiAvailable,
     // What each repository needed last time, so its next run starts there.
     memoryHints: FileHints.fromEnv(),
     // Each deployment's record, so a restart does not erase what ran and why.
@@ -250,7 +259,7 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     repoRoot,
     docker,
     recentErrors: recordedErrors,
-    ai: aiEnabled,
+    ai: opts.ai !== false ? aiSettings : undefined,
     egress: () => {
       // Reading the verdict is what schedules the next check. Nothing polls on a timer:
       // a probe runs a container, and one running every five minutes for ever on a

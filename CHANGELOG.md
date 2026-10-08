@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-10-08 — AI help for everyone, without sharing a key
+
+AI help needed a Groq key in each person's `.env`. Shipping the maintainer's key inside the
+tool was not an option: in an open-source repository it is a public key, found by scanners
+and spent by strangers. So two ways instead, decided at every request (`AISettings`):
+
+- **The DevLaunch AI relay** (`relay/`, a Cloudflare Worker). It holds the maintainer's key in
+  Cloudflare's secrets and forwards DevLaunch's requests only — one path, one model, a capped
+  answer, JSON only, a size limit — with a daily allowance per person (by address, hashed)
+  and for everyone together. At a limit DevLaunch says to add your own key, rather than
+  retrying. Used when a person has no key of their own; empty until it is deployed
+  (`relay/README.md`).
+- **Your own key, from the dashboard.** Pasted into a box, checked with Groq, kept in
+  `~/.devlaunch/groq-key` readable by this user only, never sent back; works at once, no
+  restart; removable. A key in `.env` still works and still wins.
+
+**Evidence:** relay, settings, provider, API and dashboard tests; 7 deliberate breaks caught
+(no per-person limit, any model, any path, retrying at the limit, relay before own key, a
+key file others can read, asking the model while AI is off).
+
+**Not done:** the relay is not deployed — that needs the maintainer's Cloudflare account.
+
 ## 2026-10-08 — Python 3.13 for projects that require it
 
 `robstermarinho/django-react-docker-stack` requires Python 3.13 — `requires-python =
