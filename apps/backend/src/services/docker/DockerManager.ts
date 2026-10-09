@@ -76,8 +76,13 @@ export class DockerManager {
     try {
       await this.docker.getImage(image).inspect();
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      // Only Docker saying "no such image" means absent. Every error was read that way,
+      // so with Docker stopped a run ended on "Runner image is not built. Run
+      // ./scripts/build-runner-images.sh" — images that were there all along, and a
+      // remedy that could not work. Anything else is passed on, and is said as itself.
+      if ((err as { statusCode?: number }).statusCode === 404) return false;
+      throw err;
     }
   }
 

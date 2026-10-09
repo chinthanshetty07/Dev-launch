@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-08 — "Docker isn't running" is said as that, not as a missing image
+
+With the Colima VM stopped, a run ended on `Runner image "devlaunch/node:20" is not built.
+Run ./scripts/build-runner-images.sh`. The images were all there; Docker was not answering.
+The image check read every error as "absent". Now only Docker's own "no such image" (404)
+means absent; anything else is passed on, and DevLaunch's existing message for it says
+Docker stopped answering and to start it (Docker Desktop, OrbStack or Colima).
+
+**Evidence:** a test with nothing on the Docker socket (the old code said "not built"; now
+"Docker stopped answering … Colima"), and one with a Docker that answers 404 (still "not
+built"). The old behaviour fails the first. `colima start` brought every image back unchanged.
+
 ## 2026-10-08 — A crash on a missing setting asks for it, instead of just failing
 
 `fullstack-superdev/MERN-ECommerce-Project` builds a Razorpay client from
