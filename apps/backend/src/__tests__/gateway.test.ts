@@ -201,6 +201,14 @@ describe('standing in for a dev server\'s proxy', () => {
     expect(routeFor('/api/categories', routing!.routes, routing!.web, { accept: 'application/json' })).toBe('server');
 
     expect(await planRunGateway({ services, sourceDir: root, devProxies, repointingProxies: true })).toBeNull();
+    // A page told its API's address joins `/api/...` onto it: nothing to route, even with
+    // `/api` paths in its source (fastapi/full-stack-fastapi-template: VITE_API_URL).
+    writeFileSync(join(root, 'client/package.json'), JSON.stringify({ name: 'client' }));
+    mkdirSync(join(root, 'client/src'), { recursive: true });
+    writeFileSync(join(root, 'client/src/api.ts'), "export const login = () => request({ url: '/api/v1/login/access-token' });\n");
+    expect(await planRunGateway({ services, sourceDir: root, devProxies: {}, repointingProxies: false })).not.toBeNull();
+    expect(await planRunGateway({ services, sourceDir: root, devProxies: {}, repointingProxies: false, envKeys: { client: ['VITE_API_URL'] } })).toBeNull();
+    writeFileSync(join(root, 'client/src/api.ts'), '');
     // No proxy, no nginx, no relative /api: nothing to route.
     expect(await planRunGateway({ services, sourceDir: root, devProxies: {}, repointingProxies: false })).toBeNull();
   });

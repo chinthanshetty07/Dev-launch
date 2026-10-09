@@ -520,8 +520,10 @@ describe('choosing the next approved runtime', () => {
     const { nextApprovedVersion } = await import('../services/planning/DeterministicRepair.js');
     expect(nextApprovedVersion('node', '24', four)).toBeNull();
     expect(nextApprovedVersion('node', '22')).toBeNull();
-    // 3.12 was the highest Python until 3.13 was approved for projects that require it.
-    expect(nextApprovedVersion('python', '3.13')).toBeNull();
+    // 3.12 was the highest Python until 3.13 was approved for projects that require it;
+    // then 3.13, until 3.14 was (`fastapi/full-stack-fastapi-template` requires it).
+    expect(nextApprovedVersion('python', '3.14')).toBeNull();
+    expect(nextApprovedVersion('python', '3.13')).toBe('3.14');
     expect(nextApprovedVersion('python', '3.12')).toBe('3.13');
   });
 

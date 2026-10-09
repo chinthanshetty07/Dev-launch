@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discoverServices, workspaceInstall } from '../services/analysis/ServiceDiscovery.js';
+import { discoverServices, isTestCode, looksLikeConnectionString, settingsFields, workspaceInstall } from '../services/analysis/ServiceDiscovery.js';
 import { RepositoryAnalyzer } from '../services/analysis/RepositoryAnalyzer.js';
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../fixtures');
@@ -861,5 +861,61 @@ describe('origins an API accepts', () => {
     expect(backend.acceptsOrigins?.map((a) => a.origin)).toEqual(['http://localhost:3000']);
     expect(backend.envKeys).toContain('ORIGIN');
     expect(found.candidates.find((c) => c.name === 'frontend')!.envKeys).toContain('REACT_APP_BASE_URL');
+  });
+});
+
+describe('fastapi/full-stack-fastapi-template, as DevLaunch reads it', () => {
+  it('reads the settings a pydantic BaseSettings class declares, and not other classes\' fields', () => {
+    const config = [
+      'class Settings(BaseSettings):',
+      '    model_config = SettingsConfigDict(env_file="../.env")',
+      '    SECRET_KEY: str',
+      '    FRONTEND_HOST: str = "http://localhost:5173"',
+      '',
+      '    DATABASE_URL: PostgresDsn',
+      '',
+      'class Item(SQLModel):',
+      '    TITLE: str',
+    ].join('\n') + '\n';
+    expect(settingsFields(config)).toEqual(['SECRET_KEY', 'FRONTEND_HOST', 'DATABASE_URL']);
+  });
+
+  it('never takes an outside service\'s address for the database\'s', () => {
+    // SENTRY_DSN was handed the Postgres address, and pydantic refused to start.
+    for (const k of ['SENTRY_DSN', 'STRIPE_WEBHOOK_URL', 'CLOUDINARY_URL', 'SMTP_URL', 'OPENAI_BASE_URL', 'AWS_S3_URL']) {
+      expect(looksLikeConnectionString(k), k).toBe(false);
+    }
+    for (const k of ['DATABASE_URL', 'POSTGRES_DSN', 'MONGO_URI', 'REDIS_URL', 'DSN', 'SQLALCHEMY_DATABASE_URI']) {
+      expect(looksLikeConnectionString(k), k).toBe(true);
+    }
+  });
+
+  it('tells test code from the app', () => {
+    for (const p of ['playwright.config.ts', 'tests/login.spec.ts', 'src/a.test.tsx', 'e2e/x.ts', 'app/tests/test_users.py', 'conftest.py']) {
+      expect(isTestCode(p), p).toBe(true);
+    }
+    for (const p of ['vite.config.ts', 'src/main.tsx', 'src/routes/login.tsx', 'app/core/config.py']) {
+      expect(isTestCode(p), p).toBe(false);
+    }
+  });
+
+  it('reads the page\'s entry file before a generated client fills the budget, and not its test config', async () => {
+    const generated = Object.fromEntries(
+      Array.from({ length: 80 }, (_, i) => [`frontend/src/client/gen${String(i).padStart(2, '0')}.ts`, 'export const x = 1;\n']),
+    );
+    const root = await repo({
+      'frontend/package.json': pkg('frontend', { dev: 'vite' }, { react: '19', vite: '7' }),
+      'frontend/playwright.config.ts': "export default { use: { baseURL: 'http://localhost:5173' } };\n",
+      ...generated,
+      'frontend/src/main.tsx': 'OpenAPI.BASE = import.meta.env.VITE_API_URL;\n',
+      'backend/pyproject.toml': '[project]\nname = "app"\ndependencies = ["fastapi"]\n',
+      'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+      'backend/app/core/config.py': 'class Settings(BaseSettings):\n    FRONTEND_HOST: str = "http://localhost:5173"\n',
+    });
+    const found = await discoverServices(root);
+    const frontend = found.candidates.find((c) => c.name === 'frontend')!;
+    expect(frontend.envKeys).toContain('VITE_API_URL');
+    expect(frontend.callsOrigins ?? []).toEqual([]);
+    expect(found.candidates.find((c) => c.dir === 'backend')!.envKeys).toContain('FRONTEND_HOST');
   });
 });

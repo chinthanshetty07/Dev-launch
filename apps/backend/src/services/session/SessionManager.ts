@@ -3010,6 +3010,7 @@ export class SessionManager extends EventEmitter {
           name: sv.name,
           role: sv.role,
           ...(sv.url ? { url: sv.url } : {}),
+          ...(sv.plan.healthCheck.path !== '/' ? { healthPath: sv.plan.healthCheck.path } : {}),
           runtime: sv.plan.runtime.language,
           environment: sv.plan.environmentVariables,
           ...(execIn(sv.handle.container) ? { exec: execIn(sv.handle.container) } : {}),

@@ -1,12 +1,14 @@
 import { mkdtemp, rm, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 import Dockerode from 'dockerode';
 import tarFs from 'tar-fs';
 import type { ServiceStats } from '@devlaunch/shared';
 import { config } from '../../config/index.js';
 import { buildHostConfig } from './ContainerSecurity.js';
+import { isImageApproved } from '../security/ImageAllowlist.js';
 
 /** The fields of Docker's stats payload this uses; dockerode types it as `unknown`. */
 interface DockerStats {
@@ -61,6 +63,29 @@ export interface ExitResult {
  * must exist before the repository can be copied in, and the wrapper script must be in
  * place before the entrypoint executes.
  */
+/** Where DevLaunch's runner images are built from: `docker/runner` in this repository. */
+const RUNNER_DIR = fileURLToPath(new URL('../../../../../docker/runner/', import.meta.url));
+
+interface RunnerRecipe {
+  dockerfile: string;
+  buildargs: Record<string, string>;
+}
+
+/** Builds in progress, so two runs needing the same missing image build it once. */
+const building: Record<string, Promise<void> | undefined> = {};
+
+/**
+ * How to build one of DevLaunch's approved runner images (`devlaunch/node:22`,
+ * `devlaunch/python:3.14`), or null for anything else — never an image outside the allowlist.
+ */
+export function runnerRecipe(image: string): RunnerRecipe | null {
+  const m = /^devlaunch\/(node|python):(\d+(?:\.\d+)?)$/.exec(image);
+  if (!m || !isImageApproved(image)) return null;
+  return m[1] === 'node'
+    ? { dockerfile: 'node.Dockerfile', buildargs: { NODE_VERSION: m[2]! } }
+    : { dockerfile: 'python.Dockerfile', buildargs: { PYTHON_VERSION: m[2]! } };
+}
+
 export class DockerManager {
   private readonly docker: Dockerode;
 
@@ -95,12 +120,21 @@ export class DockerManager {
     });
   }
 
-  async ensureImage(image: string): Promise<void> {
+  async ensureImage(image: string, onLine?: (line: string) => void): Promise<void> {
     if (await this.imageExists(image)) return;
 
     // DevLaunch's runner images are built locally and never published, so attempting a
     // pull would fail with an opaque registry error instead of the actual remedy.
     if (image.startsWith('devlaunch/')) {
+      // One of its own runners, missing: built here from the recipe in this repository,
+      // rather than stopping the run. An installation from before an image was added
+      // (Python 3.14, for `fastapi/full-stack-fastapi-template`) has every other one, and
+      // the first project that needs the new one builds it, once.
+      const recipe = runnerRecipe(image);
+      if (recipe) {
+        building[image] ??= this.buildRunner(image, recipe, onLine).finally(() => delete building[image]);
+        return building[image];
+      }
       throw new Error(
         `Runner image "${image}" is not built. Run ./scripts/build-runner-images.sh`,
       );
@@ -110,6 +144,36 @@ export class DockerManager {
     await new Promise<void>((resolve, reject) => {
       this.docker.modem.followProgress(stream, (err) => (err ? reject(err) : resolve()));
     });
+  }
+
+  /** Build one of DevLaunch's runner images from `docker/runner`, as the build script does. */
+  private async buildRunner(image: string, recipe: RunnerRecipe, onLine?: (line: string) => void): Promise<void> {
+    onLine?.(`${image} is not on this machine yet, so DevLaunch is building it now (once; a few minutes)...`);
+    const context = tarFs.pack(RUNNER_DIR);
+    const stream = (await this.docker.buildImage(context as never, {
+      t: image,
+      dockerfile: recipe.dockerfile,
+      buildargs: recipe.buildargs,
+    } as never)) as unknown as NodeJS.ReadableStream;
+    const failure = await new Promise<string | undefined>((resolve) => {
+      let failed: string | undefined;
+      this.docker.modem.followProgress(
+        stream,
+        (err) => resolve(failed ?? (err ? String((err as Error).message ?? err) : undefined)),
+        (event: { stream?: string; error?: string; errorDetail?: { message?: string } }) => {
+          // The steps, not every line apt prints: enough to see it moving.
+          for (const line of (event.stream ?? '').split('\n')) if (/^Step \d+\/\d+/.test(line)) onLine?.(line.trim());
+          if (event.error) failed = event.errorDetail?.message ?? event.error;
+        },
+      );
+    });
+    if (failure || !(await this.imageExists(image))) {
+      throw new Error(
+        `Building runner image "${image}" failed${failure ? `: ${failure}` : ''}. ` +
+          'Run ./scripts/build-runner-images.sh to see why.',
+      );
+    }
+    onLine?.(`Built ${image}.`);
   }
 
   async networkExists(name: string): Promise<boolean> {

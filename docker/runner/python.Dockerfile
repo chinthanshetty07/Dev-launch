@@ -4,7 +4,7 @@
 # non-root user (an anonymous volume inherits ownership from the image path it shadows,
 # and a volume over a missing path mounts root-owned), plus a compiler toolchain so
 # packages without an arm64 wheel can build from source instead of failing outright.
-# One Dockerfile, two versions (3.12 and 3.13), as the Node runner does: a project declaring
+# One Dockerfile, three versions (3.12, 3.13 and 3.14), as the Node runner does: a project declaring
 # `requires-python = ">=3.13"` gets nothing at all from pip on 3.12 — every requirement
 # carries that marker and is skipped — so it needs the newer one, not a repair.
 ARG PYTHON_VERSION=3.12

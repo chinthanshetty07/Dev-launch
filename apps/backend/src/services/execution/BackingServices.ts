@@ -64,6 +64,21 @@ export interface BackingCredentials {
 /** The fallback, for callers that state none. Each provisioned run gets its own. */
 const PASSWORD = 'devlaunch';
 
+/**
+ * Where an image keeps its data, for the tag it is. Postgres 18 moved it one level up, to
+ * `/var/lib/postgresql`, and refuses to start with anything mounted at the old
+ * `/var/lib/postgresql/data` ("in 18+, these Docker images are configured to store database
+ * data in a format which is compatible with pg_ctlcluster"). With the old path every
+ * `postgres:18` a project named fell back to DevLaunch's own Postgres 16, not the version
+ * it asked for (`fastapi/full-stack-fastapi-template`).
+ */
+export function dataPathsFor(spec: Pick<BackingSpec, 'kind' | 'dataPaths'>, image: string): string[] {
+  if (spec.kind !== 'postgres') return spec.dataPaths;
+  const major = Number(/:(\d+)/.exec(image)?.[1] ?? NaN);
+  if (!(major >= 18)) return spec.dataPaths;
+  return spec.dataPaths.map((p) => (p === '/var/lib/postgresql/data' ? '/var/lib/postgresql' : p));
+}
+
 export const BACKING_SPECS: Readonly<Record<BackingService['kind'], BackingSpec>> = Object.freeze({
   mongodb: {
     kind: 'mongodb',

@@ -67,6 +67,32 @@ describe('the end-to-end smoke test', () => {
     expect(Date.now() - started).toBeLessThan(10_000);
   }, 60_000);
 
+  it('asks an API at the path readiness used, there and through the address its page was given (fastapi/full-stack-fastapi-template)', async () => {
+    // The template's backend serves a built frontend at `/`, which development does not
+    // have: `/` answers 500 while `/docs` and every API route answer.
+    const s = createServer((q, r) => {
+      r.statusCode = q.url === '/docs' ? 200 : 500;
+      r.end(q.url === '/docs' ? 'docs' : 'Internal Server Error');
+    });
+    servers.push(s);
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', r));
+    const api = `http://localhost:${(s.address() as AddressInfo).port}`;
+    const v = await runSmokeTest({
+      services: [
+        { name: 'backend', role: 'api', url: `${api}/`, healthPath: '/docs', runtime: 'python', environment: [] },
+        { name: 'frontend', role: 'web', runtime: 'node', environment: [{ key: 'VITE_API_URL', value: api }] },
+      ],
+      backing: [],
+    });
+    expect(v.checks.map((c) => [c.name, c.target, c.passed])).toEqual([
+      ['backend answers', `${api}/docs`, true],
+      ['frontend → backend (VITE_API_URL)', `${api}/docs`, true],
+    ]);
+    // Without one, the root is asked, as before.
+    const root = await runSmokeTest({ services: [{ name: 'backend', url: `${api}/`, runtime: 'python', environment: [] }], backing: [] });
+    expect(root.passed).toBe(false);
+  });
+
   it('checks the API address a frontend was given, from this machine and from inside it', async () => {
     const api = await serving(200);
     const inside: string[][] = [];

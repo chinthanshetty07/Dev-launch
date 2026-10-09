@@ -6,6 +6,7 @@ import { ProjectPlanner } from '../services/planning/ProjectPlanner.js';
 import { RepositoryAnalyzer } from '../services/analysis/RepositoryAnalyzer.js';
 import { RuleBasedPlanner } from '../services/planning/RuleBasedPlanner.js';
 import { discoverServices } from '../services/analysis/ServiceDiscovery.js';
+import { sharesInstall } from '../services/execution/SharedInstall.js';
 
 /**
  * A workspace is planned as one install, and the plan says so.
@@ -114,5 +115,79 @@ describe('a workspace plans one install', () => {
     for (const s of out.plan?.services ?? []) {
       expect(s.installDirectory, s.name).not.toBe('.');
     }
+  });
+});
+
+describe('a Python service beside a Node workspace (fastapi/full-stack-fastapi-template)', () => {
+  // npm workspaces for frontend/ and packages/*, and a Python backend outside them. The
+  // backend was given the workspace's `npm install` and died on `npm: not found`.
+  const files = {
+    'package.json': { name: 'template', private: true, workspaces: ['frontend', 'packages/*'] },
+    'package-lock.json': '{"lockfileVersion": 3}',
+    'frontend/package.json': { name: 'frontend', scripts: { dev: 'vite' }, dependencies: { react: '19', vite: '7' } },
+    'frontend/src/main.tsx': "import React from 'react';\n",
+    'backend/pyproject.toml': '[project]\nname = "app"\nrequires-python = ">=3.14,<4.0"\ndependencies = ["fastapi[standard]<1.0.0,>=0.114.2", "sqlmodel<1.0.0,>=0.0.21"]\n',
+    'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+  };
+
+  it('installs the Node services from the workspace root, and the Python one its own way', async () => {
+    const out = await planOf(await repo(files));
+    const backend = out.plan!.services.find((s) => s.runtime.language === 'python')!;
+    const frontend = out.plan!.services.find((s) => s.runtime.language === 'node')!;
+    expect(frontend.installCommand).toMatch(/^npm (?:ci|install)/);
+    expect(frontend.installDirectory).toBe('.');
+    expect(backend.installCommand ?? '').not.toMatch(/npm/);
+    expect(backend.installDirectory ?? null).not.toBe('.');
+    // And on the Python it asks for.
+    expect(backend.runtime.version).toBe('3.14');
+  });
+
+  it('shares one install and one copy of the files among the Node services only', () => {
+    const node = { runtime: { language: 'node' as const, version: '20' } };
+    const python = { runtime: { language: 'python' as const, version: '3.14' } };
+    expect(sharesInstall({ sharedInstall: true }, node)).toBe(true);
+    expect(sharesInstall({ sharedInstall: true }, python)).toBe(false);
+    expect(sharesInstall({}, node)).toBe(false);
+  });
+});
+
+describe('a FastAPI app, run as `fastapi dev` runs it', () => {
+  // `app.frontend("/", directory=...)` insists the built frontend exists unless FASTAPI_ENV
+  // is "development", which `fastapi dev` sets. Started with plain uvicorn, the template's
+  // API stopped on "Frontend directory ... does not exist".
+  it('sets FASTAPI_ENV=development', async () => {
+    const root = await repo({
+      'pyproject.toml': '[project]\nname = "app"\ndependencies = ["fastapi[standard]"]\n',
+      'app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+    });
+    const meta = await analyzer.analyze(root);
+    const plan = new RuleBasedPlanner(analyzer).plan(meta).plan!;
+    expect(plan.startCommand).toMatch(/^uvicorn /);
+    expect(plan.environmentVariables).toContainEqual({ key: 'FASTAPI_ENV', value: 'development', required: false });
+  });
+});
+
+describe('a FastAPI app with Alembic migrations', () => {
+  // The template's prestart step runs `alembic upgrade head`; skipped, every query failed on
+  // `relation "user" does not exist`. Run before start, as Django's `migrate` is.
+  const files = {
+    'pyproject.toml': '[project]\nname = "app"\ndependencies = ["fastapi[standard]", "alembic>=1.19"]\n',
+    'app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n',
+    'alembic.ini': '[alembic]\nscript_location = app/alembic\n',
+  };
+
+  it('runs its migrations before it starts, and asks /docs whether it is up', async () => {
+    const root = await repo(files);
+    const plan = new RuleBasedPlanner(analyzer).plan(await analyzer.analyze(root)).plan!;
+    expect(plan.buildCommand).toBe('python -m alembic upgrade head');
+    expect(plan.healthCheck.path).toBe('/docs');
+  });
+
+  it('runs nothing without alembic.ini, or without Alembic in its dependencies', async () => {
+    const { 'alembic.ini': _ini, ...withoutIni } = files;
+    const noIni = await repo(withoutIni);
+    expect(new RuleBasedPlanner(analyzer).plan(await analyzer.analyze(noIni)).plan!.buildCommand).toBeNull();
+    const noDep = await repo({ ...files, 'pyproject.toml': '[project]\nname = "app"\ndependencies = ["fastapi[standard]"]\n' });
+    expect(new RuleBasedPlanner(analyzer).plan(await analyzer.analyze(noDep)).plan!.buildCommand).toBeNull();
   });
 });

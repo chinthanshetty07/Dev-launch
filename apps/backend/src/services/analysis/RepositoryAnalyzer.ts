@@ -674,6 +674,7 @@ export class RepositoryAnalyzer {
       ...(fileNames.includes('poetry.lock') ? { hasPoetryLock: true } : {}),
       ...(pyproject && /^\[tool\.poetry\]/m.test(pyproject) ? { hasPoetry: true } : {}),
       hasManagePy,
+      ...(fileNames.includes('alembic.ini') ? { hasAlembic: true } : {}),
       ...(initScripts.length ? { initScripts } : {}),
       entryCandidates,
     };

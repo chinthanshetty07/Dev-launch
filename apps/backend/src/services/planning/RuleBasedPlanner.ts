@@ -58,8 +58,8 @@ export interface PlanningOutcome {
 const NODE_IMAGE_VERSIONS = ['20', '22'] as const;
 const NODE_IMAGE_VERSION = NODE_IMAGE_VERSIONS[0];
 const PYTHON_IMAGE_VERSION = '3.12';
-/** Python images DevLaunch has; 3.13 exists for projects that cannot install on 3.12. */
-const PYTHON_IMAGE_VERSIONS = ['3.12', '3.13'] as const;
+/** Python images DevLaunch has; 3.13 and 3.14 exist for projects that cannot install on older ones. */
+const PYTHON_IMAGE_VERSIONS = ['3.12', '3.13', '3.14'] as const;
 /** `http.server`'s own default, which is what a person running it by hand would see. */
 const STATIC_PORT = 8000;
 
@@ -790,6 +790,16 @@ export class RuleBasedPlanner {
         if (!moduleName) return null;
         const appVar = entry?.appVariable ?? 'app';
         startCommand = `uvicorn ${moduleName}:${appVar} --host 0.0.0.0 --port ${fw.defaultPort}`;
+        // As `fastapi dev` runs it, which is how FastAPI's own template is meant to start
+        // in development: that command sets FASTAPI_ENV, and FastAPI reads it. Without it,
+        // `app.frontend("/", directory=...)` insists the built frontend is there — which in
+        // development it is not, because Vite serves it — and the API never started
+        // (`fastapi/full-stack-fastapi-template`: "Frontend directory ... does not exist").
+        env.push({ key: 'FASTAPI_ENV', value: 'development', required: false });
+        // Its tables, from its migrations, as Django's are from `migrate`: the template's
+        // prestart step runs `alembic upgrade head`, and without it every query failed on
+        // `relation "user" does not exist` (`fastapi/full-stack-fastapi-template`).
+        if (py.hasAlembic && requirementNames.includes('alembic')) frameworkBuild = 'python -m alembic upgrade head';
         // Served the way its README serves it, when that is over TLS with files it ships.
         // An application that refuses plain HTTP answers every request 403 otherwise.
         if (meta.tls) {
@@ -859,12 +869,22 @@ export class RuleBasedPlanner {
         expectedPort: fw.defaultPort,
         hostBinding: 'forced',
         environmentVariables: env,
-        healthCheck: { path: healthPathFor(meta), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
+        healthCheck: { path: pythonHealthPath(kind, healthPathFor(meta)), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
         planSource: 'rule-based',
         ...(protocol ? { protocol } : {}),
       }),
     };
   }
+}
+
+/**
+ * FastAPI serves its documentation at `/docs` unless told not to, so for a FastAPI app with no
+ * route of its own at a better path that is where it is asked: proof the API answers, which
+ * `/` is not. The template mounts a built frontend at `/` that development does not have,
+ * and `/` answered 500 there while every API route worked.
+ */
+export function pythonHealthPath(kind: string, path: string): string {
+  return kind === 'fastapi' && path === '/' ? '/docs' : path;
 }
 
 /**

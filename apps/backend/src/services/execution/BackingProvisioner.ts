@@ -6,6 +6,7 @@ import { config } from '../../config/index.js';
 import { buildLabels } from '../docker/ContainerSecurity.js';
 import {
   BACKING_SPECS,
+  dataPathsFor,
   connectionEnv,
   type BackingCredentials,
   connectionUrl,
@@ -171,7 +172,7 @@ export class BackingProvisioner {
         user: spec.user,
         env: spec.env(database, creds?.password),
         labels: buildLabels(sessionId),
-        dataPaths: spec.dataPaths,
+        dataPaths: dataPathsFor(spec, from),
         networkName,
       });
       // A database's limit counts against the VM like an application's does, so a memory

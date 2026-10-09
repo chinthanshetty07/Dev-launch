@@ -38,6 +38,8 @@ export const APPROVED_IMAGES: Readonly<Record<string, ApprovedImage>> = Object.f
   // `requires-python = ">=3.13"` and marks every requirement `python_version >= "3.13"`, so
   // on 3.12 pip skipped all of them and Django was never installed. 3.12 stays the default.
   'devlaunch/python:3.13': { language: 'python', version: '3.13' },
+  // 3.14 likewise: `fastapi/full-stack-fastapi-template` declares `requires-python = ">=3.14"`.
+  'devlaunch/python:3.14': { language: 'python', version: '3.14' },
 });
 
 export function isImageApproved(image: string): boolean {

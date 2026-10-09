@@ -488,7 +488,7 @@ export class ExecutionManager {
     // One gate for every plan, whatever produced it. A rejected plan never reaches Docker.
     this.validator.validate({ plan: opts.plan, image: opts.image });
 
-    await this.docker.ensureImage(opts.image);
+    await this.docker.ensureImage(opts.image, (line) => opts.logs?.write('stdout', line));
     if (opts.packageCacheVolume) await this.docker.ensureVolume(opts.packageCacheVolume);
 
     // The egress policy lives on a user-defined network — this run's own (see

@@ -15,12 +15,14 @@ import { config } from '../../config/index.js';
 import { cacheVolumeFor } from '../docker/ContainerSecurity.js';
 import { BackingProvisioner, type BackingRun } from './BackingProvisioner.js';
 import { sessionNetwork } from './RunNetworks.js';
+import { sharesInstall } from './SharedInstall.js';
 import { describeRoute, planGateway, readDevProxy, readNginxRoutes, startGateway, type Gateway } from './Gateway.js';
 import { callsRelativeApi } from '../analysis/ServiceDiscovery.js';
 import {
   browserWiringProblems,
   preferredApiHostPort,
   wireService,
+  wirableKeys,
   type BrowserWiringProblem,
 } from './CrossServiceWiring.js';
 import { choosePort } from '../ports/HostPorts.js';
@@ -201,8 +203,8 @@ export class LaunchStopped extends Error {
   }
 }
 
-function workspaceKeyFor(opts: { sessionId: string; project: { sharedInstall?: boolean } }, service: string): string {
-  return opts.project.sharedInstall ? `${opts.sessionId}:shared` : `${opts.sessionId}:${service}`;
+function workspaceKeyFor(opts: { sessionId: string; project: { sharedInstall?: boolean } }, plan: ServiceRunPlan): string {
+  return sharesInstall(opts.project, plan) ? `${opts.sessionId}:shared` : `${opts.sessionId}:${plan.name}`;
 }
 
 export class ProjectExecutor {
@@ -328,6 +330,7 @@ export class ProjectExecutor {
       sourceDir: opts.sourceDir,
       devProxies: opts.discovery?.devProxies ?? {},
       repointingProxies: config.rewriteSource && opts.mayRewriteSource === true,
+      ...(opts.discovery?.envKeys ? { envKeys: opts.discovery.envKeys } : {}),
     });
     if (web && urls[web.name] && routing) {
       run.gateway = await startGateway({
@@ -466,7 +469,7 @@ export class ProjectExecutor {
           networkAliases: aliasesFor(plan.name),
           hostPort: hostPorts[plan.name],
           packageCacheVolume: cacheVolumeFor(opts.cacheKey ?? opts.sourceDir ?? opts.sessionId, plan.name),
-          workspaceKey: workspaceKeyFor(opts, plan.name),
+          workspaceKey: workspaceKeyFor(opts, plan),
           ...(startMb !== undefined ? { memoryMb: startMb } : {}),
           ...(shared.nodeHeapMb ? { nodeHeapMb: shared.nodeHeapMb } : {}),
         });
@@ -501,7 +504,7 @@ export class ProjectExecutor {
               image: imageForRuntime(current.runtime.language, current.runtime.version),
               logs,
               packageCacheVolume: cacheVolumeFor(opts.cacheKey ?? opts.sourceDir ?? opts.sessionId, plan.name),
-              workspaceKey: workspaceKeyFor(opts, plan.name),
+              workspaceKey: workspaceKeyFor(opts, plan),
               networkAliases: aliasesFor(plan.name),
               hostPort: hostPorts[plan.name],
               // Read off the entry rather than captured, for the same reason `plan` is:
@@ -536,7 +539,7 @@ export class ProjectExecutor {
         // The loop's own index, not `indexOf`: a scan by value is a scan, and it
         // answers "where is an element equal to this" when the question is "how far
         // through am I". The last service waits for nobody — there is nothing behind it.
-        if (opts.project.sharedInstall && position < ordered.length - 1) {
+        if (sharesInstall(opts.project, plan) && position < ordered.length - 1) {
           opts.logs.write('stdout', `Waiting for ${plan.name} to finish installing before starting the next service...`);
           // A container that dies mid-install is asked about before anything else starts.
           // Releasing the next service after an out-of-memory kill ran the same tree at the
@@ -868,6 +871,8 @@ export async function planRunGateway(input: {
   sourceDir: string;
   devProxies: Record<string, { file: string; target: string }>;
   repointingProxies: boolean;
+  /** Variables each service reads, to tell a page with an API base from one calling `/api` on itself. */
+  envKeys?: Record<string, string[]>;
 }): Promise<ReturnType<typeof planGateway>> {
   const web = input.services.find((p) => p.role === 'web');
   if (!web) return null;
@@ -878,7 +883,12 @@ export async function planRunGateway(input: {
   return planGateway({
     services: input.services.map((p) => ({ name: p.name, role: p.role, port: p.expectedPort, dir: p.workingDirectory })),
     nginx: await readNginxRoutes(input.sourceDir).catch(() => []),
-    callsRelativeApi: await callsRelativeApi(webDir).catch(() => false),
+    // A page told its API's address joins `/api/...` onto it; those paths are not calls to
+    // its own address, and routing them sent the template's checks to a page it does not
+    // serve (`fastapi/full-stack-fastapi-template`, VITE_API_URL + `/api/v1/...`).
+    callsRelativeApi:
+      wirableKeys('web', input.envKeys?.[web.name] ?? []).length === 0 &&
+      (await callsRelativeApi(webDir).catch(() => false)),
     ...(read ? { devProxy: read } : {}),
   });
 }

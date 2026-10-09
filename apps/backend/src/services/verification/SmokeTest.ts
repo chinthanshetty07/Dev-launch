@@ -44,6 +44,12 @@ export interface SmokeService {
   name: string;
   role?: string;
   url?: string;
+  /**
+   * The path readiness checked, when it is not `/`. An API's root can be broken on purpose
+   * while the API works: FastAPI's own template serves a built frontend there, which in
+   * development does not exist, so `/` answers 500 and `/docs` 200.
+   */
+  healthPath?: string;
   runtime: 'node' | 'python' | 'container';
   environment: { key: string; value: string | null }[];
   /** Runs a command inside this service's container and returns what it printed. */
@@ -123,11 +129,11 @@ async function reachesFromInside(service: SmokeService, host: string, port: numb
 
 /** The origin of every other service's URL, so a frontend's API address can be recognised. */
 function apiTargets(services: SmokeService[], self: SmokeService) {
-  const out: { name: string; origin: string; internal: RegExp }[] = [];
+  const out: { name: string; origin: string; healthPath?: string; internal: RegExp }[] = [];
   for (const other of services) {
     if (other === self || !other.url) continue;
     const u = new URL(other.url);
-    out.push({ name: other.name, origin: u.origin, internal: new RegExp(`^https?://${other.name}(?:-[a-z0-9-]+)?:(\\d+)`, 'i') });
+    out.push({ name: other.name, origin: u.origin, healthPath: other.healthPath, internal: new RegExp(`^https?://${other.name}(?:-[a-z0-9-]+)?:(\\d+)`, 'i') });
   }
   return out;
 }
@@ -152,8 +158,9 @@ export async function runSmokeTest(input: {
 
   for (const s of input.services) {
     if (!s.url) continue;
-    const r = await answers(s.url);
-    checks.push({ name: `${s.name} answers`, kind: 'http', service: s.name, target: s.url, passed: r.ok, detail: r.detail });
+    const target = s.healthPath ? new URL(s.healthPath, s.url).toString() : s.url;
+    const r = await answers(target);
+    checks.push({ name: `${s.name} answers`, kind: 'http', service: s.name, target, passed: r.ok, detail: r.detail });
   }
 
   // The address a person is given, and the API paths through it, as the page will call them.
@@ -176,8 +183,11 @@ export async function runSmokeTest(input: {
       for (const v of s.environment) {
         if (!v.value) continue;
         if (v.value.startsWith(t.origin)) {
-          const r = await answers(v.value);
-          checks.push({ name: `${s.name} → ${t.name} (${v.key})`, kind: 'wiring', service: s.name, target: v.value, passed: r.ok, detail: r.detail });
+          // The address as given, at the path the API answers on when it is the bare origin.
+          const bare = new URL(v.value).pathname.replace(/\/+$/, '') === '';
+          const target = bare && t.healthPath ? new URL(t.healthPath, v.value).toString() : v.value;
+          const r = await answers(target);
+          checks.push({ name: `${s.name} → ${t.name} (${v.key})`, kind: 'wiring', service: s.name, target, passed: r.ok, detail: r.detail });
           continue;
         }
         const m = t.internal.exec(v.value);

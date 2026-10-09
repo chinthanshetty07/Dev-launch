@@ -8,6 +8,7 @@ import { ProjectPlanSchema } from '@devlaunch/shared';
 import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from './RuleBasedPlanner.js';
 import { workspaceInstall } from '../analysis/ServiceDiscovery.js';
+import { inWorkspace } from '../execution/SharedInstall.js';
 import { submoduleWarning } from '../analysis/RepositoryAnalyzer.js';
 import { config } from '../../config/index.js';
 
@@ -103,7 +104,10 @@ export class ProjectPlanner {
         ...outcome.plan,
         // The per-package install is replaced, not supplemented: running both would
         // install the same tree twice and the second would fail the same way.
-        ...(workspace
+        // Node services only: a workspace is a Node package manager's. The template's
+        // Python backend (`fastapi/full-stack-fastapi-template`) was given `npm install`
+        // in place of its own, and died on `npm: not found`.
+        ...(workspace && inWorkspace(outcome.plan)
           ? { installCommand: workspace.command, installDirectory: '.', packageManager: workspace.manager }
           : {}),
         // The port the service's own code declares wins over the planner's default.

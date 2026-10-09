@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-10-09 — FastAPI's own full-stack template runs end to end
+
+`fastapi/full-stack-fastapi-template` (React page in an npm workspace, FastAPI backend on
+Python 3.14, Postgres 18) ended PARTIALLY_READY with the backend dead. Each fault, and why:
+
+- **The backend was given `npm install`.** The workspace's one root install was applied to
+  every service, Python included: `npm: not found`. Only Node services are in a workspace
+  now; the rest install, and keep their files, on their own (`SharedInstall.ts`).
+- **Python 3.14.** It asked for `>=3.14`; DevLaunch had 3.12 and 3.13 and fell back to
+  3.12. A `devlaunch/python:3.14` runner is added, and **a missing runner image is built
+  on the spot** from `docker/runner` the first time a project needs it, with progress in
+  the run's log, so an existing installation does not need re-installing.
+- **Postgres 18 refused to start** under DevLaunch's sandbox and fell back to 16: 18 keeps
+  its data in `/var/lib/postgresql`, not `.../data`. It now gets the new folder and runs as
+  the project asked.
+- **Settings in a pydantic `BaseSettings` class were invisible**, so the backend was never
+  told the page's address (`FRONTEND_HOST`, now wired), and **`SENTRY_DSN` was handed the
+  database address** (anything ending `_DSN` looked like one). Outside services' names
+  (Sentry, Stripe, mail, storage, AI APIs…) are no longer taken for databases.
+- **The page's `VITE_API_URL` was not found**: a generated API client filled the scan's
+  budget before `src/main.tsx`. A folder's own files are now read before its subfolders.
+  Test code (`playwright.config.ts`) no longer counts as addresses the page calls.
+- **`Frontend directory ... does not exist`**: started with plain uvicorn, FastAPI insisted
+  on a built frontend. DevLaunch now sets `FASTAPI_ENV=development`, as `fastapi dev` does.
+- **No tables**: Alembic migrations run before start (`python -m alembic upgrade head`)
+  when the app ships `alembic.ini` and depends on Alembic, as Django's `migrate` does.
+- **False failures**: FastAPI apps are checked at `/docs`, and the end-to-end check asks
+  an API at the path readiness used, not `/`. No `/api` gateway is put in front of a page
+  that is given its API's address.
+
+**Evidence:** on the real repository: READY, every check passing (backend `/docs` 200,
+page 200, page → backend 200, backend → Postgres 18); the Python 3.14 image built by
+DevLaunch during the run; a test user signed up (200) and logged in (200); CORS allowing
+the page's real address. A real-Docker test starts `postgres:18` without fallback (fails on
+the old folder). Unit tests for each change; 22 mutations, all caught. Quick suite: 1,308.
+
+**Not done:** the template's admin user (`app/initial_data.py`, its second prestart step)
+is not created — a setup step is one command. Sign-up works.
+
 ## 2026-10-09 — DevLaunch starts Colima itself when Docker is stopped
 
 On a Mac, Docker lives in the Colima VM. After the Mac restarts, or the VM stops, every run

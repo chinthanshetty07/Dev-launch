@@ -471,10 +471,20 @@ const KIND_TOKENS: Record<BackingService['kind'], RegExp> = {
  */
 export function looksLikeConnectionString(key: string): boolean {
   if (!/(?:_URL|_URI|_DSN|CONNECTION_?STRING|^DSN$|^DATABASE$)$/.test(key)) return false;
+  if (OUTSIDE_SERVICE.test(key)) return false;
   return !/^(?:API|CLIENT|FRONTEND|WEB|APP|CORS|ORIGIN|CALLBACK|REDIRECT|WEBHOOK|BASE|SITE|PUBLIC|NEXT_PUBLIC|VITE|REACT_APP|SERVER|HOST)_/.test(
     key,
   );
 }
+
+/**
+ * Addresses of services DevLaunch does not run: an error tracker, payments, mail, storage, a
+ * model API. `SENTRY_DSN` ends in `_DSN` and was handed the database's address, which
+ * pydantic refused at start-up — "URL scheme should be 'http' or 'https'"
+ * (`fastapi/full-stack-fastapi-template`).
+ */
+const OUTSIDE_SERVICE =
+  /^(?:SENTRY|BUGSNAG|ROLLBAR|DATADOG|NEW_?RELIC|POSTHOG|SEGMENT|STRIPE|PAYPAL|RAZORPAY|CLOUDINARY|SMTP|MAIL\w*|EMAIL\w*|SENDGRID|TWILIO|SLACK|DISCORD|GITHUB|GOOGLE|OAUTH|AUTH0?|S3|AWS|MINIO|R2|CDN|STORAGE|OPENAI|ANTHROPIC|GROQ|HUGGINGFACE|ELASTIC\w*|ALGOLIA|AMQP|RABBIT\w*|KAFKA|NATS)_/;
 
 /**
  * The service's own `.env.example`, with whether each variable ships a value.
@@ -498,6 +508,21 @@ async function serviceEnvExample(base: string): Promise<EnvExampleVar[] | undefi
  * directory — which the root-level analyzer never sees — and `process.env.X` in its
  * source, which is the only evidence when no example file is shipped.
  */
+/**
+ * The settings a pydantic `BaseSettings` class reads: each upper-case field is read from the
+ * environment variable of the same name. FastAPI projects declare their configuration this
+ * way (`FRONTEND_HOST: str = "http://localhost:5173"`), and with no `os.environ` in sight
+ * the backend of `fastapi/full-stack-fastapi-template` was read as reading nothing — so
+ * nothing told it where its page is, and CORS refused the page.
+ */
+export function settingsFields(source: string): string[] {
+  const out: string[] = [];
+  for (const cls of source.matchAll(/^class \w+\([^)]*\bBaseSettings\b[^)]*\):\n((?:[ \t]+[^\n]*\n|[ \t]*\n)*)/gm)) {
+    for (const m of cls[1]!.matchAll(/^[ \t]{4}([A-Z][A-Z0-9_]{2,})\s*:/gm)) out.push(m[1]!);
+  }
+  return out;
+}
+
 async function serviceEnvKeys(base: string): Promise<string[]> {
   const keys = new Set<string>();
 
@@ -520,6 +545,7 @@ async function serviceEnvKeys(base: string): Promise<string[]> {
     // frontend is exactly the kind of service whose API base URL has to be injected.
     for (const m of raw.matchAll(/import\.meta\.env\.([A-Z][A-Z0-9_]{2,})/g)) keys.add(m[1]!);
     for (const m of raw.matchAll(/os\.environ(?:\.get)?[[(]['"]([A-Z][A-Z0-9_]{2,})['"]/g)) keys.add(m[1]!);
+    for (const key of settingsFields(raw)) keys.add(key);
   }
 
   return [...keys];
@@ -741,8 +767,23 @@ export async function findBindHostVariable(base: string): Promise<{ key: string;
  * port or every request the page makes is refused. Finding it is what turns that from a
  * mystery into a decision.
  */
+/**
+ * Tests and test-runner configuration: what they call is the test's business, not the page's.
+ * `playwright.config.ts` names the dev server's own address (`http://localhost:5173`), and
+ * read as an address the page calls it raised "nothing is serving the address the page asks
+ * for" (`fastapi/full-stack-fastapi-template`).
+ */
+export function isTestCode(path: string): boolean {
+  return (
+    /(?:^|\/)(?:playwright|cypress|vitest|jest|karma)\.config\.[cm]?[jt]s$/.test(path) ||
+    /\.(?:test|spec|e2e)\.[cm]?[jt]sx?$/.test(path) ||
+    /(?:^|\/)(?:tests?|__tests__|e2e|cypress)\//.test(path) ||
+    /(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest)\.py$/.test(path)
+  );
+}
+
 async function findCalledOrigins(base: string): Promise<string[]> {
-  const files = await collectSourceFiles(base);
+  const files = (await collectSourceFiles(base)).filter((f) => !isTestCode(relative(base, f)));
   const origins = new Set<string>();
 
   for (const file of files) {
@@ -769,7 +810,7 @@ async function findCalledOrigins(base: string): Promise<string[]> {
  * matched, which excludes the common `listening on http://localhost:${PORT}` log line.
  */
 async function findAcceptedOrigins(base: string): Promise<{ origin: string; file: string }[]> {
-  const files = await collectSourceFiles(base);
+  const files = (await collectSourceFiles(base)).filter((f) => !isTestCode(relative(base, f)));
   const seen = new Set<string>();
   const out: { origin: string; file: string }[] = [];
 
@@ -796,7 +837,13 @@ async function collectSourceFiles(
 
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (out.length >= budget || depth > 3) return;
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    // A folder's own files before its subfolders: the entry point (`src/main.tsx`) sits at
+    // the top of `src/`, and a generated client beside it (`src/client/`, dozens of files)
+    // used up the budget first — `fastapi/full-stack-fastapi-template`'s page was read as
+    // reading no VITE_API_URL, and was never told where its API is.
+    const entries = (await readdir(dir, { withFileTypes: true }).catch(() => [])).sort(
+      (a, b) => Number(a.isDirectory()) - Number(b.isDirectory()),
+    );
     for (const entry of entries) {
       if (out.length >= budget) return;
       if (entry.isDirectory()) {

@@ -276,6 +276,8 @@ export interface PythonSummary {
   hasPoetry?: boolean;
   /** manage.py at the root is the definitive Django signal. */
   hasManagePy: boolean;
+  /** An `alembic.ini` beside the code: its schema comes from Alembic migrations. */
+  hasAlembic?: boolean;
   /** Top-level modules that import a web framework, e.g. { file: 'app.py', framework: 'flask' }. */
   entryCandidates: PythonEntry[];
 }

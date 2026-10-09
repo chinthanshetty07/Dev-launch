@@ -28,6 +28,12 @@ const api = service({ name: 'backend', role: 'api', expectedPort: 5000 });
 const urls = { frontend: 'http://localhost:5173/', backend: 'http://localhost:5001/' };
 
 describe('cross-service wiring', () => {
+  it('tells fastapi/full-stack-fastapi-template\'s backend where its page is: FRONTEND_HOST', () => {
+    expect(wireService(api, [web, api], { urls, envKeys: { backend: ['FRONTEND_HOST'] } })).toEqual([
+      { key: 'FRONTEND_HOST', value: 'http://localhost:5173', reason: 'frontend is served from here' },
+    ]);
+  });
+
   it('wires the bare names RishiBakshii/mern-ecommerce reads: REACT_APP_BASE_URL and ORIGIN', () => {
     expect(wireService(web, [web, api], { urls, envKeys: { frontend: ['REACT_APP_BASE_URL'] } })).toEqual([
       { key: 'REACT_APP_BASE_URL', value: 'http://localhost:5001', reason: 'backend is published here' },

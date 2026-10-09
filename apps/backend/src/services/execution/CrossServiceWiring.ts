@@ -56,6 +56,8 @@ const ORIGIN_KEYS = [
   'WEB_ORIGIN',
   // Bare, as RishiBakshii/mern-ecommerce's backend reads it: `cors({ origin: process.env.ORIGIN })`.
   'ORIGIN',
+  // fastapi/full-stack-fastapi-template: CORS allows FRONTEND_HOST, read through pydantic settings.
+  'FRONTEND_HOST',
 ];
 
 export interface WiringInput {
