@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-09 — DevLaunch starts Colima itself when Docker is stopped
+
+On a Mac, Docker lives in the Colima VM. After the Mac restarts, or the VM stops, every run
+failed until the person noticed and typed `colima start`. Now DevLaunch checks Docker when
+the dashboard starts and before each run, and when it is stopped, starts it
+(`DockerWake.ts`): the run's log says "Docker is stopped. Starting Colima…", and the run
+carries on. If it cannot, the run fails at once, before cloning, saying Docker is not
+running and how to start it on each engine.
+
+Only a Colima VM the person already has, found stopped in `colima list` (not `colima
+status`, which calls a VM that does not exist "not running", so starting it would create
+and download a new one). Docker Desktop and OrbStack start themselves at login; a Linux
+docker service is the system's. The dashboard and a run asking together share one start.
+`DEVLAUNCH_START_DOCKER=0` turns it off.
+
+**Evidence:** with the dashboard up, `colima stop`, then a new run: DevLaunch started
+Colima, and 26 s later the run had reached its next step; Colima "Running", the guard back
+up. Tests for each case (running, stopped VM, no Colima, no VM, VM running but silent,
+turned off, start failing, two callers at once) and for the run; 5 mutations, all caught.
+Quick suite: 1,293 passed.
+
 ## 2026-10-08 — "Docker isn't running" is said as that, not as a missing image
 
 With the Colima VM stopped, a run ended on `Runner image "devlaunch/node:20" is not built.

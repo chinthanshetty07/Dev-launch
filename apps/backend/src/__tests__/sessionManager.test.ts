@@ -3408,3 +3408,35 @@ describe('a crash on a setting nobody gave the app (fullstack-superdev/MERN-ECom
     await mgr.shutdown();
   });
 });
+
+describe('a run that finds Docker stopped', () => {
+  it('starts it first, saying so in the run\'s log, then carries on', async () => {
+    const mgr = new SessionManager(fakeExec(ready), {
+      ensureDocker: async (log) => {
+        log('Docker is stopped. Starting Colima (it usually takes under a minute)...');
+        return { state: 'started', how: 'Colima' };
+      },
+    });
+    const s = await mgr.launch({ plan: plan(), sourceDir: cloneWith('server.js'), image: 'devlaunch/node:20' });
+    await until(() => TERMINAL_STATES.includes(s.state) || s.state === ExecutionState.READY);
+    expect(s.state).toBe(ExecutionState.READY);
+    expect(s.logs.buffer.all().map((l) => l.text)).toContain('Docker is stopped. Starting Colima (it usually takes under a minute)...');
+    await mgr.shutdown();
+  });
+
+  it('fails at once, saying Docker is not running and how to start it, when it cannot be started', async () => {
+    let launched = 0;
+    const exec = fakeExec(ready);
+    const counting = { launch: async (o: never) => { launched++; return exec.launch(o); } } as unknown as ExecutionManager;
+    const mgr = new SessionManager(counting, {
+      ensureDocker: async () => ({ state: 'down', why: 'Docker is not running, and Colima is not installed' }),
+    });
+    const s = await mgr.launch({ plan: plan(), sourceDir: cloneWith('server.js'), image: 'devlaunch/node:20' });
+    await until(() => TERMINAL_STATES.includes(s.state));
+    expect(s.state).toBe(ExecutionState.FAILED);
+    expect(s.failure?.message).toMatch(/^Docker is not running, so nothing can start/);
+    expect(s.failure?.remedy).toMatch(/colima start/);
+    expect(launched).toBe(0);
+    await mgr.shutdown();
+  });
+});

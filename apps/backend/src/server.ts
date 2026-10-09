@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createApp } from './api/app.js';
 import { recordRunningCommit } from './services/build/BuildStamp.js';
+import { ensureDocker, runCommand } from './services/docker/DockerWake.js';
 import { DockerManager } from './services/docker/DockerManager.js';
 import { ExecutionManager } from './services/execution/ExecutionManager.js';
 import { SessionManager } from './services/session/SessionManager.js';
@@ -190,6 +191,8 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
     deploymentStore: FileDeploymentStore.fromEnv(),
     // READY only on evidence: the end-to-end check runs before it is declared.
     smokeTest: true,
+    // A run that finds Docker stopped starts it, rather than failing (`DockerWake`).
+    ensureDocker: (log) => ensureDocker({ ping: () => docker.ping().then(() => true, () => false), run: runCommand, log }),
   });
 
   // Sweep before accepting traffic.
@@ -202,6 +205,12 @@ export async function startServer(port = 0, opts: ServerOptions = {}): Promise<S
   // containers nothing will claim, and this process is not yet running anything.
   // Only what processes that are no longer running left behind: another live DevLaunch
   // (a second server, the test suite) keeps what it is running (audit A-12).
+  // Docker first: everything below talks to it, and on a Mac a restart leaves Colima
+  // stopped (`DockerWake`). Woken here, and again before each run.
+  const pingDocker = () => docker.ping().then(() => true, () => false);
+  const woke = await ensureDocker({ ping: pingDocker, run: runCommand, log: (l) => console.log(l) });
+  if (woke.state === 'down') console.warn(`WARNING: ${woke.why}. Runs will fail until Docker is started.`);
+
   const registry = opts.instanceRegistry ?? InstanceRegistry.fromEnv();
   const live = await registry.live().catch(() => new Set<string>());
   await registry.register(config.docker.instanceId).catch(() => undefined);

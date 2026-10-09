@@ -32,6 +32,7 @@ import type { RepositoryAnalyzer } from '../analysis/RepositoryAnalyzer.js';
 import type { RuleBasedPlanner } from '../planning/RuleBasedPlanner.js';
 import type { ProjectPlanner } from '../planning/ProjectPlanner.js';
 import { join } from 'node:path';
+import type { Wake } from '../docker/DockerWake.js';
 import { missingSettingsFromCrash } from '../failures/MissingSettings.js';
 import { requiredEnvReads, selfSigningReads } from '../analysis/ServiceDiscovery.js';
 import {
@@ -369,6 +370,11 @@ export interface SessionManagerDeps {
    * nothing serves.
    */
   smokeTest?: boolean;
+  /**
+   * Make sure Docker is answering before a run, starting it when DevLaunch knows how
+   * (`DockerWake`). Absent in tests that have no Docker to wake.
+   */
+  ensureDocker?: (log: (line: string) => void) => Promise<Wake>;
   /** Deployments allowed at once; otherwise read from the environment (`maxConcurrent`). */
   maxConcurrent?: number;
   /**
@@ -537,6 +543,23 @@ export class SessionManager extends EventEmitter {
 
   private async run(session: Session, req: LaunchRequest): Promise<void> {
     try {
+      // Before anything else: a stopped Docker is started now, while the person watches
+      // the log say so, not discovered after the clone and the plan as a failure.
+      if (this.deps.ensureDocker) {
+        const docker = await this.deps.ensureDocker((line) => session.logs.buffer.push('stdout', line));
+        if (docker.state === 'down') {
+          this.fail(session, {
+            code: FailureCode.UNKNOWN_RUNTIME_ERROR,
+            message: `Docker is not running, so nothing can start: ${docker.why}.`,
+            remedy:
+              'Start Docker (Colima: colima start; or open Docker Desktop or OrbStack; on Linux ' +
+              'the docker service), then run this again. ./devlaunch doctor checks the rest.',
+            confidence: 'high',
+          });
+          await this.teardown(session);
+          return;
+        }
+      }
       if (req.plan && req.sourceDir) {
         // Pre-planned: skip straight to execution.
         session.plan = req.plan;
