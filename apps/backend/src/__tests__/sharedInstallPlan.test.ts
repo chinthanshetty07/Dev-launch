@@ -183,6 +183,15 @@ describe('a FastAPI app with Alembic migrations', () => {
     expect(plan.healthCheck.path).toBe('/docs');
   });
 
+  it('keeps `/` for a FastAPI app that declares it: that page is the app', async () => {
+    // As the CI fixture python-async-postgres has it: main.py at the root, declaring `/`.
+    const root = await repo({
+      'requirements.txt': 'fastapi\nuvicorn\n',
+      'main.py': 'from fastapi import FastAPI\napp = FastAPI()\n\n@app.get("/")\ndef home():\n    return {"ok": True}\n',
+    });
+    expect(new RuleBasedPlanner(analyzer).plan(await analyzer.analyze(root)).plan!.healthCheck.path).toBe('/');
+  });
+
   it('runs nothing without alembic.ini, or without Alembic in its dependencies', async () => {
     const { 'alembic.ini': _ini, ...withoutIni } = files;
     const noIni = await repo(withoutIni);

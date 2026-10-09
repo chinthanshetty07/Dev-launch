@@ -26,7 +26,9 @@ Python 3.14, Postgres 18) ended PARTIALLY_READY with the backend dead. Each faul
   on a built frontend. DevLaunch now sets `FASTAPI_ENV=development`, as `fastapi dev` does.
 - **No tables**: Alembic migrations run before start (`python -m alembic upgrade head`)
   when the app ships `alembic.ini` and depends on Alembic, as Django's `migrate` does.
-- **False failures**: FastAPI apps are checked at `/docs`, and the end-to-end check asks
+- **False failures**: FastAPI apps with no `/` page of their own are checked at `/docs` (one
+  that declares `/` keeps it: that page is the app, and the address a person is given — CI
+  caught the first version sending them to the docs), and the end-to-end check asks
   an API at the path readiness used, not `/`. No `/api` gateway is put in front of a page
   that is given its API's address.
 

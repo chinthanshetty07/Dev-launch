@@ -869,7 +869,7 @@ export class RuleBasedPlanner {
         expectedPort: fw.defaultPort,
         hostBinding: 'forced',
         environmentVariables: env,
-        healthCheck: { path: pythonHealthPath(kind, healthPathFor(meta)), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
+        healthCheck: { path: pythonHealthPath(kind, meta), method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
         planSource: 'rule-based',
         ...(protocol ? { protocol } : {}),
       }),
@@ -882,9 +882,16 @@ export class RuleBasedPlanner {
  * route of its own at a better path that is where it is asked: proof the API answers, which
  * `/` is not. The template mounts a built frontend at `/` that development does not have,
  * and `/` answered 500 there while every API route worked.
+ *
+ * Not when the app declares `/` itself: then `/` is the app, and the address a person is
+ * given. Moving it to `/docs` sent them to the documentation instead (CI caught it, on a
+ * fixture whose `/` reports that its database query worked).
  */
-export function pythonHealthPath(kind: string, path: string): string {
-  return kind === 'fastapi' && path === '/' ? '/docs' : path;
+export function pythonHealthPath(kind: string, meta: RepositoryMetadata): string {
+  const path = healthPathFor(meta);
+  if (kind !== 'fastapi' || path !== '/') return path;
+  const declaresRoot = (meta.httpRoutes ?? []).some((r) => r.method === 'GET' && r.path === '/');
+  return declaresRoot ? '/' : '/docs';
 }
 
 /**
