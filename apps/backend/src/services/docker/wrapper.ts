@@ -20,6 +20,45 @@ export const WRAPPER_FILENAME = 'run.sh';
  * commands (`tsc && vite build`). The allowlist guards what DevLaunch composes; the
  * container guards what the repository does. See docs/planning-strategy.md.
  */
+/**
+ * Reach an app that listens on loopback only.
+ *
+ * Docker forwards a published port to the container's own address, and an app bound to
+ * 127.0.0.1 or ::1 is not there: `localhost:3000` from the browser reached nothing. Flags
+ * fix that when DevLaunch can pass them, but not always — a `concurrently` script hands
+ * them to the runner, never to Vite (`Avinava/simple-vite-react-express`), and some
+ * servers hardcode `localhost`.
+ *
+ * This waits for something to listen on the app's port. If it is reachable already (any
+ * address but loopback) it does nothing and exits. If it is loopback only, it opens the
+ * same port on the container's own addresses and passes each connection through. It
+ * never binds first, so it cannot take the port from the app; it forwards only to the
+ * app's own port, inside its own container — what DevLaunch publishes anyway.
+ *
+ * No single quotes: the wrapper passes it to `node -e` inside them.
+ */
+export const LOOPBACK_BRIDGE = [
+  'const fs=require("fs"),net=require("net"),os=require("os");',
+  'const port=Number(process.env.DL_BRIDGE_PORT);',
+  'const hex=port.toString(16).toUpperCase().padStart(4,"0");',
+  'const LOOP4=new Set(["0100007F","0000000000000000FFFF00000100007F"]);',
+  'const LOOP6="00000000000000000000000001000000";',
+  'function seen(){const r={l4:false,l6:false,out:false};',
+  ' for(const f of ["/proc/net/tcp","/proc/net/tcp6"]){let t="";try{t=fs.readFileSync(f,"utf8")}catch(e){continue}',
+  '  for(const line of t.split("\\n").slice(1)){const c=line.trim().split(/\\s+/);if(c.length<4||c[3]!=="0A")continue;',
+  '   const [a,p]=c[1].split(":");if(p!==hex)continue;',
+  '   if(LOOP4.has(a))r.l4=true;else if(a===LOOP6)r.l6=true;else r.out=true;}}',
+  ' return r;}',
+  'function bridge(target){const addrs=[];',
+  ' for(const list of Object.values(os.networkInterfaces()))for(const i of list||[])if(!i.internal&&i.family==="IPv4")addrs.push(i.address);',
+  ' for(const a of addrs){net.createServer((c)=>{const u=net.connect(port,target);c.pipe(u);u.pipe(c);',
+  '  const end=()=>{c.destroy();u.destroy()};c.on("error",end);u.on("error",end);c.on("close",end);u.on("close",end);})',
+  '  .on("error",()=>{}).listen(port,a);}',
+  ' console.log("[devlaunch] Port "+port+" is listening on loopback only, which Docker cannot reach; forwarding "+addrs.join(", ")+":"+port+" to it.");}',
+  'const timer=setInterval(()=>{const r=seen();if(r.out){clearInterval(timer);return}',
+  ' if(r.l4||r.l6){clearInterval(timer);bridge(r.l4?"127.0.0.1":"::1")}},500);',
+].join('');
+
 export function buildWrapperScript(): string {
   return [
     '#!/bin/sh',
@@ -68,6 +107,12 @@ export function buildWrapperScript(): string {
     '  fi',
     'fi',
     '',
+    // The loopback bridge (`LOOPBACK_BRIDGE`), for a Node app: started beside it, and doing
+    // nothing unless the app ends up listening on loopback only.
+    'if [ -n "${DL_BRIDGE_PORT:-}" ] && command -v node >/dev/null 2>&1; then',
+    `  node -e '${LOOPBACK_BRIDGE}' &`,
+    'fi',
+    '',
     `printf '%s\\n' "${Sentinel.START_BEGIN}"`,
     'exec sh -c "$DL_START_CMD"',
     '',
@@ -111,6 +156,9 @@ export function buildWrapperEnv(
   env.DL_INSTALL_CMD = plan.installCommand ?? '';
   env.DL_BUILD_CMD = plan.buildCommand ?? '';
   env.DL_START_CMD = plan.startCommand;
+  // The port the loopback bridge watches: a Node app's, when it has one. Empty otherwise,
+  // and set here so a plan can never choose it.
+  env.DL_BRIDGE_PORT = plan.runtime.language === 'node' && plan.expectedPort !== null ? String(plan.expectedPort) : '';
   // Set either way, so nothing else can supply it.
   env.DL_INSTALL_REUSED = control.installReused === true ? '1' : '0';
 

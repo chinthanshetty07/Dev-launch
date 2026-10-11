@@ -23,6 +23,10 @@ export interface RepositoryMetadata {
 
   /** Variables declared in .env.example, with whether a default value was supplied. */
   envExample: EnvExampleVar[];
+  /** The port its Vite config sets for the dev server (`server.port`). */
+  devServerPort?: number;
+  /** A Prisma schema at its root or in `prisma/`, and whether `prisma/migrations` exists. */
+  prisma?: { migrations: boolean };
   /** A manifest that is present but no package manager can read, with the parser's words. */
   invalidManifest?: { file: string; error: string };
   readmeExcerpt?: string;

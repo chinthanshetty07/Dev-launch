@@ -199,7 +199,7 @@ export class RepositoryAnalyzer {
       fileNames,
       entries.filter((e) => e.isDirectory()).map((e) => e.name),
     );
-    const envRaw = await readCapped(join(base, '.env.example'));
+    const envRaw = await readEnvExampleFile(base, fileNames);
     const readme = await this.readReadme(base, fileNames);
 
     const measured = await measureShallow(root);
@@ -238,6 +238,8 @@ export class RepositoryAnalyzer {
       ...(foreignRuntimes(fileNames).length ? { foreignRuntimes: foreignRuntimes(fileNames) } : {}),
       python,
       envExample: envRaw ? parseEnvExample(envRaw) : [],
+      ...(await readDevServerPort(base, fileNames)),
+      ...(await readPrisma(base, fileNames)),
       readmeExcerpt: readme,
       ...(await readReadmeTls(base, fileNames)),
       ...(await this.readRoutes(base, fileNames, packageJson?.entryFiles ?? [], python?.entryCandidates.map((e) => e.file) ?? [])),
@@ -1099,4 +1101,43 @@ export function submoduleWarning(paths: readonly string[]): string {
     `${paths.length === 1 ? 'that directory is' : 'those directories are'} empty here — ` +
     `anything the application imports, bundles or serves from ${paths.length === 1 ? 'it' : 'them'} will be missing.`
   );
+}
+
+/**
+ * The example settings file, under any of the names repositories give it. Only
+ * `.env.example` was read, so `Avinava/simple-vite-react-express`'s `example.env` — with the
+ * `PORT=8080` its API listens on — was never seen.
+ */
+export const ENV_EXAMPLE_NAMES = ['.env.example', '.env.sample', '.env.template', 'example.env', 'sample.env', 'env.example', '.env.dist'];
+
+async function readEnvExampleFile(base: string, fileNames: readonly string[]): Promise<string | null> {
+  for (const name of ENV_EXAMPLE_NAMES) {
+    if (!fileNames.includes(name)) continue;
+    const raw = await readCapped(join(base, name));
+    if (raw !== null) return raw;
+  }
+  return null;
+}
+
+/**
+ * The port a Vite config sets for its dev server (`server: { port: 3000 }`). Used when the
+ * start script runs several programs at once, where no `--port` flag can reach Vite.
+ */
+export async function readDevServerPort(base: string, fileNames: readonly string[]): Promise<{ devServerPort?: number }> {
+  const file = fileNames.find((n) => /^vite\.config\.[cm]?[jt]s$/.test(n));
+  const raw = file ? await readCapped(join(base, file)) : null;
+  const m = raw ? /\bserver\s*:\s*\{[^{}]*?\bport\s*:\s*(\d{2,5})\b/.exec(raw) : null;
+  return m ? { devServerPort: Number(m[1]) } : {};
+}
+
+/**
+ * A Prisma schema, and whether migrations come with it. `@prisma/client` cannot be loaded
+ * until `prisma generate` has written it, and its tables exist once migrations run:
+ * `Avinava/simple-vite-react-express` crashed on "Cannot find module '.prisma/client/default'".
+ */
+export async function readPrisma(base: string, fileNames: readonly string[]): Promise<{ prisma?: { migrations: boolean } }> {
+  const inFolder = await readdir(join(base, 'prisma')).catch(() => [] as string[]);
+  const hasSchema = fileNames.includes('schema.prisma') || inFolder.includes('schema.prisma') || inFolder.includes('schema');
+  if (!hasSchema) return {};
+  return { prisma: { migrations: inFolder.includes('migrations') } };
 }

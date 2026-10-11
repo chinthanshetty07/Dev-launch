@@ -131,6 +131,25 @@ export function validateCommand(command: string, field = 'command'): ValidatedCo
   return { raw: trimmed, argv, binary };
 }
 
+/**
+ * A setup step of up to three commands run in order, joined by ` && ` — each one checked
+ * exactly as a lone command is, so chaining lets nothing through that a single command
+ * could not. One command was not enough: Prisma needs `prisma generate` and then its
+ * migrations, and FastAPI's template its migrations and then its first user.
+ */
+export const MAX_CHAINED_COMMANDS = 3;
+
+export function validateCommandChain(command: string, field = 'command'): ValidatedCommand[] {
+  const parts = command.split(' && ');
+  if (parts.length > MAX_CHAINED_COMMANDS) {
+    throw new SecurityRejection(
+      FailureCode.PLAN_REJECTED_UNSAFE_COMMAND,
+      `${field} chains ${parts.length} commands; at most ${MAX_CHAINED_COMMANDS} are allowed.`,
+    );
+  }
+  return parts.map((part, i) => validateCommand(part, parts.length > 1 ? `${field} (step ${i + 1})` : field));
+}
+
 export function validateOptionalCommand(
   command: string | null,
   field: string,

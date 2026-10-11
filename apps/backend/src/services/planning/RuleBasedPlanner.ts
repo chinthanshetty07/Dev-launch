@@ -257,6 +257,30 @@ function matchNodeFramework(
 const SERVER_RUNNERS =
   /(?:^|&&|;|\s|\/)(?:node|nodemon|ts-node|tsx|babel-node|next|nuxt|vite|astro|remix|gatsby|ng|vue-cli-service|react-scripts|nest|docusaurus|parcel|webpack-dev-server|serve|http-server|live-server|concurrently)\b/;
 
+/** Runners that start several scripts at once; flags after them never reach a dev server. */
+const RUNS_SEVERAL = /(?:^|&&|;|\s)(?:concurrently|npm-run-all|run-p|run-s)\b/;
+
+/**
+ * The API's port, beside a dev server on `devPort` in the same container: the example
+ * settings file's PORT, else the port its code declares, else 8080 — never the dev server's.
+ */
+export function apiPortBeside(meta: RepositoryMetadata, devPort: number): number {
+  const example = Number(meta.envExample.find((v) => v.key === 'PORT')?.value);
+  if (Number.isInteger(example) && example > 0 && example !== devPort) return example;
+  if (meta.declaredPort !== undefined && meta.declaredPort !== devPort) return meta.declaredPort;
+  return devPort === 8080 ? 8081 : 8080;
+}
+
+/**
+ * What a Prisma project runs before it starts: `prisma generate`, which writes the client
+ * `@prisma/client` loads, and its migrations when it ships some. Null without a schema.
+ */
+export function prismaSetup(meta: RepositoryMetadata): string | null {
+  const deps = { ...meta.packageJson?.dependencies, ...meta.packageJson?.devDependencies };
+  if (!meta.prisma || (deps['@prisma/client'] === undefined && deps.prisma === undefined)) return null;
+  return meta.prisma.migrations ? 'npx prisma generate && npx prisma migrate deploy' : 'npx prisma generate';
+}
+
 /** Runners that mean "this script starts a plain Node server", not a framework's CLI. */
 const NODE_RUNNERS = /(?:^|&&|;|\s)(?:node|nodemon|ts-node|tsx|babel-node)\b/;
 
@@ -575,13 +599,21 @@ export class RuleBasedPlanner {
       };
     }
 
-    const port = portFor(framework, meta);
-    const args = framework ? bindingArgs(framework, port, meta.angularDevServer) : [];
+    // A script that starts several programs at once (`concurrently "npm run server" "npm
+    // run client"`): flags appended to it reach the runner, not the dev server, so none are
+    // added. The page is watched on the port its own config gives it, and PORT stays the
+    // API's — given the dev server's port, the API took it first (or lost it), and Vite's
+    // `strictPort` then refused to start (`Avinava/simple-vite-react-express`). A dev server
+    // left on loopback is reached through the wrapper's bridge (`DL_BRIDGE_PORT`).
+    const several = script !== undefined && RUNS_SEVERAL.test(pkg.scripts[script] ?? '');
+    const port = several ? (meta.devServerPort ?? portFor(framework, meta)) : portFor(framework, meta);
+    const args = framework && !several ? bindingArgs(framework, port, meta.angularDevServer) : [];
     const startCommand = runScript(pm, script, args);
+    const apiPort = several ? apiPortBeside(meta, port) : port;
 
     const env: EnvVar[] = [
       { key: 'HOST', value: '0.0.0.0', required: false },
-      { key: 'PORT', value: String(port), required: false },
+      { key: 'PORT', value: String(apiPort), required: false },
       ...bindHostEnv(meta),
     ];
     if (framework?.id === 'cra') {
@@ -604,8 +636,9 @@ export class RuleBasedPlanner {
         ...(legacyOpenssl ? { legacyOpenssl: true } : {}),
         packageManager: pm,
         installCommand: install.installCommand,
-        // Dev servers build on the fly; a separate build step would only slow start-up.
-        buildCommand: null,
+        // Dev servers build on the fly; a separate build step would only slow start-up. What
+        // runs is what the code cannot start without: Prisma's generated client, and its tables.
+        buildCommand: prismaSetup(meta),
         startCommand,
         workingDirectory,
         expectedPort: port,

@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-10-11 — An API and a Vite page started together; apps on loopback reached anyway; Prisma set up
+
+`Avinava/simple-vite-react-express` runs Express and Vite from one `npm run dev`
+(`concurrently "npm run server" "npm run client"`), with Prisma on Postgres. It failed
+PORT_BOUND_TO_LOCALHOST, and its API crashed on "Cannot find module '.prisma/client/default'":
+
+- **Flags to the wrong program.** `--host 0.0.0.0 --port 5173` was appended to
+  `concurrently`, so Vite never saw them and listened on `::1`. For a script that runs
+  several programs (`concurrently`, `npm-run-all`, `run-p`, `run-s`) no flags are added;
+  the page is watched on the port its Vite config sets (`server.port`, now read), and PORT
+  stays the API's own — from the example settings file, now read under its other names
+  (`example.env`, `.env.sample`, `sample.env`, …), not only `.env.example`.
+- **The loopback bridge.** A Node app that ends up listening on loopback only is now
+  reachable: the container wrapper starts a small forwarder beside it which, once the app
+  listens on 127.0.0.1 or ::1 only, opens the same port on the container's own address and
+  passes connections through. It never binds first, does nothing when the app is reachable,
+  and forwards only to the app's own port — what DevLaunch publishes anyway.
+- **Prisma.** With a Prisma schema and `@prisma/client`, `npx prisma generate` runs before
+  start, then `npx prisma migrate deploy` when migrations ship. That needed a setup step of
+  more than one command: the setup step may now chain up to three commands with ` && `,
+  each checked exactly as a lone command is. Start and install stay single.
+
+**Evidence:** on the real repository, READY on the first attempt with no repair; Prisma
+generated its client and applied both migrations; `/api/v1/task/list` and
+`/api/v1/contact/list` answered 200 through the page's own address (Vite's proxy → Express
+→ Postgres). The forwarder by hand: apps on 127.0.0.1 and ::1 reached through a published
+port, one on 0.0.0.0 left alone; a real-Docker test (`node-loopback-only` fixture) READY
+and failing without it. Unit tests for the plan, the chain check and the forwarder's port;
+8 mutations, all caught (one first survived — the test's port equalled the fallback — and
+the test was fixed). Quick suite: 1,315 passed.
+
+**Not done:** the bridge is Node-only (Python runners already bind 0.0.0.0 by command).
+FastAPI's template could now also create its admin user, as a second setup step; not yet.
+
 ## 2026-10-09 — FastAPI's own full-stack template runs end to end
 
 `fastapi/full-stack-fastapi-template` (React page in an npm workspace, FastAPI backend on

