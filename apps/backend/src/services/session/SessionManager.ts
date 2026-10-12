@@ -64,7 +64,7 @@ import { recordEvent, sentinelRecorder, type DeploymentEvent } from './Deploymen
 import { runSmokeTest, type SmokeService, type Verification } from '../verification/SmokeTest.js';
 import { InMemoryDeploymentStore, type DeploymentRecord, type DeploymentStore } from './DeploymentStore.js';
 import { detectOom, withMemoryEvidence } from '../failures/OomDetection.js';
-import { impossibleCommand, missingEntryFile } from '../planning/Feasibility.js';
+import { impossibleCommand, missingEntryFile, servesFilesInstead } from '../planning/Feasibility.js';
 import {
   applySourceRewrites,
   databaseUrlRewrite,
@@ -105,6 +105,28 @@ export function withCrashAnswers(
         ],
       };
     }),
+  };
+}
+
+/**
+ * A Python program that draws in a desktop window and serves no web page, or null. Only
+ * when nothing in it is a web app: no Python web framework, no Node manifest, no services.
+ */
+export function desktopProgram(meta: RepositoryMetadata): FailureDetail | null {
+  const gui = meta.python?.desktopGui;
+  if (!gui) return null;
+  const web = meta.python?.hasManagePy || meta.python?.entryCandidates.some((e) => e.framework) || meta.packageJson || (meta.services?.length ?? 0) > 1;
+  if (web) return null;
+  return {
+    code: FailureCode.UNSUPPORTED_PROJECT,
+    message:
+      `This is a desktop program: ${gui.file} uses ${gui.module}, which opens a window on your own ` +
+      'screen. There is no web page to open, so a browser cannot show it.',
+    remedy:
+      'Run it on your own computer instead: download the repository, then run ' +
+      `python ${gui.file} there (with Python installed). DevLaunch runs web apps and APIs.`,
+    evidence: `${gui.file}: import ${gui.module}`,
+    confidence: 'high',
   };
 }
 
@@ -635,6 +657,17 @@ export class SessionManager extends EventEmitter {
 
     this.setState(session, ExecutionState.ANALYZING);
     session.metadata = await analyzer.analyze(dir, subdir ?? '.');
+
+    // A desktop program, said before anything runs. It draws in a window on the computer's
+    // own screen, which a container does not have and a browser cannot show. It was run,
+    // crashed, and a model's "repair" served its folder as files instead — reported READY
+    // (`alanjohnks/Snake-game`, a turtle game). Not when a web framework is there too.
+    const desktop = desktopProgram(session.metadata);
+    if (desktop) {
+      this.fail(session, desktop);
+      await this.teardown(session);
+      return;
+    }
 
     this.setState(session, ExecutionState.PLANNING);
 
@@ -1891,6 +1924,14 @@ export class SessionManager extends EventEmitter {
       });
 
       const before = session.plan;
+      if (servesFilesInstead(before.startCommand, result.plan.startCommand)) {
+        session.logs.buffer.push(
+          'stderr',
+          `Not using the repair "${result.plan.startCommand}": it would serve the project's files ` +
+            'instead of running it, which is not the project working.',
+        );
+        return false;
+      }
       session.repairAttempts = [...previous, before];
       session.plan = result.plan;
       session.aiNote = result.note;

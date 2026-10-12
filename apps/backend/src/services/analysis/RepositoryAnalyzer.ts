@@ -581,6 +581,7 @@ export class RepositoryAnalyzer {
     // died on `No module named 'sqlalchemy'`. Bounded hard — this follows a repository's
     // own imports, it does not search its tree.
     const visited = new Set<string>();
+    let desktopGui: { module: string; file: string } | undefined;
       const walkImports = async (from: string): Promise<void> => {
       const queue = [from];
       while (queue.length > 0 && visited.size < MAX_IMPORT_FILES) {
@@ -597,6 +598,7 @@ export class RepositoryAnalyzer {
             ...detectPythonFramework(source),
           });
         }
+        desktopGui ??= desktopGuiImport(source, file);
         // What sits beside this file is local to it, whatever the root looks like.
         for (const sibling of await this.siblingModules(base, file)) local.add(sibling);
 
@@ -676,6 +678,7 @@ export class RepositoryAnalyzer {
       ...(fileNames.includes('poetry.lock') ? { hasPoetryLock: true } : {}),
       ...(pyproject && /^\[tool\.poetry\]/m.test(pyproject) ? { hasPoetry: true } : {}),
       hasManagePy,
+      ...(desktopGui ? { desktopGui } : {}),
       ...(fileNames.includes('alembic.ini') ? { hasAlembic: true } : {}),
       ...(initScripts.length ? { initScripts } : {}),
       entryCandidates,
@@ -1140,4 +1143,20 @@ export async function readPrisma(base: string, fileNames: readonly string[]): Pr
   const hasSchema = fileNames.includes('schema.prisma') || inFolder.includes('schema.prisma') || inFolder.includes('schema');
   if (!hasSchema) return {};
   return { prisma: { migrations: inFolder.includes('migrations') } };
+}
+
+/**
+ * Libraries that draw in a window on the computer's own screen. A program built on one
+ * has no web page to open: in a container it has no screen at all
+ * (`alanjohnks/Snake-game`: `turtle` → "libtk8.6.so: cannot open shared object file").
+ */
+export const DESKTOP_GUI_MODULES = [
+  'turtle', 'tkinter', 'Tkinter', 'customtkinter', 'pygame', 'pygame_gui', 'pyglet', 'arcade',
+  'PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'kivy', 'wx', 'ursina', 'pyautogui',
+];
+
+/** The first desktop-window library a Python file imports, and where. */
+export function desktopGuiImport(source: string, file: string): { module: string; file: string } | undefined {
+  const m = new RegExp(`^\\s*(?:import|from)\\s+(${DESKTOP_GUI_MODULES.join('|')})\\b`, 'm').exec(source);
+  return m ? { module: m[1]!, file } : undefined;
 }

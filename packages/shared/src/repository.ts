@@ -280,6 +280,11 @@ export interface PythonSummary {
   hasPoetry?: boolean;
   /** manage.py at the root is the definitive Django signal. */
   hasManagePy: boolean;
+  /**
+   * A library that draws in a window on the computer's own screen (turtle, tkinter,
+   * pygame, PyQt…), as the program imports it: a desktop program, with no web page.
+   */
+  desktopGui?: { module: string; file: string };
   /** An `alembic.ini` beside the code: its schema comes from Alembic migrations. */
   hasAlembic?: boolean;
   /** Top-level modules that import a web framework, e.g. { file: 'app.py', framework: 'flask' }. */

@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-12 — Desktop programs are named as such; a repair may not serve files instead
+
+`alanjohnks/Snake-game` is a turtle game: it draws in a window on the computer's own
+screen. In a container it crashed ("libtk8.6.so: cannot open shared object file"), then a
+model's repair replaced it with `python3 -m http.server 8000`, and the run was **READY** on a
+directory listing.
+
+- **Desktop programs are recognised before anything runs.** A Python program importing
+  a window library (turtle, tkinter, pygame, pyglet, arcade, PyQt/PySide, kivy, wx, …),
+  with no web framework, Node manifest or services beside it, fails at analysis with
+  UNSUPPORTED_PROJECT: which file, which library, and to run it on your own computer.
+- **A repair may not swap the program for a file server** (`python -m http.server`,
+  `serve`, `http-server`) unless the plan already was one. Declined, with a reason in the
+  log; the run keeps its real diagnosis.
+
+**Evidence:** the real repository now fails at once with "This is a desktop program:
+main.py uses turtle, which opens a window on your own screen…", nothing started. Tests for
+detection (and for web apps that only include a little tkinter or pygame), the early stop,
+and a model repair to `http.server` being refused (FAILED, one start, never READY); 5
+mutations, all caught (one first survived and the test was tightened). Quick suite: 1,320.
+
 ## 2026-10-11 — An API and a Vite page started together; apps on loopback reached anyway; Prisma set up
 
 `Avinava/simple-vite-react-express` runs Express and Vite from one `npm run dev`

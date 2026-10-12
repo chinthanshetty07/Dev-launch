@@ -120,3 +120,16 @@ export async function missingEntryFile(plan: RunPlan, sourceDir: string): Promis
   const where = plan.workingDirectory === '.' ? 'the repository' : `\`${plan.workingDirectory}/\``;
   return `The start command runs \`${file}\`, and ${where} has no such file.`;
 }
+
+/** A command that only serves the folder's files: Python's http.server, `serve`, `http-server`. */
+const FILE_SERVER = /^(?:python3?\s+-m\s+http\.server|npx\s+(?:serve|http-server)|http-server|serve)(?:\s|$)/;
+
+/**
+ * Whether a repair swaps the program for a server of its files. That is not running the
+ * project: a turtle game that crashed for want of a screen was "repaired" to
+ * `python3 -m http.server 8000`, answered with a directory listing, and was reported READY
+ * (`alanjohnks/Snake-game`). Allowed only when the plan was serving files already.
+ */
+export function servesFilesInstead(before: string, after: string): boolean {
+  return FILE_SERVER.test(after.trim()) && !FILE_SERVER.test(before.trim());
+}
