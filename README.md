@@ -4,6 +4,8 @@ Paste a GitHub repository URL; get the application running on your own machine �
 API and database together — inside locked-down containers, checked end to end before it is
 called ready.
 
+**Live:** [devlaunch.chinthanshetty.in](https://devlaunch.chinthanshetty.in)
+
 ```
 GitHub URL → clone → understand → plan → install → start databases → start every service
            → check it really works → working URL      (and a clear reason when it cannot)
