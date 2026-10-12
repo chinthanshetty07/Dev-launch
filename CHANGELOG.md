@@ -52,6 +52,10 @@ and failing without it. Unit tests for the plan, the chain check and the forward
 8 mutations, all caught (one first survived — the test's port equalled the fallback — and
 the test was fixed). Quick suite: 1,315 passed.
 
+**Later (CI):** three real-Docker tests still expected a Node app on 127.0.0.1 to fail;
+rewritten — it is reached now — and the PORT_BOUND_TO_LOCALHOST diagnosis is checked on a
+new Python fixture (`python-bind-localhost`), which has no bridge.
+
 **Not done:** the bridge is Node-only (Python runners already bind 0.0.0.0 by command).
 FastAPI's template could now also create its admin user, as a second setup step; not yet.
 

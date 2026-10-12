@@ -75,11 +75,31 @@ describe('Phase 3 — port mapping and readiness', () => {
     }
   }, 120_000);
 
-  it('identifies an application bound to localhost as its own failure class', async () => {
+  // Changed fact: a Node app on 127.0.0.1 is now reached through the wrapper's loopback
+  // bridge, so node-bind-localhost is READY. The failure class is still what a Python app
+  // on loopback gets — the bridge is Node's — and is checked with python-bind-localhost.
+  it('reaches a Node application bound to localhost through the loopback bridge', async () => {
+    const handle = await exec.launch({
+      sessionId: 'rdy-loopback-node', plan: plan(), sourceDir: `${FIXTURES}/node-bind-localhost`, image: IMAGE,
+    });
+    try {
+      await handle.waitForLog((e) => e.text.includes('bound to 127.0.0.1'), 30_000);
+      const outcome = await handle.waitForReady(15_000);
+      expect(outcome.state, JSON.stringify(outcome.failure)).toBe(ExecutionState.READY);
+      await handle.waitForLog((e) => e.text.includes('listening on loopback only'), 5_000);
+    } finally {
+      await handle.cleanup();
+    }
+  }, 120_000);
+
+  it('identifies an application bound to localhost as its own failure class (Python, no bridge)', async () => {
     // A healthy, listening server that Docker simply cannot forward to. Reporting this
     // as PORT_NOT_LISTENING would send the user debugging the wrong problem entirely.
     const handle = await exec.launch({
-      sessionId: 'rdy-loopback', plan: plan(), sourceDir: `${FIXTURES}/node-bind-localhost`, image: IMAGE,
+      sessionId: 'rdy-loopback',
+      plan: plan({ runtime: { language: 'python', version: '3.12' }, packageManager: 'pip', startCommand: 'python server.py', expectedPort: 8000 }),
+      sourceDir: `${FIXTURES}/python-bind-localhost`,
+      image: 'devlaunch/python:3.12',
     });
     try {
       await handle.waitForLog((e) => e.text.includes('bound to 127.0.0.1'), 30_000);
@@ -92,7 +112,7 @@ describe('Phase 3 — port mapping and readiness', () => {
       // The remedy must be actionable, so the observed address is named.
       if (outcome.diagnosis?.kind === 'loopback-only') {
         expect(outcome.diagnosis.socket.address).toBe('127.0.0.1');
-        expect(outcome.diagnosis.socket.port).toBe(3000);
+        expect(outcome.diagnosis.socket.port).toBe(8000);
       }
     } finally {
       await handle.cleanup();

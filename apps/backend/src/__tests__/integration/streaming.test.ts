@@ -63,7 +63,7 @@ describe('Phase 4 — log streaming reaches a client', () => {
   beforeAll(async () => {
     await docker.ping();
     await docker.ensureImage('devlaunch/node:20');
-    // AI off: this suite is about log streaming, and `node-bind-localhost` provokes a
+    // AI off: this suite is about log streaming, and its failing fixture provokes a
     // repairable failure. With a key configured that costs two live model calls, whose
     // latency is a rate-limited external service's to decide — one run spent 90 seconds
     // on them and timed the listener out, then wedged the next test on the concurrency
@@ -132,13 +132,16 @@ describe('Phase 4 — log streaming reaches a client', () => {
     await server.sessions.cancel(id);
   }, 180_000);
 
+  // Changed fact: node-bind-localhost now runs, reached through the loopback bridge, so a
+  // failure is taken from a server that never listens. (Left READY, it also held the only
+  // run slot, and the next test's first launch was refused.)
   it('reports a failure over the stream with a diagnosable code', async () => {
-    const id = await launch('node-bind-localhost', { readinessTimeoutMs: 8_000 });
+    const id = await launch('node-never-listens', { readinessTimeoutMs: 8_000 });
     const { msgs } = await listen(server.port, id, -1, (m) => m.some(isState(ExecutionState.FAILED)));
 
     const failed = msgs.find(isState(ExecutionState.FAILED));
-    expect(failed?.failure?.code).toBe('PORT_BOUND_TO_LOCALHOST');
-    expect(failed?.failure?.message).toMatch(/Bind 0\.0\.0\.0 instead/);
+    expect(failed?.failure?.code).toBe('PORT_NOT_LISTENING');
+    expect(failed?.failure?.message).toBeTruthy();
   }, 180_000);
 
   it('refuses a second concurrent session', async () => {
