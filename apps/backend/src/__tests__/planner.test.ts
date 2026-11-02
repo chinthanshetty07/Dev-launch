@@ -338,7 +338,8 @@ describe('RuleBasedPlanner — unrecognised', () => {
   it('returns no plan for an empty repository', () => {
     const out = planner.plan(meta());
     expect(out.plan).toBeNull();
-    expect(out.reason).toMatch(/No package.json/);
+    // Changed fact: the sentence names every language DevLaunch runs, Rust included.
+    expect(out.reason).toMatch(/No Node, Python or Rust project/);
   });
 
   it('returns no plan when package.json has no runnable script', () => {

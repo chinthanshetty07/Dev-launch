@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-02 — A Rust project with nothing to start is named; an AI refusal is a sentence
+
+`chinthanshetty07/substreams-solana-transfers` is a Substreams module (a `cdylib` for
+WebAssembly, run by the substreams tool against a blockchain data service). The Rust planner
+found no program in it, rightly, but then the run said "No package.json or recognisable
+Python project", asked the model, which planned port 0, and showed the validator's JSON.
+
+- **A Rust library is named as one** (no `src/main.rs`, no `[[bin]]`), and a Substreams module
+  (`substreams.yaml`, or the `substreams` crate) as one, with the commands that run it
+  (`substreams run substreams.yaml <first module>`). Neither reaches the model.
+- **The "nothing found" sentence names Node, Python and Rust.**
+- **An AI plan that is refused is said in a sentence** (`expectedPort: Number must be greater
+  than 0.`), not as the validator's JSON; and a model's port 0 is read as "no port".
+
+**Evidence:** the real repository now fails at once with "This is a Substreams module: …"
+and the remedy naming `map_transfers`. Tests for the module, a plain library, and the
+readable refusal; 2 mutations caught. Quick suite: 1,339.
+
 ## 2026-11-02 — DevLaunch runs Rust projects
 
 Rust was on the list of runtimes DevLaunch declined ("no image for Rust yet"). It now plans

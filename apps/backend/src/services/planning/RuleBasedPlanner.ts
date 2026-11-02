@@ -464,7 +464,7 @@ export class RuleBasedPlanner {
       detected: null,
       reason: meta.packageJson
         ? 'package.json present but no recognised framework or start script.'
-        : 'No package.json or recognisable Python project at the working directory.',
+        : 'No Node, Python or Rust project at the working directory.',
       warnings,
     };
   }
@@ -985,7 +985,37 @@ export function planRust(
       warnings,
     };
   }
-  if (!rust.hasMain) return null;
+  // A library: nothing in it runs by itself. Said plainly, so no model is asked to invent a
+  // start command for it (`chinthanshetty07/substreams-solana-transfers`: asked anyway, a
+  // model planned port 0, and the person was shown the validator's JSON).
+  if (!rust.hasMain) {
+    if (rust.substreams) {
+      return {
+        plan: null,
+        detected: null,
+        unrunnable: true,
+        reason:
+          'This is a Substreams module: Rust compiled to WebAssembly, which the substreams tool runs ' +
+          'against a blockchain data service, using your API key. It is not a web app or a program ' +
+          'on its own, so there is nothing for DevLaunch to start and open.',
+        remedy:
+          'Run it with the substreams tool on your own computer: build it (cargo build --target ' +
+          'wasm32-unknown-unknown --release), sign in (substreams auth), then ' +
+          `substreams run substreams.yaml ${rust.substreams.module ?? '<module>'}.`,
+        warnings,
+      };
+    }
+    return {
+      plan: null,
+      detected: null,
+      unrunnable: true,
+      reason:
+        `This is a Rust library${rust.packageName ? ` (${rust.packageName})` : ''}: code for other programs ` +
+        'to use, with no program of its own (no src/main.rs, no [[bin]]). There is nothing to start.',
+      remedy: 'If it has examples, run one on your own computer with cargo run --example <name>.',
+      warnings,
+    };
+  }
 
   const pkg = rust.runPackage && CARGO_NAME.test(rust.runPackage) ? ` -p ${rust.runPackage}` : '';
   // Several programs in one package: the one named like the package, else the first.

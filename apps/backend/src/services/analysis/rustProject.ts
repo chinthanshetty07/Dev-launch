@@ -169,6 +169,10 @@ export async function readRust(base: string): Promise<RustSummary | undefined> {
     if (/env::var\(\s*"PORT"\s*\)/.test(src)) readsPort = true;
   }
   const hasMain = (await readCapped(join(base, 'src/main.rs'))) !== null || manifest.bins.length > 0;
+  const substreamsYaml = await readCapped(join(base, 'substreams.yaml'));
+  // The first module the manifest lists: the one `substreams run` is usually given.
+  const firstModule = /^modules:\s*\n\s*-\s*name:\s*([A-Za-z0-9_-]+)/m.exec(substreamsYaml ?? '')?.[1];
+  const substreams = substreamsYaml !== null || deps.includes('substreams') ? (firstModule ? { module: firstModule } : {}) : undefined;
   const desktop = DESKTOP_CRATES.find((c) => deps.includes(c));
   const wasm = WASM_FRONTENDS.find((c) => deps.includes(c));
   const sqlx = deps.includes('sqlx');
@@ -192,6 +196,7 @@ export async function readRust(base: string): Promise<RustSummary | undefined> {
     ...(wasm && !framework ? { wasmFrontend: wasm } : {}),
     ...(database ? { database } : {}),
     ...(deps.includes('diesel') ? { diesel: true } : {}),
+    ...(substreams ? { substreams } : {}),
     ...(sqlx && (await readdir(join(base, '.sqlx')).then(() => true, () => false)) ? { sqlxOffline: true } : {}),
     ...(await readdir(join(base, 'migrations')).then(() => ({ migrations: true }), () => ({}))),
   };

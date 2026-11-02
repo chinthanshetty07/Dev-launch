@@ -515,6 +515,8 @@ export interface RustSummary {
   /** A `migrations/` folder. */
   migrations?: boolean;
   /** Uses diesel, whose migrations are applied with its own CLI (`devlaunch-diesel-migrate` here). */
+  /** A Substreams module (`substreams.yaml`): run by the substreams tool, not on its own. */
+  substreams?: { module?: string };
   diesel?: boolean;
   /** In a workspace: its members' directories, the package that runs, and its directory. */
   workspaceMembers?: string[];

@@ -53,7 +53,8 @@ export class AIPlanner {
       buildCommand: r.buildCommand ?? null,
       startCommand: r.startCommand,
       workingDirectory: r.workingDirectory ?? '.',
-      expectedPort: r.expectedPort ?? null,
+      // 0 is how a model says "no port" (a program that is not a server); the schema says null.
+      expectedPort: r.expectedPort === 0 ? null : (r.expectedPort ?? null),
       environmentVariables: Array.isArray(r.environmentVariables) ? r.environmentVariables : [],
       healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
       // Pinned, never taken from the response.
@@ -69,7 +70,7 @@ export class AIPlanner {
       // caller: this output is not executable.
       throw new SecurityRejection(
         err instanceof SecurityRejection ? err.code : FailureCode.INVALID_AI_PLAN,
-        `AI plan rejected: ${err instanceof Error ? err.message : String(err)}`,
+        `The AI's suggested plan could not be used: ${readableRejection(err)}`,
       );
     }
 
@@ -81,4 +82,16 @@ export class AIPlanner {
       note: typeof r.confidenceNote === 'string' ? r.confidenceNote.slice(0, 300) : undefined,
     };
   }
+}
+
+/**
+ * Why a plan was refused, as a sentence. A schema failure's message is the validator's JSON
+ * (`[{"code":"too_small", … "path":["expectedPort"]}]`), which was shown to people as it was.
+ */
+export function readableRejection(err: unknown): string {
+  const issues = (err as { issues?: { path?: (string | number)[]; message?: string }[] }).issues;
+  if (Array.isArray(issues) && issues.length > 0) {
+    return issues.map((i) => `${(i.path ?? []).join('.') || 'plan'}: ${i.message ?? 'invalid'}`).join('; ') + '.';
+  }
+  return err instanceof Error ? err.message : String(err);
 }

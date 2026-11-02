@@ -116,7 +116,8 @@ describe('planning a Rust project', () => {
   it('runs a program that is not a server to completion, with no port to watch', () => {
     const plan = planRust({ dependencies: ['clap'], bins: [], hasMain: true }, '.', [])!.plan!;
     expect(plan.expectedPort).toBeNull();
-    expect(planRust({ dependencies: ['serde'], bins: [], hasMain: false }, '.', [])).toBeNull();
+    // Changed fact: a library is now named as one (unrunnable), not left to a model as null.
+    expect(planRust({ dependencies: ['serde'], bins: [], hasMain: false }, '.', [])).toMatchObject({ plan: null, unrunnable: true });
   });
 
   it('builds what a Rust server serves, and its tables, before it compiles', async () => {
@@ -211,5 +212,33 @@ describe('the Rust runner', () => {
       startCommand: 'cargo run --release', workingDirectory: '.', expectedPort: 8080, planSource: 'rule-based',
     });
     expect(buildWrapperEnv(plan, '/workspace').filter((e) => e.startsWith('DL_BRIDGE_PORT='))).toEqual(['DL_BRIDGE_PORT=8080']);
+  });
+});
+
+describe('a Rust project with nothing to start', () => {
+  // `chinthanshetty07/substreams-solana-transfers`: a Substreams module (a cdylib for
+  // WebAssembly). Handed to the model, it planned port 0, and the person was shown the
+  // validator's JSON.
+  it('names a Substreams module, with how to run it, and asks no model', async () => {
+    const out = await planOf({
+      'Cargo.toml': '[package]\nname = "solana-transfers"\n[lib]\ncrate-type = ["cdylib"]\n[dependencies]\nsubstreams = "0.8"\nsubstreams-solana = "0.16"\n',
+      'src/lib.rs': '#[substreams::handlers::map]\nfn map_transfers() {}\n',
+      'substreams.yaml': 'specVersion: v0.1.0\nmodules:\n  - name: map_transfers\n    kind: map\n',
+    });
+    expect(out).toMatchObject({ plan: null, unrunnable: true });
+    expect(out.reason).toMatch(/^This is a Substreams module/);
+    expect(out.remedy).toMatch(/substreams run substreams\.yaml map_transfers/);
+  });
+
+  it('names a plain Rust library as one', () => {
+    const out = planRust({ packageName: 'utils', dependencies: ['serde'], bins: [], hasMain: false }, '.', []);
+    expect(out).toMatchObject({ plan: null, unrunnable: true });
+    expect(out?.reason).toMatch(/This is a Rust library \(utils\)/);
+  });
+
+  it('reads "port 0" from a model as no port, and a refusal as a sentence', async () => {
+    const { readableRejection } = await import('../services/ai/AIPlanner.js');
+    const err = Object.assign(new Error('[{"code":"too_small"}]'), { issues: [{ path: ['expectedPort'], message: 'Number must be greater than 0' }] });
+    expect(readableRejection(err)).toBe('expectedPort: Number must be greater than 0.');
   });
 });
