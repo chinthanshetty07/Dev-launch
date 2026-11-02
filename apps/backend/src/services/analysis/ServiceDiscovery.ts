@@ -1,3 +1,4 @@
+import { readRust } from './rustProject.js';
 import { readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { BackingService, ServiceCandidate, ServiceRole } from '@devlaunch/shared';
@@ -92,7 +93,12 @@ const SOURCE_DIRS = ['src', 'app', 'lib', 'source'];
 // `.py` because the scan already looks for `os.environ[...]` and never had a Python
 // file to find it in; `.mjs`/`.cjs` because a repository that picked one of them is
 // otherwise read as having no source at all.
-const SOURCE_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.mjs', '.cjs', '.py'];
+const SOURCE_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx', '.vue', '.svelte', '.mjs', '.cjs', '.py', '.rs'];
+
+/** The rule a Rust project's database answers to, by the package name the rules know it by. */
+const RUST_DATABASE_DEP: Record<NonNullable<import('@devlaunch/shared').RustSummary['database']>, string> = {
+  postgres: 'pg', mysql: 'mysql', mongodb: 'mongodb', redis: 'redis',
+};
 const MAX_SOURCE_FILES = 60;
 
 export interface Manifest {
@@ -286,6 +292,36 @@ async function inspectDir(
   dir: string,
 ): Promise<{ candidate: ServiceCandidate; backing: Omit<BackingService, 'neededBy'>[] } | null> {
   const base = dir === '.' ? root : join(root, dir);
+  // A Rust server: a backend beside a JavaScript frontend is a common shape. Only one that
+  // serves (a web framework, or a port it binds): a CLI tool in a subfolder is not a service.
+  // Before package.json: beside a Rust server, a package.json builds what it serves
+  // (`SL-Lee/actix-web-todo-app`), and read first it hid the server's database.
+  const rust = (await readCapped(join(base, 'Cargo.toml'))) !== null ? await readRust(base) : undefined;
+  // Anything else with a Cargo.toml — a CLI, a Node add-on built in Rust — falls through to
+  // the package.json and Python checks, as it did before Rust was read here.
+  if (rust && (rust.framework || rust.port) && !rust.desktopCrate && !rust.wasmFrontend) {
+    const envKeys = await serviceEnvKeys(base);
+    const candidate: ServiceCandidate = {
+      name: rust.runPackage ?? rust.packageName ?? baseName(dir),
+      dir,
+      role: 'api',
+      language: 'rust',
+      scripts: [],
+      evidence: rust.framework ? `depends on ${rust.framework}` : 'binds a port',
+      ...(rust.port ? { declaredPort: rust.port } : {}),
+      envKeys,
+      envExample: await serviceEnvExample(base),
+    };
+    const accepted = (await findAcceptedOrigins(base)).filter((a) => !rust.port || Number(new URL(a.origin).port) !== rust.port);
+    if (accepted.length) candidate.acceptsOrigins = accepted;
+    // Named for what the project uses, not the stand-in package the rule matched on.
+    const via = rust.dependencies.find((d) => ['sqlx', 'diesel', 'sea-orm', 'tokio-postgres', 'postgres', 'mongodb', 'redis'].includes(d)) ?? 'Cargo.toml';
+    const backing = rust.database
+      ? backingFor([RUST_DATABASE_DEP[rust.database]], envKeys).map((b) => ({ ...b, evidence: `uses ${via} (${rust.database})`, driver: via }))
+      : [];
+    return { candidate, backing };
+  }
+
   const manifest = await readManifest(join(base, 'package.json'));
 
   if (manifest) {
@@ -545,6 +581,9 @@ async function serviceEnvKeys(base: string): Promise<string[]> {
     // frontend is exactly the kind of service whose API base URL has to be injected.
     for (const m of raw.matchAll(/import\.meta\.env\.([A-Z][A-Z0-9_]{2,})/g)) keys.add(m[1]!);
     for (const m of raw.matchAll(/os\.environ(?:\.get)?[[(]['"]([A-Z][A-Z0-9_]{2,})['"]/g)) keys.add(m[1]!);
+    // Rust: `env::var("DATABASE_URL")`, `std::env::var`, `dotenvy::var`.
+    for (const m of raw.matchAll(/\b(?:env|dotenvy|dotenv)::var(?:_os)?\(\s*"([A-Z][A-Z0-9_]{2,})"/g)) keys.add(m[1]!);
+    for (const key of clapEnvFields(raw)) keys.add(key);
     for (const key of settingsFields(raw)) keys.add(key);
   }
 
@@ -579,6 +618,8 @@ const ENV_READS = [
   // django-environ's env("X") / env.str("X"), and python-decouple's config("X").
   /(?<![\w.])(?:env(?:\.(?:str|bytes))?|config)\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g,
   /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g,
+  // Rust: `env::var("X")`, `std::env::var`, `dotenvy::var`.
+  /\b(?:env|dotenvy|dotenv)::var(?:_os)?\(\s*"([A-Za-z_][A-Za-z0-9_]*)"/g,
   /process\.env\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]/g,
 ];
 
@@ -599,9 +640,10 @@ export async function selfSigningReads(base: string): Promise<Set<string>> {
   // The whole service folder: Django keeps its settings in a package named after the
   // project (`api/settings.py` in the repository above), which no source-folder name finds.
   for (const file of await collectSourceFiles(base, 200, true)) {
-    if (!/\.(?:py|[cm]?[jt]sx?)$/.test(file)) continue;
+    if (!/\.(?:py|[cm]?[jt]sx?|rs)$/.test(file)) continue;
     const raw = await readCapped(file);
     if (raw === null) continue;
+    for (const key of clapEnvFields(raw)) if (classifyEnvVar(key, false) === 'AUTO_GENERATABLE_VALUE') keys.add(key);
     for (const re of ENV_READS) {
       for (const m of raw.matchAll(re)) {
         if (classifyEnvVar(m[1]!, false) === 'AUTO_GENERATABLE_VALUE') keys.add(m[1]!);
@@ -1279,3 +1321,19 @@ export async function findNodeBuiltins(
 
 /** Entry files read looking for a built-in import. Bounded, like every other scan here. */
 const MAX_BUILTIN_SCAN = 8;
+
+/**
+ * Settings a Rust program reads through clap: `#[clap(long, env)] hmac_key: String` reads
+ * HMAC_KEY (the field's name, upper-cased), `env = "NAME"` reads NAME. Read like
+ * `env::var`, because it is one (`launchbadge/realworld-axum-sqlx`).
+ */
+export function clapEnvFields(source: string): string[] {
+  const out: string[] = [];
+  for (const m of source.matchAll(/#\[(?:clap|arg)\(([^\]]*)\)\]\s*(?:\/\/\/[^\n]*\n\s*|#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?([a-z_][a-z0-9_]*)\s*:/g)) {
+    const attrs = m[1]!;
+    const named = /\benv\s*=\s*"([A-Za-z_][A-Za-z0-9_]*)"/.exec(attrs);
+    if (named) out.push(named[1]!);
+    else if (/\benv\b/.test(attrs)) out.push(m[2]!.toUpperCase());
+  }
+  return out;
+}

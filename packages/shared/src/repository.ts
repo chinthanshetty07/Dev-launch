@@ -20,6 +20,8 @@ export interface RepositoryMetadata {
   frameworkConfigs: string[];
 
   python?: PythonSummary;
+  /** A Rust project (Cargo.toml), when there is one. */
+  rust?: RustSummary;
 
   /** Variables declared in .env.example, with whether a default value was supplied. */
   envExample: EnvExampleVar[];
@@ -381,7 +383,7 @@ export interface ServiceCandidate {
   /** Path relative to the repository root; '.' for a single-service repository. */
   dir: string;
   role: ServiceRole;
-  language: 'node' | 'python';
+  language: 'node' | 'python' | 'rust';
   /** npm scripts available, for a Node service. */
   scripts: string[];
   /** What gave the role away, e.g. "depends on express". Shown, never acted on blindly. */
@@ -487,4 +489,35 @@ export interface BackingService {
   database?: string;
   /** Which services need it. */
   neededBy: string[];
+}
+
+/** A Rust project, read from `Cargo.toml` and its source (`rustProject.ts`). */
+export interface RustSummary {
+  /** `[package] name`; absent for a workspace root with no package of its own. */
+  packageName?: string;
+  dependencies: string[];
+  /** `[[bin]]` names, when the manifest declares several programs. */
+  bins: string[];
+  /** Whether there is a program to run (`src/main.rs` or a `[[bin]]`), not only a library. */
+  hasMain: boolean;
+  framework?: 'actix-web' | 'axum' | 'rocket' | 'warp' | 'poem' | 'tide' | 'salvo' | 'loco' | 'hyper';
+  /** The port the code binds, when it writes one down. */
+  port?: number;
+  /** Whether the code reads PORT from the environment. */
+  readsPort?: boolean;
+  /** A crate that draws on the computer's own screen (bevy, egui, iced, tauri…). */
+  desktopCrate?: string;
+  /** A crate that builds a browser-side WebAssembly page (yew, leptos…), served by Trunk. */
+  wasmFrontend?: string;
+  database?: 'postgres' | 'mysql' | 'mongodb' | 'redis';
+  /** sqlx's prepared query data (`.sqlx/`), so its macros can build without a database. */
+  sqlxOffline?: boolean;
+  /** A `migrations/` folder. */
+  migrations?: boolean;
+  /** Uses diesel, whose migrations are applied with its own CLI (`devlaunch-diesel-migrate` here). */
+  diesel?: boolean;
+  /** In a workspace: its members' directories, the package that runs, and its directory. */
+  workspaceMembers?: string[];
+  runPackage?: string;
+  memberDir?: string;
 }

@@ -1,3 +1,4 @@
+import type { RustSummary } from '@devlaunch/shared';
 import { foreignRuntimeReason } from '../analysis/ForeignRuntimes.js';
 import type {
   EnvVar,
@@ -396,6 +397,14 @@ export class RuleBasedPlanner {
   plan(meta: RepositoryMetadata, workingDirectory = '.'): PlanningOutcome {
     const warnings = [...meta.warnings];
 
+    // A Rust web server beside a package.json: the server is the app, and the JavaScript is
+    // what it serves, built first (`SL-Lee/actix-web-todo-app`: rollup bundles Svelte into
+    // the static folder actix serves; planned as Node, it ran `rollup -w` as "the app").
+    if (meta.rust?.framework && meta.packageJson) {
+      const outcome = planRust(meta.rust, workingDirectory, warnings, assetBuild(meta));
+      if (outcome) return outcome;
+    }
+
     if (meta.packageJson) {
       const outcome = this.planNode(meta, meta.packageJson, workingDirectory, warnings);
       if (outcome) return outcome;
@@ -403,6 +412,11 @@ export class RuleBasedPlanner {
 
     if (meta.python) {
       const outcome = this.planPython(meta, meta.python, workingDirectory, warnings);
+      if (outcome) return outcome;
+    }
+
+    if (meta.rust) {
+      const outcome = planRust(meta.rust, workingDirectory, warnings);
       if (outcome) return outcome;
     }
 
@@ -925,6 +939,117 @@ export function pythonHealthPath(kind: string, meta: RepositoryMetadata): string
   if (kind !== 'fastapi' || path !== '/') return path;
   const declaresRoot = (meta.httpRoutes ?? []).some((r) => r.method === 'GET' && r.path === '/');
   return declaresRoot ? '/' : '/docs';
+}
+
+/**
+ * The JavaScript build beside a Rust server: an install, then its `build` script, with npm
+ * (the one manager the Rust runner carries). None when there is no build script.
+ */
+export function assetBuild(meta: RepositoryMetadata): string[] {
+  if (!meta.packageJson?.scripts.build) return [];
+  return [meta.lockfiles.includes('package-lock.json') ? 'npm ci --no-audit --no-fund' : 'npm install --no-audit --no-fund', 'npm run build'];
+}
+
+/** The Rust image DevLaunch has: the current stable toolchain. */
+const RUST_IMAGE_VERSION = '1';
+
+/** A Cargo package or binary name, safe to put on a command line. */
+const CARGO_NAME = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * A Rust project's plan: `cargo fetch` (the crates, onto the cache volume), `cargo build
+ * --release` (the long step, where its output shows progress), `cargo run --release` (which
+ * then finds nothing to rebuild). In a workspace, the member that serves runs, by `-p`.
+ *
+ * A server is watched on the port its code binds (actix and axum examples write
+ * `127.0.0.1:8080` — reached through the loopback bridge), Rocket on 8000 with its own
+ * address variables. A program that is not a server is run, and finishes: COMPLETED.
+ * Browser-side Rust (Yew, Leptos with Trunk) is said plainly rather than guessed at.
+ */
+export function planRust(
+  rust: RustSummary,
+  workingDirectory: string,
+  warnings: string[],
+  /** Commands that build the JavaScript the server serves, run before it compiles. */
+  assets: string[] = [],
+): PlanningOutcome | null {
+  if (rust.wasmFrontend) {
+    return {
+      plan: null,
+      detected: null,
+      unrunnable: true,
+      reason:
+        `This is a ${rust.wasmFrontend} app: Rust compiled to WebAssembly that runs in the browser, built and ` +
+        'served by Trunk. DevLaunch runs Rust servers, but not browser-side Rust yet.',
+      remedy: 'Run it on your own computer with `trunk serve` (after `cargo install trunk` and `rustup target add wasm32-unknown-unknown`).',
+      warnings,
+    };
+  }
+  if (!rust.hasMain) return null;
+
+  const pkg = rust.runPackage && CARGO_NAME.test(rust.runPackage) ? ` -p ${rust.runPackage}` : '';
+  // Several programs in one package: the one named like the package, else the first.
+  const bin =
+    rust.bins.length > 1
+      ? (rust.bins.find((b) => b === (rust.runPackage ?? rust.packageName)) ?? rust.bins[0])
+      : undefined;
+  const binArg = bin && CARGO_NAME.test(bin) ? ` --bin ${bin}` : '';
+  const serves = Boolean(rust.framework || rust.port);
+  const port = rust.port ?? (rust.framework === 'rocket' ? 8000 : 8080);
+
+  const env: EnvVar[] = serves
+    ? [
+        { key: 'HOST', value: '0.0.0.0', required: false },
+        { key: 'PORT', value: String(port), required: false },
+        { key: 'RUST_LOG', value: 'info', required: false },
+        ...(rust.framework === 'rocket'
+          ? [
+              { key: 'ROCKET_ADDRESS', value: '0.0.0.0', required: false },
+              { key: 'ROCKET_PORT', value: String(port), required: false },
+            ]
+          : []),
+      ]
+    : [];
+  // sqlx checks its queries against a database while compiling, unless the project ships
+  // the prepared data for it (`.sqlx/`): then it builds without one.
+  if (rust.sqlxOffline) env.push({ key: 'SQLX_OFFLINE', value: 'true', required: false });
+
+  warnings.push(
+    'A Rust project is compiled before it runs: the first time takes a few minutes, while cargo ' +
+      'downloads and builds every crate. Later runs of the same repository reuse the downloads.',
+  );
+  if (rust.database && !rust.sqlxOffline && !rust.migrations && rust.dependencies.includes("sqlx")) {
+    warnings.push(
+      'It uses sqlx, whose query macros check against a database while compiling. If the build ' +
+        'stops on a database error, the repository needs its `.sqlx` folder (`cargo sqlx prepare`).',
+    );
+  }
+
+  return {
+    detected: rust.framework ?? 'rust',
+    warnings,
+    plan: RunPlanSchema.parse({
+      runtime: { language: 'rust', version: RUST_IMAGE_VERSION },
+      packageManager: 'cargo',
+      installCommand: 'cargo fetch',
+      buildCommand: [
+        ...assets,
+        // diesel's migrations, before the server needs its tables (Postgres; see the script).
+        ...(rust.diesel && rust.migrations && rust.database === 'postgres' ? ['devlaunch-diesel-migrate'] : []),
+        // sqlx's, before it compiles: its query macros check every query against the
+        // database's tables while compiling (`launchbadge/realworld-axum-sqlx`).
+        ...(rust.dependencies.includes('sqlx') && rust.migrations && rust.database === 'postgres' ? ['devlaunch-sqlx-migrate'] : []),
+        `cargo build --release${pkg}${binArg}`,
+      ].join(' && '),
+      startCommand: `cargo run --release${pkg}${binArg}`,
+      workingDirectory,
+      expectedPort: serves ? port : null,
+      hostBinding: 'unknown',
+      environmentVariables: env,
+      healthCheck: { path: '/', method: 'GET', expectedStatusCodes: [200, 204, 302, 304] },
+      planSource: 'rule-based',
+    }),
+  };
 }
 
 /**

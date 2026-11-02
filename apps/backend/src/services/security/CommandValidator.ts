@@ -11,6 +11,9 @@ export const ALLOWED_BINARIES: readonly string[] = Object.freeze([
   'python', 'python3', 'pip', 'pip3',
   'flask', 'gunicorn', 'uvicorn', 'django-admin', 'streamlit',
   'next', 'vite',
+  'cargo',
+  // DevLaunch's own, baked into the Rust runner (`docker/runner/diesel-migrate.sh`).
+  'devlaunch-diesel-migrate', 'devlaunch-sqlx-migrate',
 ]);
 
 /**
@@ -137,7 +140,7 @@ export function validateCommand(command: string, field = 'command'): ValidatedCo
  * could not. One command was not enough: Prisma needs `prisma generate` and then its
  * migrations, and FastAPI's template its migrations and then its first user.
  */
-export const MAX_CHAINED_COMMANDS = 3;
+export const MAX_CHAINED_COMMANDS = 4;
 
 export function validateCommandChain(command: string, field = 'command'): ValidatedCommand[] {
   const parts = command.split(' && ');

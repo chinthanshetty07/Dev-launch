@@ -33,6 +33,7 @@ const OPTIONAL_COMMENT = /\b(optional|not required|if you have one|leave (?:it )
 const PLACEHOLDER = new RegExp(
   [
     /^<[^>]*>$/, // <your-token>
+    /^\{[^}]*\}$/, // {random-string} (`launchbadge/realworld-axum-sqlx`)
     /^\$\{[^}]*\}$/, // ${SECRET} — resolved from a shell DevLaunch does not have
     /^(?:sk|pk|ghp|xox[abp]|AKIA)[-_]?(?:your|xxx|test|placeholder|\.\.\.|example)/i,
     /^(?:your|my)[-_ ]?[a-z0-9_-]*(?:key|token|secret|password|id|url|here)/i,

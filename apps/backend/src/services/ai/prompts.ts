@@ -112,8 +112,8 @@ export function planPrompt(meta: RepositoryMetadata, ruleBasedReason: string): s
     'Return JSON with exactly these fields:',
     JSON.stringify(
       {
-        runtime: { language: 'node | python', version: '20 | 3.12' },
-        packageManager: 'npm | yarn | pnpm | pip | poetry',
+        runtime: { language: 'node | python | rust', version: '20 | 3.12 | 1' },
+        packageManager: 'npm | yarn | pnpm | pip | poetry | cargo',
         installCommand: 'string or null',
         buildCommand: 'string or null',
         startCommand: 'string',

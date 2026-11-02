@@ -113,6 +113,20 @@ export function withCrashAnswers(
  * when nothing in it is a web app: no Python web framework, no Node manifest, no services.
  */
 export function desktopProgram(meta: RepositoryMetadata): FailureDetail | null {
+  const crate = meta.rust?.desktopCrate;
+  if (crate && !meta.rust?.framework && !meta.packageJson && (meta.services?.length ?? 0) <= 1) {
+    const terminal = ['ratatui', 'crossterm'].includes(crate);
+    return {
+      code: FailureCode.UNSUPPORTED_PROJECT,
+      message:
+        `This is a ${terminal ? 'terminal' : 'desktop'} program: it uses the ${crate} crate, which draws ` +
+        `${terminal ? 'in your own terminal' : 'in a window on your own screen'}. There is no web page to open, ` +
+        'so a browser cannot show it.',
+      remedy: 'Run it on your own computer instead: download the repository, then run cargo run --release there (with Rust installed). DevLaunch runs web apps and APIs.',
+      evidence: `Cargo.toml: ${crate}`,
+      confidence: 'high',
+    };
+  }
   const gui = meta.python?.desktopGui;
   if (!gui) return null;
   const web = meta.python?.hasManagePy || meta.python?.entryCandidates.some((e) => e.framework) || meta.packageJson || (meta.services?.length ?? 0) > 1;

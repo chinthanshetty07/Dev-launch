@@ -50,7 +50,7 @@ export interface SmokeService {
    * development does not exist, so `/` answers 500 and `/docs` 200.
    */
   healthPath?: string;
-  runtime: 'node' | 'python' | 'container';
+  runtime: 'node' | 'python' | 'rust' | 'container';
   environment: { key: string; value: string | null }[];
   /** Runs a command inside this service's container and returns what it printed. */
   exec?: (argv: string[]) => Promise<string>;
@@ -118,7 +118,8 @@ async function reachesFromInside(service: SmokeService, host: string, port: numb
     return { ok: false, skipped: true, detail: `${service.name} runs the repository's own image, which may have no tool to make the check with` };
   }
   try {
-    const out = (await service.exec(connectCommand(service.runtime as 'node' | 'python', host, port))).trim();
+    // The Rust runner carries node for exactly this (and the loopback bridge).
+    const out = (await service.exec(connectCommand(service.runtime === 'python' ? 'python' : 'node', host, port))).trim();
     return out.startsWith('OK')
       ? { ok: true, detail: `${service.name} reached ${host}:${port}` }
       : { ok: false, detail: `${service.name} could not reach ${host}:${port}: ${out.slice(0, 160) || 'no output'}` };

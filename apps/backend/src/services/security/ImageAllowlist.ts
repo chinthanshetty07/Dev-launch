@@ -11,7 +11,7 @@ export class SecurityRejection extends Error {
 }
 
 export interface ApprovedImage {
-  language: 'node' | 'python';
+  language: 'node' | 'python' | 'rust';
   version: string;
   /** Pinned at release time. Empty during development means tag-only resolution. */
   digest?: string;
@@ -40,6 +40,9 @@ export const APPROVED_IMAGES: Readonly<Record<string, ApprovedImage>> = Object.f
   'devlaunch/python:3.13': { language: 'python', version: '3.13' },
   // 3.14 likewise: `fastapi/full-stack-fastapi-template` declares `requires-python = ">=3.14"`.
   'devlaunch/python:3.14': { language: 'python', version: '3.14' },
+  // Rust's current stable, built the first time a Rust project runs (`runnerRecipe`): a
+  // 1.3 GB image every installation would otherwise download for projects it may never see.
+  'devlaunch/rust:1': { language: 'rust', version: '1' },
 });
 
 export function isImageApproved(image: string): boolean {

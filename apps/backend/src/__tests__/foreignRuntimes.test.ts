@@ -31,7 +31,8 @@ describe('a repository in a runtime DevLaunch has no image for', () => {
     const d = await repo({ 'pom.xml': '<project/>', 'README.md': '# a spring app' });
     const out = await new RuleBasedPlanner(analyzer).planRepository(d);
     expect(out).toMatchObject({ plan: null, unrunnable: true });
-    expect(out.reason).toMatch(/This is a Java \(Maven\) \(pom\.xml\) project\. DevLaunch runs Node 20, Node 22 and Python 3\.12/);
+    // Changed fact: Rust became a runtime DevLaunch runs, and the sentence names all three.
+    expect(out.reason).toMatch(/This is a Java \(Maven\) \(pom\.xml\) project\. DevLaunch runs Node, Python and Rust/);
   });
 
   it('does not stop a Node application that also has one', async () => {
@@ -52,8 +53,9 @@ describe('a repository in a runtime DevLaunch has no image for', () => {
     expect(out.reason ?? '').not.toMatch(/This is a Go/);
   });
 
+  // Changed fact: this used a Rust project, until DevLaunch ran Rust. Go stands in for it.
   it('never reaches the model', async () => {
-    const d = await repo({ 'Cargo.toml': '[package]\nname = "x"' });
+    const d = await repo({ 'go.mod': 'module x' });
     const asked: number[] = [];
     const m = new SessionManager({} as ExecutionManager, {
       analyzer, planner: new RuleBasedPlanner(analyzer),
@@ -63,7 +65,7 @@ describe('a repository in a runtime DevLaunch has no image for', () => {
     for (let i = 0; i < 200 && s.state !== ExecutionState.FAILED; i++) await new Promise((r) => setTimeout(r, 10));
     await m.shutdown();
     expect(s.failure).toMatchObject({ code: FailureCode.UNSUPPORTED_PROJECT });
-    expect(s.failure?.message).toMatch(/Rust \(Cargo\.toml\)/);
+    expect(s.failure?.message).toMatch(/Go \(go\.mod\)/);
     expect(asked).toEqual([]);
   });
 });

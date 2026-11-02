@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-11-02 — DevLaunch runs Rust projects
+
+Rust was on the list of runtimes DevLaunch declined ("no image for Rust yet"). It now plans
+and runs Rust web servers by rule.
+
+- **A Rust runner** (`docker/runner/rust.Dockerfile`, `devlaunch/rust:1`, current stable):
+  the same sandbox as the others, plus pkg-config, OpenSSL/libpq/SQLite headers, node and
+  npm (for assets a server serves, the loopback bridge and the end-to-end check), crates on
+  the cache volume. 1.3 GB, so it is **built the first time a Rust project runs** (about a
+  minute), not at install.
+- **Reading a Rust project** (`rustProject.ts`): Cargo.toml (package, dependencies in both
+  table styles, `[[bin]]`s, workspace members — the member that serves runs), the web
+  framework (actix-web, axum, Rocket, warp, poem, tide, salvo, loco, hyper), the port from
+  how the code binds it (`"127.0.0.1:8080"`, `("0.0.0.0", 5000)`, `[0,0,0,0]`,
+  `Ipv4Addr::UNSPECIFIED`, a PORT default), databases (sqlx/diesel/sea-orm/tokio-postgres,
+  mongodb, redis), `.sqlx` data, migrations, settings read by `env::var` and clap's `env`.
+- **The plan:** `cargo fetch`, `cargo build --release`, `cargo run --release` (with `-p` /
+  `--bin` when needed), PORT/HOST (Rocket's own variables too), servers on loopback reached
+  through the bridge (now on the Rust runner too). A program that is not a server runs to
+  completion. A `package.json` beside a Rust server builds what it serves first, and a Rust
+  server is found before it in discovery — so a Rust backend beside a JavaScript frontend is
+  a project of two services, with its database.
+- **Migrations before compiling**, by two small helpers baked into the image:
+  `devlaunch-diesel-migrate` and `devlaunch-sqlx-migrate` apply `migrations/` with each
+  tool's own bookkeeping (sqlx's checksum included, so the app's `sqlx::migrate!()` accepts
+  them). sqlx's query macros check against the tables while compiling, so they must exist.
+  The setup step may now chain four checked commands, not three.
+- **Said plainly:** browser-side Rust (Yew, Leptos with Trunk) is not run yet; desktop and
+  terminal programs (Bevy, egui, iced, Tauri, ratatui…) are named like the Python ones.
+- Also: `HMAC_KEY`/`SIGNING_KEY` are generated like `SECRET_KEY`; `{…}` in an example file is
+  a placeholder.
+
+**Evidence:** three real repositories READY: `litsynp/rust-axum-todo-api` (axum + sqlx +
+Postgres; READY with no repair after the port fix), `SL-Lee/actix-web-todo-app` (actix +
+diesel + Postgres + a rollup-built Svelte page: bundle built, four migrations applied, `user`
+and `todo` tables, compiled in 2 min), `launchbadge/realworld-axum-sqlx` (sqlx macros
+compiled against tables migrated first; the app's own `migrate!()` accepted them; a test
+sign-up returned a signed token, `/api/articles` 200). Real-Docker tests: the
+`rust-axum-hello` fixture built and served (and again from no image at all: 57 s); both
+migration helpers against a real Postgres (records, sqlx checksum, run twice, a broken
+migration stopping cleanly). 16 unit tests; 11 mutations, all caught. Quick suite: 1,336.
+
+**Not done:** browser-side Rust (Trunk); diesel migrations on MySQL/SQLite (Postgres only);
+`sqlx migrate` for MySQL. One Rust version (current stable).
+
 ## 2026-10-12 — Desktop programs are named as such; a repair may not serve files instead
 
 `alanjohnks/Snake-game` is a turtle game: it draws in a window on the computer's own

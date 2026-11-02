@@ -79,8 +79,9 @@ const building: Record<string, Promise<void> | undefined> = {};
  * `devlaunch/python:3.14`), or null for anything else — never an image outside the allowlist.
  */
 export function runnerRecipe(image: string): RunnerRecipe | null {
-  const m = /^devlaunch\/(node|python):(\d+(?:\.\d+)?)$/.exec(image);
+  const m = /^devlaunch\/(node|python|rust):(\d+(?:\.\d+)?)$/.exec(image);
   if (!m || !isImageApproved(image)) return null;
+  if (m[1] === 'rust') return { dockerfile: 'rust.Dockerfile', buildargs: { RUST_VERSION: m[2]! } };
   return m[1] === 'node'
     ? { dockerfile: 'node.Dockerfile', buildargs: { NODE_VERSION: m[2]! } }
     : { dockerfile: 'python.Dockerfile', buildargs: { PYTHON_VERSION: m[2]! } };

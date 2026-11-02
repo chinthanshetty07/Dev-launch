@@ -158,7 +158,9 @@ export function buildWrapperEnv(
   env.DL_START_CMD = plan.startCommand;
   // The port the loopback bridge watches: a Node app's, when it has one. Empty otherwise,
   // and set here so a plan can never choose it.
-  env.DL_BRIDGE_PORT = plan.runtime.language === 'node' && plan.expectedPort !== null ? String(plan.expectedPort) : '';
+  // Node and Rust: both runners carry node for it (the Rust one for this alone).
+  env.DL_BRIDGE_PORT =
+    (plan.runtime.language === 'node' || plan.runtime.language === 'rust') && plan.expectedPort !== null ? String(plan.expectedPort) : '';
   // Set either way, so nothing else can supply it.
   env.DL_INSTALL_REUSED = control.installReused === true ? '1' : '0';
 

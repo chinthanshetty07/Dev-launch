@@ -60,10 +60,10 @@ export const PlanSourceSchema = z.enum(['rule-based', 'ai-fallback', 'repo-docke
 export const RunPlanSchema = z.object({
   runtime: z.object({
     // `container`: the repository's own image decides the runtime (see `docker`).
-    language: z.enum(['node', 'python', 'container']),
+    language: z.enum(['node', 'python', 'rust', 'container']),
     version: z.string().min(1),
   }),
-  packageManager: z.enum(['npm', 'yarn', 'pnpm', 'pip', 'poetry', 'none']),
+  packageManager: z.enum(['npm', 'yarn', 'pnpm', 'pip', 'poetry', 'cargo', 'none']),
   installCommand: z.string().nullable(),
   buildCommand: z.string().nullable(),
   startCommand: z.string().min(1),

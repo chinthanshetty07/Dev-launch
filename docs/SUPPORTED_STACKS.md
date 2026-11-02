@@ -12,8 +12,9 @@ and on the fixtures in `fixtures/`. "Supported" means a rule plans it — no mod
 | Python 3.12 | `devlaunch/python:3.12` | any Python project (the default) |
 | Python 3.13 | `devlaunch/python:3.13` | a project that requires it: `requires-python`, `.python-version`, `runtime.txt`, requirement markers or its Dockerfile |
 | Python 3.14 | `devlaunch/python:3.14` | the same, for a project that requires 3.14 |
+| Rust (stable) | `devlaunch/rust:1` | a `Cargo.toml`; built the first time a Rust project runs, not at install |
 
-**Not supported yet:** Java (Maven, Gradle), Go, Rust, PHP, Ruby, .NET, Elixir, Deno, Bun.
+**Not supported yet:** Java (Maven, Gradle), Go, PHP, Ruby, .NET, Elixir, Deno, Bun.
 A repository whose only manifest is one of theirs is declined at once, naming the runtime —
 never planned by guesswork. Each needs a hardened runner image and a planner.
 
@@ -36,6 +37,20 @@ Flask (including app factories), FastAPI (including HTTPS with the repository's 
 certificate), Django (with `migrate`), Streamlit, Gradio. Installs from `requirements.txt`,
 `pyproject.toml` (with the declared version ranges), or the imports when nothing is declared.
 
+## Rust
+
+Web servers on actix-web, axum, Rocket, warp, poem, tide, salvo, loco or hyper: `cargo fetch`,
+`cargo build --release`, `cargo run --release`, on the port the code binds (servers bound to
+127.0.0.1 are reached through the loopback bridge). Workspaces run the member that serves;
+a package with several programs runs the one named like it. A `package.json` beside the
+server builds what it serves first (`npm run build`). Databases from sqlx, diesel, sea-orm,
+tokio-postgres, mongodb and redis, with diesel and sqlx migrations applied before the build
+(sqlx's query macros check against the tables while compiling); `.sqlx` data is used when
+shipped. Settings read through `env::var` and clap's `env` are found; signing keys such as
+`HMAC_KEY` are generated. Programs that are not servers run to completion. Not yet:
+browser-side Rust (Yew, Leptos with Trunk); desktop and terminal programs (Bevy, egui,
+iced, Tauri, ratatui) are named as such.
+
 ## Several services
 
 A frontend, an API and workers in one repository are found from compose files, workspace
@@ -53,8 +68,8 @@ others' addresses under the variable names it reads, with its own health and log
 | SQLite | needs nothing | |
 | RabbitMQ, Kafka, Elasticsearch, MinIO | as a compose service | only when the repository's compose file runs it (the Docker fallback); not detected otherwise |
 
-Migrations: Django's `migrate` and a repository's own schema script. Prisma, Alembic,
-Sequelize and TypeORM migrations are not run yet.
+Migrations: Django's `migrate`, Alembic (FastAPI), Prisma, diesel and sqlx (Rust), and a
+repository's own schema script. Sequelize and TypeORM migrations are not run yet.
 
 ## Anything else with a Dockerfile or compose file
 

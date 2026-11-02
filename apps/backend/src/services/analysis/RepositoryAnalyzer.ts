@@ -1,3 +1,4 @@
+import { readRust } from './rustProject.js';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { readFile, readdir, stat } from 'node:fs/promises';
@@ -200,6 +201,7 @@ export class RepositoryAnalyzer {
       entries.filter((e) => e.isDirectory()).map((e) => e.name),
     );
     const envRaw = await readEnvExampleFile(base, fileNames);
+    const rust = fileNames.includes('Cargo.toml') ? await readRust(base) : undefined;
     const readme = await this.readReadme(base, fileNames);
 
     const measured = await measureShallow(root);
@@ -237,6 +239,7 @@ export class RepositoryAnalyzer {
       ...(caseMismatches.length ? { caseMismatches } : {}),
       ...(foreignRuntimes(fileNames).length ? { foreignRuntimes: foreignRuntimes(fileNames) } : {}),
       python,
+      ...(rust ? { rust } : {}),
       envExample: envRaw ? parseEnvExample(envRaw) : [],
       ...(await readDevServerPort(base, fileNames)),
       ...(await readPrisma(base, fileNames)),

@@ -23,6 +23,8 @@ const SELF_SIGNING = new Set([
   'JWT_SECRET', 'JWT_SECRET_KEY', 'JWT_KEY', 'JWT_REFRESH_SECRET', 'JWT_ACCESS_SECRET', 'ACCESS_TOKEN_SECRET',
   'REFRESH_TOKEN_SECRET', 'TOKEN_SECRET', 'NEXTAUTH_SECRET', 'AUTH_SECRET', 'BETTER_AUTH_SECRET',
   'DJANGO_SECRET_KEY', 'FLASK_SECRET_KEY', 'ENCRYPTION_KEY', 'SIGNING_SECRET', 'CSRF_SECRET',
+  // `launchbadge/realworld-axum-sqlx` signs its login tokens with this: any long random string.
+  'HMAC_KEY', 'HMAC_SECRET', 'SIGNING_KEY', 'JWT_SIGNING_KEY',
 ]);
 
 /** Prefixes of other companies' services. */
