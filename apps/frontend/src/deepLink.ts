@@ -12,6 +12,10 @@ const GITHUB_REPO = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+?(?:\.git)?\/?$/;
 
 export function repoFromLink(search: string): string | null {
   const value = new URLSearchParams(search).get('repo')?.trim();
-  if (!value || value.length > 200) return null;
-  return GITHUB_REPO.test(value) ? value.replace(/\.git$/, '').replace(/\/$/, '') : null;
+  if (!value || value.length > 200 || !GITHUB_REPO.test(value)) return null;
+
+  // Strip the slash first, then .git. The previous order left ".git" behind for
+  // valid URLs ending in ".git/", so LaunchView treated the prefilled URL as invalid
+  // and disabled "Run it".
+  return value.replace(/\/$/, '').replace(/\.git$/, '');
 }

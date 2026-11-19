@@ -5,6 +5,8 @@ describe('a repository handed over by a link', () => {
   it('takes a public GitHub repository URL', () => {
     expect(repoFromLink('?repo=https://github.com/mdn/todo-react')).toBe('https://github.com/mdn/todo-react');
     expect(repoFromLink('?repo=' + encodeURIComponent('https://github.com/mdn/todo-react.git'))).toBe('https://github.com/mdn/todo-react');
+    expect(repoFromLink('?repo=' + encodeURIComponent('https://github.com/mdn/todo-react/'))).toBe('https://github.com/mdn/todo-react');
+    expect(repoFromLink('?repo=' + encodeURIComponent('https://github.com/mdn/todo-react.git/'))).toBe('https://github.com/mdn/todo-react');
   });
 
   it('ignores anything that is not one', () => {
