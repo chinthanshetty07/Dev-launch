@@ -93,9 +93,30 @@
       <p class="hint">
         <b>In the cloud:</b> runs in your own free GitHub Codespace — nothing installed on
         your computer, about 60 free hours a month.
-        <b>On my computer:</b> opens DevLaunch on your computer with the repository filled in
-        (install it once — see below). Either way, nothing runs until you press <b>Run it</b>.
+        <b>On my computer:</b> requires DevLaunch to be installed and running locally.
+        If it is not running, the new tab will show a connection error; use the quick fix below.
+        Either way, nothing runs until you press <b>Run it</b>.
       </p>
+      <section id="local-setup" class="card" style="margin-top:14px" hidden aria-live="polite">
+        <h3 style="margin:0 0 8px;font-size:15px">Can't connect to DevLaunch on this computer?</h3>
+        <p class="hint" style="margin-top:0">
+          This means the local DevLaunch server is not running on port 3939. Install and start
+          it once from Terminal. Keep that Terminal window open while using DevLaunch.
+        </p>
+        <ol class="steps">
+          <li>Open the Terminal app on your Mac.</li>
+          <li>Paste and run the installer command below. Approve the installation prompts.</li>
+          <li>When it says the dashboard is ready, return here and click
+            <b>Run on my computer</b> again.</li>
+        </ol>
+        <div class="card cmd" style="padding-top:0;padding-bottom:0;padding-left:0">
+          <pre><code>curl -fsSL https://raw.githubusercontent.com/chinthanshetty07/Dev-launch/main/install.sh | bash</code></pre>
+          <button type="button" class="copy" data-copy-install>Copy</button>
+        </div>
+        <p class="hint">Already installed? Open Terminal and run
+          <code>cd ~/devlaunch &amp;&amp; ./devlaunch start</code>, then retry.
+          On a Mac, Docker Desktop, OrbStack or Colima must be running.</p>
+      </section>
     </form>
   </section>
 
@@ -145,6 +166,11 @@
     input.setAttribute('aria-invalid', String(!ok));
     if (!ok) { e.preventDefault(); return; }
     input.value = value;
+    // Keep this page open as a recovery path if the local server is not installed or
+    // stopped. The browser cannot reliably probe localhost from this HTTPS page (CORS
+    // and private-network protections), so explain the prerequisite instead of silently
+    // leaving the person with an unhelpful connection-refused tab.
+    document.getElementById('local-setup').hidden = false;
   });
   input.addEventListener('input', () => { err.hidden = true; input.removeAttribute('aria-invalid'); });
 
@@ -159,6 +185,15 @@
     if (value) { try { await navigator.clipboard.writeText(value); } catch {} }
     document.getElementById('cloud-steps').hidden = false;
     window.open(CODESPACE, '_blank', 'noopener');
+  });
+
+  // Copy the install command from the recovery panel too.
+  const recoveryCopy = document.querySelector('[data-copy-install]');
+  recoveryCopy.addEventListener('click', async () => {
+    const command = 'curl -fsSL https://raw.githubusercontent.com/chinthanshetty07/Dev-launch/main/install.sh | bash';
+    try { await navigator.clipboard.writeText(command); recoveryCopy.textContent = 'Copied'; }
+    catch { recoveryCopy.textContent = 'Select and copy'; }
+    setTimeout(() => (recoveryCopy.textContent = 'Copy'), 1500);
   });
 
   // A copy button on the install command.
