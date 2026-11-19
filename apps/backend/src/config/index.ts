@@ -32,14 +32,17 @@ export function resolveDockerSocket(
     join(homedir(), '.orbstack', 'run', 'docker.sock'),
     '/var/run/docker.sock',
   ];
+  // Keep a stable socket path even while the engine is stopped. Dockerode can be
+  // constructed against a socket that does not exist yet; its first ping will fail
+  // normally, which lets the HTTP dashboard start and report the missing Docker runtime.
+  // Throwing here used to abort module evaluation before the server could bind port
+  // 3939, so the person saw only "connection refused" and could not reach /api/health
+  // or the dashboard's own recovery instructions. Prefer an existing socket, then the
+  // current context's configured endpoint, then the platform's usual socket path.
   const found = candidates.find((p) => exists(p));
-  if (!found) {
-    throw new Error(
-      `No Docker socket found. Tried:\n  ${candidates.join('\n  ')}\n` +
-        'Is Docker running? Start Docker Desktop, OrbStack or Colima (or the docker service on Linux), then try again.',
-    );
-  }
-  return found;
+  if (found) return found;
+  if (fromContext?.startsWith('unix://')) return fromContext.slice('unix://'.length);
+  return process.platform === 'win32' ? '\\\\.\\pipe\\docker_engine' : '/var/run/docker.sock';
 }
 
 /** The current `docker context`'s endpoint, or null when the docker command is not there. */
