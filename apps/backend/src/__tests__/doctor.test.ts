@@ -38,6 +38,27 @@ describe('the doctor', () => {
     expect(buildCapPath('cgroupfs')).toBe(backendCapPath('cgroupfs'));
   });
 
+  it('calls Docker unreachable when `docker info` prints an empty template and exits 0', async () => {
+    const { dockerServer } = (await import(DOCTOR as string)) as {
+      dockerServer: (out: string | null) => string[] | null;
+    };
+    // What `docker info --format …` prints, with exit code 0, when the daemon is down.
+    expect(dockerServer('|0|0||||')).toBeNull();
+    expect(dockerServer(null)).toBeNull();
+    expect(dockerServer('27.3.1|8331476992|4|aarch64|colima|Ubuntu|cgroupfs')?.[0]).toBe('27.3.1');
+  });
+
+  it('recognises its own health answer even when that answer is unhealthy', async () => {
+    const { isDevLaunchHealth } = (await import(DOCTOR as string)) as {
+      isDevLaunchHealth: (body: unknown) => boolean;
+    };
+    // DevLaunch running with Docker down answers `ok: false`; it is still DevLaunch on the port.
+    expect(isDevLaunchHealth({ ok: false, problems: ['Docker is not reachable'], sessions: 0, build: { stale: false } })).toBe(true);
+    expect(isDevLaunchHealth({ ok: true, sessions: 2 })).toBe(true);
+    expect(isDevLaunchHealth(null)).toBe(false);
+    expect(isDevLaunchHealth({ status: 'up' })).toBe(false);
+  });
+
   it('never prints a value from .env', async () => {
     const d = await mkdtemp(join(tmpdir(), 'devlaunch-doctor-'));
     dirs.push(d);

@@ -48,6 +48,21 @@ export function engineOf(name = '', os = '') {
   return 'Docker Engine';
 }
 
+/**
+ * The fields of `docker info --format …`, or null when no daemon answered. With the daemon
+ * down, `docker info --format` still exits 0 and prints the template with every field empty
+ * (`|0|0||||`), so an empty ServerVersion is the signal, not the exit code.
+ */
+export function dockerServer(out) {
+  const fields = out ? out.split('|') : [];
+  return fields[0] ? fields : null;
+}
+
+/** Whether a /api/health body is DevLaunch's. It answers `ok: false` while Docker is down. */
+export function isDevLaunchHealth(body) {
+  return Boolean(body) && typeof body === 'object' && typeof body.sessions === 'number';
+}
+
 /** Where the build cap is, by cgroup driver: as BuildSandbox reads it. */
 export function buildCapPath(driver) {
   return driver === 'systemd' ? '/sys/fs/cgroup/devlaunchbuild.slice/pids.max' : '/sys/fs/cgroup/devlaunch-build/pids.max';
@@ -76,11 +91,11 @@ async function main() {
   else bad('git not found', 'Install git (macOS: xcode-select --install).');
 
   // --- Docker ------------------------------------------------------------------------
-  const server = await cmd('docker', ['info', '--format', '{{.ServerVersion}}|{{.MemTotal}}|{{.NCPU}}|{{.Architecture}}|{{.Name}}|{{.OperatingSystem}}|{{.CgroupDriver}}']);
+  const server = dockerServer(await cmd('docker', ['info', '--format', '{{.ServerVersion}}|{{.MemTotal}}|{{.NCPU}}|{{.Architecture}}|{{.Name}}|{{.OperatingSystem}}|{{.CgroupDriver}}']));
   if (!server) {
     bad('Docker is not reachable', 'Start Docker: open Docker Desktop or OrbStack, or run colima start; on Linux: sudo systemctl start docker. No Docker yet? Get Docker Desktop from docker.com.');
   } else {
-    const [version, mem, cpus, arch, name, os, driver] = server.split('|');
+    const [version, mem, cpus, arch, name, os, driver] = server;
     const engine = engineOf(name, os);
     const gb = Number(mem) / 1024 ** 3;
     ok(`${engine}: Docker ${version} (${cpus} CPUs, ${gb.toFixed(1)} GB, ${arch})`);
@@ -119,7 +134,7 @@ async function main() {
   const health = await fetch('http://127.0.0.1:3939/api/health', { signal: AbortSignal.timeout(3000) })
     .then((r) => r.json())
     .catch(() => null);
-  if (health?.ok) {
+  if (isDevLaunchHealth(health)) {
     if (health.build?.stale) warn('DevLaunch is running, but older code than this checkout', 'Restart it: stop it, then ./devlaunch start');
     else ok(`DevLaunch is running on port 3939 (commit ${String(health.build?.running ?? '?').slice(0, 7)})`);
   } else {
